@@ -8330,6 +8330,7 @@ validateForeignKeyConstraint(char *conname,
 	HeapTuple	tuple;
 	Trigger		trig;
 	Snapshot	snapshot;
+	TupleTableSlot *slot;
 
 	ereport(DEBUG1,
 			(errmsg("validating foreign key constraint \"%s\"", conname)));
@@ -8361,6 +8362,7 @@ validateForeignKeyConstraint(char *conname,
 	 * if that tuple had just been inserted.  If any of those fail, it should
 	 * ereport(ERROR) and that's that.
 	 */
+	slot = MakeSingleTupleTableSlot(RelationGetDescr(rel));
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
 	scan = heap_beginscan(rel, snapshot, 0, NULL);
 
@@ -8368,6 +8370,8 @@ validateForeignKeyConstraint(char *conname,
 	{
 		FunctionCallInfoData fcinfo;
 		TriggerData trigdata;
+
+		ExecStoreTuple(tuple, slot, InvalidBuffer, false);
 
 		/*
 		 * Make a call to the trigger function
@@ -8382,11 +8386,9 @@ validateForeignKeyConstraint(char *conname,
 		trigdata.type = T_TriggerData;
 		trigdata.tg_event = TRIGGER_EVENT_INSERT | TRIGGER_EVENT_ROW;
 		trigdata.tg_relation = rel;
-		trigdata.tg_trigtuple = tuple;
-		trigdata.tg_newtuple = NULL;
+		trigdata.tg_trigslot = slot;
+		trigdata.tg_newslot = NULL;
 		trigdata.tg_trigger = &trig;
-		trigdata.tg_trigtuplebuf = scan->rs_cbuf;
-		trigdata.tg_newtuplebuf = InvalidBuffer;
 
 		fcinfo.context = (Node *) &trigdata;
 
@@ -8395,6 +8397,7 @@ validateForeignKeyConstraint(char *conname,
 
 	heap_endscan(scan);
 	UnregisterSnapshot(snapshot);
+	ExecDropSingleTupleTableSlot(slot);
 }
 
 static void

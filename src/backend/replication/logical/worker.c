@@ -732,6 +732,7 @@ apply_handle_update(StringInfo s)
 		/* Process and store remote tuple in the slot */
 		oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 		ExecStoreTuple(localslot->tts_tuple, remoteslot, InvalidBuffer, false);
+		ItemPointerCopy(&(localslot->tts_tuple->t_self), &(remoteslot->tts_tid));
 		slot_modify_cstrings(remoteslot, rel, newtup.values, newtup.changed);
 		MemoryContextSwitchTo(oldctx);
 

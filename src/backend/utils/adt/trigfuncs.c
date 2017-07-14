@@ -60,8 +60,8 @@ suppress_redundant_updates_trigger(PG_FUNCTION_ARGS)
 				 errmsg("suppress_redundant_updates_trigger: must be called for each row")));
 
 	/* get tuple data, set default result */
-	rettuple = newtuple = trigdata->tg_newtuple;
-	oldtuple = trigdata->tg_trigtuple;
+	rettuple = newtuple = trigdata->tg_newslot->tts_tuple;
+	oldtuple = trigdata->tg_trigslot->tts_tuple;
 
 	newheader = newtuple->t_data;
 	oldheader = oldtuple->t_data;

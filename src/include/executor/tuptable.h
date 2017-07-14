@@ -117,6 +117,7 @@ typedef struct TupleTableSlot
 	bool		tts_shouldFree; /* should pfree tts_tuple? */
 	bool		tts_shouldFreeMin;	/* should pfree tts_mintuple? */
 	bool		tts_slow;		/* saved state for slot_deform_tuple */
+	ItemPointerData tts_tid;
 	HeapTuple	tts_tuple;		/* physical tuple, or NULL if virtual */
 	TupleDesc	tts_tupleDescriptor;	/* slot's tuple descriptor */
 	MemoryContext tts_mcxt;		/* slot itself is in this context */
@@ -152,6 +153,11 @@ extern TupleTableSlot *ExecStoreTuple(HeapTuple tuple,
 extern TupleTableSlot *ExecStoreMinimalTuple(MinimalTuple mtup,
 					  TupleTableSlot *slot,
 					  bool shouldFree);
+TupleTableSlot* heap_modify_slot_by_cols(TupleTableSlot *slot,
+						 int nCols,
+						 int *replCols,
+						 Datum *replValues,
+						 bool *replIsnull);
 extern TupleTableSlot *ExecClearTuple(TupleTableSlot *slot);
 extern TupleTableSlot *ExecStoreVirtualTuple(TupleTableSlot *slot);
 extern TupleTableSlot *ExecStoreAllNullTuple(TupleTableSlot *slot);

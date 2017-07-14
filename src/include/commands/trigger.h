@@ -32,11 +32,9 @@ typedef struct TriggerData
 	NodeTag		type;
 	TriggerEvent tg_event;
 	Relation	tg_relation;
-	HeapTuple	tg_trigtuple;
-	HeapTuple	tg_newtuple;
+	TupleTableSlot*	tg_trigslot;
+	TupleTableSlot*	tg_newslot;
 	Trigger    *tg_trigger;
-	Buffer		tg_trigtuplebuf;
-	Buffer		tg_newtuplebuf;
 	Tuplestorestate *tg_oldtable;
 	Tuplestorestate *tg_newtable;
 } TriggerData;
@@ -190,7 +188,7 @@ extern TupleTableSlot *ExecBRInsertTriggers(EState *estate,
 					 TupleTableSlot *slot);
 extern void ExecARInsertTriggers(EState *estate,
 					 ResultRelInfo *relinfo,
-					 HeapTuple trigtuple,
+					 TupleTableSlot *slot,
 					 List *recheckIndexes,
 					 TransitionCaptureState *transition_capture);
 extern TupleTableSlot *ExecIRInsertTriggers(EState *estate,
@@ -205,15 +203,15 @@ extern bool ExecBRDeleteTriggers(EState *estate,
 					 EPQState *epqstate,
 					 ResultRelInfo *relinfo,
 					 ItemPointer tupleid,
-					 HeapTuple fdw_trigtuple);
+					 TupleTableSlot *trigslot);
 extern void ExecARDeleteTriggers(EState *estate,
 					 ResultRelInfo *relinfo,
 					 ItemPointer tupleid,
-					 HeapTuple fdw_trigtuple,
+					 TupleTableSlot *slot,
 					 TransitionCaptureState *transition_capture);
 extern bool ExecIRDeleteTriggers(EState *estate,
 					 ResultRelInfo *relinfo,
-					 HeapTuple trigtuple);
+					 TupleTableSlot *slot);
 extern void ExecBSUpdateTriggers(EState *estate,
 					 ResultRelInfo *relinfo);
 extern void ExecASUpdateTriggers(EState *estate,
@@ -223,18 +221,18 @@ extern TupleTableSlot *ExecBRUpdateTriggers(EState *estate,
 					 EPQState *epqstate,
 					 ResultRelInfo *relinfo,
 					 ItemPointer tupleid,
-					 HeapTuple fdw_trigtuple,
+					 TupleTableSlot *trigslot,
 					 TupleTableSlot *slot);
 extern void ExecARUpdateTriggers(EState *estate,
 					 ResultRelInfo *relinfo,
 					 ItemPointer tupleid,
-					 HeapTuple fdw_trigtuple,
-					 HeapTuple newtuple,
+					 TupleTableSlot *oldslot,
+					 TupleTableSlot *slot,
 					 List *recheckIndexes,
 					 TransitionCaptureState *transition_capture);
 extern TupleTableSlot *ExecIRUpdateTriggers(EState *estate,
 					 ResultRelInfo *relinfo,
-					 HeapTuple trigtuple,
+					 TupleTableSlot *oldslot,
 					 TupleTableSlot *slot);
 extern void ExecBSTruncateTriggers(EState *estate,
 					   ResultRelInfo *relinfo);
@@ -256,9 +254,9 @@ extern bool AfterTriggerPendingOnRel(Oid relid);
  * in utils/adt/ri_triggers.c
  */
 extern bool RI_FKey_pk_upd_check_required(Trigger *trigger, Relation pk_rel,
-							  HeapTuple old_row, HeapTuple new_row);
+							TupleTableSlot *oldslot, TupleTableSlot *newslot);
 extern bool RI_FKey_fk_upd_check_required(Trigger *trigger, Relation fk_rel,
-							  HeapTuple old_row, HeapTuple new_row);
+							TupleTableSlot *oldslot, TupleTableSlot *newslot);
 extern bool RI_Initial_Check(Trigger *trigger,
 				 Relation fk_rel, Relation pk_rel);
 

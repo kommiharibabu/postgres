@@ -124,10 +124,14 @@ extern HeapTuple SPI_copytuple(HeapTuple tuple);
 extern HeapTupleHeader SPI_returntuple(HeapTuple tuple, TupleDesc tupdesc);
 extern HeapTuple SPI_modifytuple(Relation rel, HeapTuple tuple, int natts,
 				int *attnum, Datum *Values, const char *Nulls);
+extern TupleTableSlot* SPI_modifyslot(TupleTableSlot *slot, int natts, int *attnum,
+				Datum *Values, const char *Nulls);
 extern int	SPI_fnumber(TupleDesc tupdesc, const char *fname);
 extern char *SPI_fname(TupleDesc tupdesc, int fnumber);
 extern char *SPI_getvalue(HeapTuple tuple, TupleDesc tupdesc, int fnumber);
 extern Datum SPI_getbinval(HeapTuple tuple, TupleDesc tupdesc, int fnumber, bool *isnull);
+extern char *SPI_getslotvalue(TupleTableSlot *slot, int fnumber);
+extern Datum SPI_getslotbinval(TupleTableSlot *slot, int fnumber, bool *isnull);
 extern char *SPI_gettype(TupleDesc tupdesc, int fnumber);
 extern Oid	SPI_gettypeid(TupleDesc tupdesc, int fnumber);
 extern char *SPI_getrelname(Relation rel);

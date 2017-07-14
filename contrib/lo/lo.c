@@ -27,10 +27,10 @@ lo_manage(PG_FUNCTION_ARGS)
 	int			attnum;			/* attribute number to monitor	*/
 	char	  **args;			/* Args containing attr name	*/
 	TupleDesc	tupdesc;		/* Tuple Descriptor				*/
-	HeapTuple	rettuple;		/* Tuple to be returned			*/
+	TupleTableSlot*	retslot;		/* Tuple to be returned			*/
 	bool		isdelete;		/* are we deleting?				*/
-	HeapTuple	newtuple;		/* The new value for tuple		*/
-	HeapTuple	trigtuple;		/* The original value of tuple	*/
+	TupleTableSlot*	newslot;		/* The new value for tuple		*/
+	TupleTableSlot*	trigslot;		/* The original value of tuple	*/
 
 	if (!CALLED_AS_TRIGGER(fcinfo)) /* internal error */
 		elog(ERROR, "%s: not fired by trigger manager",
@@ -43,8 +43,8 @@ lo_manage(PG_FUNCTION_ARGS)
 	/*
 	 * Fetch some values from trigdata
 	 */
-	newtuple = trigdata->tg_newtuple;
-	trigtuple = trigdata->tg_trigtuple;
+	newslot = trigdata->tg_newslot;
+	trigslot = trigdata->tg_trigslot;
 	tupdesc = trigdata->tg_relation->rd_att;
 	args = trigdata->tg_trigger->tgargs;
 
@@ -54,9 +54,9 @@ lo_manage(PG_FUNCTION_ARGS)
 
 	/* tuple to return to Executor */
 	if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
-		rettuple = newtuple;
+		retslot = newslot;
 	else
-		rettuple = trigtuple;
+		retslot = trigslot;
 
 	/* Are we deleting the row? */
 	isdelete = TRIGGER_FIRED_BY_DELETE(trigdata->tg_event);
@@ -74,10 +74,10 @@ lo_manage(PG_FUNCTION_ARGS)
 	 * Here, if the value of the monitored attribute changes, then the large
 	 * object associated with the original value is unlinked.
 	 */
-	if (newtuple != NULL)
+	if (newslot != NULL)
 	{
-		char	   *orig = SPI_getvalue(trigtuple, tupdesc, attnum);
-		char	   *newv = SPI_getvalue(newtuple, tupdesc, attnum);
+		char	   *orig = SPI_getslotvalue(trigslot, attnum);
+		char	   *newv = SPI_getslotvalue(newslot, attnum);
 
 		if (orig != NULL && (newv == NULL || strcmp(orig, newv) != 0))
 			DirectFunctionCall1(be_lo_unlink,
@@ -96,7 +96,7 @@ lo_manage(PG_FUNCTION_ARGS)
 	 */
 	if (isdelete)
 	{
-		char	   *orig = SPI_getvalue(trigtuple, tupdesc, attnum);
+		char	   *orig = SPI_getslotvalue(trigslot, attnum);
 
 		if (orig != NULL)
 		{
@@ -107,5 +107,5 @@ lo_manage(PG_FUNCTION_ARGS)
 		}
 	}
 
-	return PointerGetDatum(rettuple);
+	return PointerGetDatum(retslot->tts_tuple);
 }

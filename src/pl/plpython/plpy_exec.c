@@ -759,11 +759,11 @@ PLy_trigger_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc, HeapTuple *r
 
 				PyDict_SetItemString(pltdata, "old", Py_None);
 				pytnew = PLy_input_from_tuple(&proc->result_in,
-											  tdata->tg_trigtuple,
+											  tdata->tg_trigslot->tts_tuple,
 											  rel_descr);
 				PyDict_SetItemString(pltdata, "new", pytnew);
 				Py_DECREF(pytnew);
-				*rv = tdata->tg_trigtuple;
+				*rv = tdata->tg_trigslot->tts_tuple;
 			}
 			else if (TRIGGER_FIRED_BY_DELETE(tdata->tg_event))
 			{
@@ -771,27 +771,27 @@ PLy_trigger_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc, HeapTuple *r
 
 				PyDict_SetItemString(pltdata, "new", Py_None);
 				pytold = PLy_input_from_tuple(&proc->result_in,
-											  tdata->tg_trigtuple,
+											  tdata->tg_trigslot->tts_tuple,
 											  rel_descr);
 				PyDict_SetItemString(pltdata, "old", pytold);
 				Py_DECREF(pytold);
-				*rv = tdata->tg_trigtuple;
+				*rv = tdata->tg_trigslot->tts_tuple;
 			}
 			else if (TRIGGER_FIRED_BY_UPDATE(tdata->tg_event))
 			{
 				pltevent = PyString_FromString("UPDATE");
 
 				pytnew = PLy_input_from_tuple(&proc->result_in,
-											  tdata->tg_newtuple,
+											  tdata->tg_newslot->tts_tuple,
 											  rel_descr);
 				PyDict_SetItemString(pltdata, "new", pytnew);
 				Py_DECREF(pytnew);
 				pytold = PLy_input_from_tuple(&proc->result_in,
-											  tdata->tg_trigtuple,
+											  tdata->tg_trigslot->tts_tuple,
 											  rel_descr);
 				PyDict_SetItemString(pltdata, "old", pytold);
 				Py_DECREF(pytold);
-				*rv = tdata->tg_newtuple;
+				*rv = tdata->tg_newslot->tts_tuple;
 			}
 			else
 			{

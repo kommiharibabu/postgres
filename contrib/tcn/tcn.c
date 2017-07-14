@@ -58,7 +58,7 @@ triggered_change_notification(PG_FUNCTION_ARGS)
 	TriggerData *trigdata = (TriggerData *) fcinfo->context;
 	Trigger    *trigger;
 	int			nargs;
-	HeapTuple	trigtuple;
+	TupleTableSlot*	trigslot;
 	Relation	rel;
 	TupleDesc	tupdesc;
 	char	   *channel;
@@ -112,7 +112,7 @@ triggered_change_notification(PG_FUNCTION_ARGS)
 		channel = trigger->tgargs[0];
 
 	/* get tuple data */
-	trigtuple = trigdata->tg_trigtuple;
+	trigslot = trigdata->tg_trigslot;
 	rel = trigdata->tg_relation;
 	tupdesc = rel->rd_att;
 
@@ -158,7 +158,7 @@ triggered_change_notification(PG_FUNCTION_ARGS)
 					appendStringInfoCharMacro(payload, ',');
 					strcpy_quoted(payload, NameStr(attr->attname), '"');
 					appendStringInfoCharMacro(payload, '=');
-					strcpy_quoted(payload, SPI_getvalue(trigtuple, tupdesc, colno), '\'');
+					strcpy_quoted(payload, SPI_getslotvalue(trigslot, colno), '\'');
 				}
 
 				Async_Notify(channel, payload->data);

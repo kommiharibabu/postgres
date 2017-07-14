@@ -39,7 +39,7 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 {
 	TriggerData *trigdata = castNode(TriggerData, fcinfo->context);
 	const char *funcname = "unique_key_recheck";
-	HeapTuple	new_row;
+	TupleTableSlot *newslot;
 	ItemPointerData tmptid;
 	Relation	indexRel;
 	IndexInfo  *indexInfo;
@@ -71,16 +71,16 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 	 * Get the new data that was inserted/updated.
 	 */
 	if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
-		new_row = trigdata->tg_trigtuple;
+		newslot = trigdata->tg_trigslot;
 	else if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
-		new_row = trigdata->tg_newtuple;
+		newslot = trigdata->tg_newslot;
 	else
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
 				 errmsg("function \"%s\" must be fired for INSERT or UPDATE",
 						funcname)));
-		new_row = NULL;			/* keep compiler quiet */
+		newslot = NULL;			/* keep compiler quiet */
 	}
 
 	/*
@@ -101,7 +101,7 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 	 * it's possible the index entry has also been marked dead, and even
 	 * removed.
 	 */
-	tmptid = new_row->t_self;
+	tmptid = newslot->tts_tid;
 	if (!heap_hot_search(&tmptid, trigdata->tg_relation, SnapshotSelf, NULL))
 	{
 		/*
@@ -124,7 +124,7 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 	 */
 	slot = MakeSingleTupleTableSlot(RelationGetDescr(trigdata->tg_relation));
 
-	ExecStoreTuple(new_row, slot, InvalidBuffer, false);
+	ExecCopySlot(slot, newslot);
 
 	/*
 	 * Typically the index won't have expressions, but if it does we need an
@@ -164,7 +164,7 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 		 * correct even if t_self is now dead, because that is the TID the
 		 * index will know about.
 		 */
-		index_insert(indexRel, values, isnull, &(new_row->t_self),
+		index_insert(indexRel, values, isnull, &tmptid,
 					 trigdata->tg_relation, UNIQUE_CHECK_EXISTING,
 					 indexInfo);
 	}

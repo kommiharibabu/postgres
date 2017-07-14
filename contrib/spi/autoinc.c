@@ -28,7 +28,7 @@ autoinc(PG_FUNCTION_ARGS)
 	char	  **args;			/* arguments */
 	char	   *relname;		/* triggered relation name */
 	Relation	rel;			/* triggered relation */
-	HeapTuple	rettuple = NULL;
+	TupleTableSlot *retslot = NULL;
 	TupleDesc	tupdesc;		/* tuple description */
 	bool		isnull;
 	int			i;
@@ -44,9 +44,9 @@ autoinc(PG_FUNCTION_ARGS)
 		elog(ERROR, "must be fired before event");
 
 	if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
-		rettuple = trigdata->tg_trigtuple;
+		retslot = trigdata->tg_trigslot;
 	else if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
-		rettuple = trigdata->tg_newtuple;
+		retslot = trigdata->tg_newslot;
 	else
 		/* internal error */
 		elog(ERROR, "cannot process DELETE events");
@@ -86,7 +86,7 @@ autoinc(PG_FUNCTION_ARGS)
 					 errmsg("attribute \"%s\" of \"%s\" must be type INT4",
 							args[i], relname)));
 
-		val = DatumGetInt32(SPI_getbinval(rettuple, tupdesc, attnum, &isnull));
+		val = DatumGetInt32(SPI_getslotbinval(retslot, attnum, &isnull));
 
 		if (!isnull && val != 0)
 		{
@@ -113,9 +113,9 @@ autoinc(PG_FUNCTION_ARGS)
 
 	if (chnattrs > 0)
 	{
-		rettuple = heap_modify_tuple_by_cols(rettuple, tupdesc,
-											 chnattrs, chattrs,
-											 newvals, newnulls);
+		retslot = heap_modify_slot_by_cols(retslot,
+											chnattrs, chattrs,
+											newvals, newnulls);
 	}
 
 	pfree(relname);
@@ -123,5 +123,5 @@ autoinc(PG_FUNCTION_ARGS)
 	pfree(newvals);
 	pfree(newnulls);
 
-	return PointerGetDatum(rettuple);
+	return PointerGetDatum(retslot->tts_tuple);
 }

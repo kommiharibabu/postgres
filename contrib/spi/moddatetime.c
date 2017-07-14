@@ -39,7 +39,7 @@ moddatetime(PG_FUNCTION_ARGS)
 	char	  **args;			/* arguments */
 	char	   *relname;		/* triggered relation name */
 	Relation	rel;			/* triggered relation */
-	HeapTuple	rettuple = NULL;
+	TupleTableSlot *slot;
 	TupleDesc	tupdesc;		/* tuple description */
 
 	if (!CALLED_AS_TRIGGER(fcinfo))
@@ -58,7 +58,7 @@ moddatetime(PG_FUNCTION_ARGS)
 		/* internal error */
 		elog(ERROR, "moddatetime: cannot process INSERT events");
 	else if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
-		rettuple = trigdata->tg_newtuple;
+		slot = trigdata->tg_newslot;
 	else
 		/* internal error */
 		elog(ERROR, "moddatetime: cannot process DELETE events");
@@ -120,11 +120,10 @@ moddatetime(PG_FUNCTION_ARGS)
 	newdtnull = false;
 
 	/* Replace the attnum'th column with newdt */
-	rettuple = heap_modify_tuple_by_cols(rettuple, tupdesc,
-										 1, &attnum, &newdt, &newdtnull);
+	slot = heap_modify_slot_by_cols(slot, 1, &attnum, &newdt, &newdtnull);
 
 	/* Clean up */
 	pfree(relname);
 
-	return PointerGetDatum(rettuple);
+	return PointerGetDatum(slot->tts_tuple);
 }

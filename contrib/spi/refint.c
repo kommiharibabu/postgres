@@ -53,7 +53,7 @@ check_primary_key(PG_FUNCTION_ARGS)
 	Datum	   *kvals;			/* key values */
 	char	   *relname;		/* referenced relation name */
 	Relation	rel;			/* triggered relation */
-	HeapTuple	tuple = NULL;	/* tuple to return */
+	TupleTableSlot *slot = NULL; /* tuple to return */
 	TupleDesc	tupdesc;		/* tuple description */
 	EPlan	   *plan;			/* prepared plan */
 	Oid		   *argtypes = NULL;	/* key types to prepare execution plan */
@@ -82,7 +82,7 @@ check_primary_key(PG_FUNCTION_ARGS)
 
 	/* If INSERTion then must check Tuple to being inserted */
 	if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
-		tuple = trigdata->tg_trigtuple;
+		slot = trigdata->tg_trigslot;
 
 	/* Not should be called for DELETE */
 	else if (TRIGGER_FIRED_BY_DELETE(trigdata->tg_event))
@@ -91,7 +91,7 @@ check_primary_key(PG_FUNCTION_ARGS)
 
 	/* If UPDATE, then must check new Tuple, not old one */
 	else
-		tuple = trigdata->tg_newtuple;
+		slot = trigdata->tg_newslot;
 
 	trigger = trigdata->tg_trigger;
 	nargs = trigger->tgnargs;
@@ -142,7 +142,7 @@ check_primary_key(PG_FUNCTION_ARGS)
 							args[i], SPI_getrelname(rel))));
 
 		/* Well, get binary (in internal format) value of column */
-		kvals[i] = SPI_getbinval(tuple, tupdesc, fnumber, &isnull);
+		kvals[i] = SPI_getslotbinval(slot, fnumber, &isnull);
 
 		/*
 		 * If it's NULL then nothing to do! DON'T FORGET call SPI_finish ()!
@@ -152,7 +152,7 @@ check_primary_key(PG_FUNCTION_ARGS)
 		if (isnull)
 		{
 			SPI_finish();
-			return PointerGetDatum(tuple);
+			return PointerGetDatum(slot->tts_tuple);
 		}
 
 		if (plan->nplans <= 0)	/* Get typeId of column */
@@ -217,7 +217,7 @@ check_primary_key(PG_FUNCTION_ARGS)
 
 	SPI_finish();
 
-	return PointerGetDatum(tuple);
+	return PointerGetDatum(slot->tts_tuple);
 }
 
 /*
@@ -248,8 +248,8 @@ check_foreign_key(PG_FUNCTION_ARGS)
 	Datum	   *kvals;			/* key values */
 	char	   *relname;		/* referencing relation name */
 	Relation	rel;			/* triggered relation */
-	HeapTuple	trigtuple = NULL;	/* tuple to being changed */
-	HeapTuple	newtuple = NULL;	/* tuple to return */
+	TupleTableSlot*	trigslot = NULL;		/* tuple to being changed */
+	TupleTableSlot*	newslot = NULL;	/* tuple to return */
 	TupleDesc	tupdesc;		/* tuple description */
 	EPlan	   *plan;			/* prepared plan(s) */
 	Oid		   *argtypes = NULL;	/* key types to prepare execution plan */
@@ -285,7 +285,7 @@ check_foreign_key(PG_FUNCTION_ARGS)
 		elog(ERROR, "check_foreign_key: cannot process INSERT events");
 
 	/* Have to check tg_trigtuple - tuple being deleted */
-	trigtuple = trigdata->tg_trigtuple;
+	trigslot = trigdata->tg_trigslot;
 
 	/*
 	 * But if this is UPDATE then we have to return tg_newtuple. Also, if key
@@ -294,7 +294,7 @@ check_foreign_key(PG_FUNCTION_ARGS)
 	is_update = 0;
 	if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
 	{
-		newtuple = trigdata->tg_newtuple;
+		newslot = trigdata->tg_newslot;
 		is_update = 1;
 	}
 	trigger = trigdata->tg_trigger;
@@ -369,7 +369,7 @@ check_foreign_key(PG_FUNCTION_ARGS)
 							args[i], SPI_getrelname(rel))));
 
 		/* Well, get binary (in internal format) value of column */
-		kvals[i] = SPI_getbinval(trigtuple, tupdesc, fnumber, &isnull);
+		kvals[i] = SPI_getslotbinval(trigslot, fnumber, &isnull);
 
 		/*
 		 * If it's NULL then nothing to do! DON'T FORGET call SPI_finish ()!
@@ -379,7 +379,8 @@ check_foreign_key(PG_FUNCTION_ARGS)
 		if (isnull)
 		{
 			SPI_finish();
-			return PointerGetDatum((newtuple == NULL) ? trigtuple : newtuple);
+			return PointerGetDatum((newslot == NULL) ?
+					trigslot->tts_tuple : newslot->tts_tuple);
 		}
 
 		/*
@@ -387,16 +388,16 @@ check_foreign_key(PG_FUNCTION_ARGS)
 		 * compare is this the same as old one. For the moment we use string
 		 * presentation of values...
 		 */
-		if (newtuple != NULL)
+		if (newslot != NULL)
 		{
-			char	   *oldval = SPI_getvalue(trigtuple, tupdesc, fnumber);
+			char	   *oldval = SPI_getslotvalue(trigslot, fnumber);
 			char	   *newval;
 
 			/* this shouldn't happen! SPI_ERROR_NOOUTFUNC ? */
 			if (oldval == NULL)
 				/* internal error */
 				elog(ERROR, "check_foreign_key: SPI_getvalue returned %s", SPI_result_code_string(SPI_result));
-			newval = SPI_getvalue(newtuple, tupdesc, fnumber);
+			newval = SPI_getslotvalue(newslot, fnumber);
 			if (newval == NULL || strcmp(oldval, newval) != 0)
 				isequal = false;
 		}
@@ -470,7 +471,7 @@ check_foreign_key(PG_FUNCTION_ARGS)
 
 						fn = SPI_fnumber(tupdesc, args_temp[k - 1]);
 						Assert(fn > 0); /* already checked above */
-						nv = SPI_getvalue(newtuple, tupdesc, fn);
+						nv = SPI_getslotvalue(newslot, fn);
 						type = SPI_gettype(tupdesc, fn);
 
 						if ((strcmp(type, "text") && strcmp(type, "varchar") &&
@@ -551,10 +552,10 @@ check_foreign_key(PG_FUNCTION_ARGS)
 	/*
 	 * If UPDATE and key is not changed ...
 	 */
-	if (newtuple != NULL && isequal)
+	if (newslot != NULL && isequal)
 	{
 		SPI_finish();
-		return PointerGetDatum(newtuple);
+		return PointerGetDatum(newslot->tts_tuple);
 	}
 
 	/*
@@ -603,7 +604,8 @@ check_foreign_key(PG_FUNCTION_ARGS)
 
 	SPI_finish();
 
-	return PointerGetDatum((newtuple == NULL) ? trigtuple : newtuple);
+	return PointerGetDatum((newslot == NULL) ?
+							trigslot->tts_tuple : newslot->tts_tuple);
 }
 
 static EPlan *

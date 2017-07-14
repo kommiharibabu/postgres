@@ -890,16 +890,16 @@ plpgsql_exec_trigger(PLpgSQL_function *func,
 	}
 	else if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
 	{
-		expanded_record_set_tuple(rec_new->erh, trigdata->tg_trigtuple, false);
+		expanded_record_set_tuple(rec_new->erh, trigdata->tg_trigslot->tts_tuple, false);
 	}
 	else if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
 	{
-		expanded_record_set_tuple(rec_new->erh, trigdata->tg_newtuple, false);
-		expanded_record_set_tuple(rec_old->erh, trigdata->tg_trigtuple, false);
+		expanded_record_set_tuple(rec_new->erh, trigdata->tg_newslot->tts_tuple, false);
+		expanded_record_set_tuple(rec_old->erh, trigdata->tg_trigslot->tts_tuple, false);
 	}
 	else if (TRIGGER_FIRED_BY_DELETE(trigdata->tg_event))
 	{
-		expanded_record_set_tuple(rec_old->erh, trigdata->tg_trigtuple, false);
+		expanded_record_set_tuple(rec_old->erh, trigdata->tg_trigslot->tts_tuple, false);
 	}
 	else
 		elog(ERROR, "unrecognized trigger action: not INSERT, DELETE, or UPDATE");
@@ -994,8 +994,8 @@ plpgsql_exec_trigger(PLpgSQL_function *func,
 			 * no need to copy; we can return the original tuple (which will
 			 * save a few cycles in trigger.c as well as here).
 			 */
-			if (rettup != trigdata->tg_newtuple &&
-				rettup != trigdata->tg_trigtuple)
+			if (rettup != ((trigdata->tg_newslot != NULL) ? trigdata->tg_newslot->tts_tuple : NULL) &&
+				rettup != ((trigdata->tg_trigslot != NULL) ? trigdata->tg_trigslot->tts_tuple : NULL))
 				rettup = SPI_copytuple(rettup);
 		}
 		else

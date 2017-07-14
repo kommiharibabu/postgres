@@ -2456,7 +2456,7 @@ tsvector_update_trigger(PG_FUNCTION_ARGS, bool config_column)
 	TriggerData *trigdata;
 	Trigger    *trigger;
 	Relation	rel;
-	HeapTuple	rettuple = NULL;
+	TupleTableSlot *retslot = NULL;
 	int			tsvector_attr_num,
 				i;
 	ParsedText	prs;
@@ -2476,9 +2476,9 @@ tsvector_update_trigger(PG_FUNCTION_ARGS, bool config_column)
 		elog(ERROR, "tsvector_update_trigger: must be fired BEFORE event");
 
 	if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
-		rettuple = trigdata->tg_trigtuple;
+		retslot = trigdata->tg_trigslot;
 	else if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
-		rettuple = trigdata->tg_newtuple;
+		retslot = trigdata->tg_newslot;
 	else
 		elog(ERROR, "tsvector_update_trigger: must be fired for INSERT or UPDATE");
 
@@ -2521,7 +2521,7 @@ tsvector_update_trigger(PG_FUNCTION_ARGS, bool config_column)
 					 errmsg("column \"%s\" is not of regconfig type",
 							trigger->tgargs[1])));
 
-		datum = SPI_getbinval(rettuple, rel->rd_att, config_attr_num, &isnull);
+		datum = SPI_getslotbinval(retslot, config_attr_num, &isnull);
 		if (isnull)
 			ereport(ERROR,
 					(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
@@ -2566,7 +2566,7 @@ tsvector_update_trigger(PG_FUNCTION_ARGS, bool config_column)
 					 errmsg("column \"%s\" is not of a character type",
 							trigger->tgargs[i])));
 
-		datum = SPI_getbinval(rettuple, rel->rd_att, numattr, &isnull);
+		datum = SPI_getslotbinval(retslot, numattr, &isnull);
 		if (isnull)
 			continue;
 
@@ -2583,11 +2583,11 @@ tsvector_update_trigger(PG_FUNCTION_ARGS, bool config_column)
 	isnull = false;
 
 	/* and insert it into tuple */
-	rettuple = heap_modify_tuple_by_cols(rettuple, rel->rd_att,
-										 1, &tsvector_attr_num,
-										 &datum, &isnull);
+	retslot = heap_modify_slot_by_cols(retslot,
+									   1, &tsvector_attr_num,
+									   &datum, &isnull);
 
 	pfree(DatumGetPointer(datum));
 
-	return PointerGetDatum(rettuple);
+	return PointerGetDatum(retslot->tts_tuple);
 }

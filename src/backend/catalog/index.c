@@ -2951,7 +2951,7 @@ IndexCheckExclusion(Relation heapRelation,
 		 */
 		check_exclusion_constraint(heapRelation,
 								   indexRelation, indexInfo,
-								   &(heapTuple->t_self), values, isnull,
+								   &(slot->tts_tid), values, isnull,
 								   estate, true);
 	}
 

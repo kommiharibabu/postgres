@@ -96,8 +96,8 @@ timetravel(PG_FUNCTION_ARGS)
 	char	   *cnulls;			/* column nulls */
 	char	   *relname;		/* triggered relation name */
 	Relation	rel;			/* triggered relation */
-	HeapTuple	trigtuple;
-	HeapTuple	newtuple = NULL;
+	TupleTableSlot *trigslot;
+	TupleTableSlot *newslot = NULL;
 	HeapTuple	rettuple;
 	TupleDesc	tupdesc;		/* tuple description */
 	int			natts;			/* # of attributes */
@@ -129,9 +129,9 @@ timetravel(PG_FUNCTION_ARGS)
 		isinsert = true;
 
 	if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
-		newtuple = trigdata->tg_newtuple;
+		newslot = trigdata->tg_newslot;
 
-	trigtuple = trigdata->tg_trigtuple;
+	trigslot = trigdata->tg_trigslot;
 
 	rel = trigdata->tg_relation;
 	relname = SPI_getrelname(rel);
@@ -141,7 +141,8 @@ timetravel(PG_FUNCTION_ARGS)
 	{
 		/* OFF - nothing to do */
 		pfree(relname);
-		return PointerGetDatum((newtuple != NULL) ? newtuple : trigtuple);
+		return PointerGetDatum((newslot != NULL) ?
+				newslot->tts_tuple : trigslot->tts_tuple);
 	}
 
 	trigger = trigdata->tg_trigger;
@@ -186,7 +187,7 @@ timetravel(PG_FUNCTION_ARGS)
 		Datum		newvals[MaxAttrNum];
 		bool		newnulls[MaxAttrNum];
 
-		oldtimeon = SPI_getbinval(trigtuple, tupdesc, attnum[a_time_on], &isnull);
+		oldtimeon = SPI_getslotbinval(trigslot, attnum[a_time_on], &isnull);
 		if (isnull)
 		{
 			newvals[chnattrs] = GetCurrentAbsoluteTime();
@@ -195,7 +196,7 @@ timetravel(PG_FUNCTION_ARGS)
 			chnattrs++;
 		}
 
-		oldtimeoff = SPI_getbinval(trigtuple, tupdesc, attnum[a_time_off], &isnull);
+		oldtimeoff = SPI_getslotbinval(trigslot, attnum[a_time_off], &isnull);
 		if (isnull)
 		{
 			if ((chnattrs == 0 && DatumGetInt32(oldtimeon) >= NOEND_ABSTIME) ||
@@ -215,7 +216,7 @@ timetravel(PG_FUNCTION_ARGS)
 
 		pfree(relname);
 		if (chnattrs <= 0)
-			return PointerGetDatum(trigtuple);
+			return PointerGetDatum(trigslot->tts_tuple);
 
 		if (argc == MaxAttrNum)
 		{
@@ -235,7 +236,8 @@ timetravel(PG_FUNCTION_ARGS)
 			chattrs[chnattrs] = attnum[a_ins_user];
 			chnattrs++;
 		}
-		rettuple = heap_modify_tuple_by_cols(trigtuple, tupdesc,
+		rettuple = heap_modify_tuple_by_cols(trigslot->tts_tuple,
+											 tupdesc,
 											 chnattrs, chattrs,
 											 newvals, newnulls);
 		return PointerGetDatum(rettuple);
@@ -243,11 +245,11 @@ timetravel(PG_FUNCTION_ARGS)
 	}
 
 	/* UPDATE/DELETE: */
-	oldtimeon = SPI_getbinval(trigtuple, tupdesc, attnum[a_time_on], &isnull);
+	oldtimeon = SPI_getslotbinval(trigslot, attnum[a_time_on], &isnull);
 	if (isnull)
 		elog(ERROR, "timetravel (%s): %s must be NOT NULL", relname, args[a_time_on]);
 
-	oldtimeoff = SPI_getbinval(trigtuple, tupdesc, attnum[a_time_off], &isnull);
+	oldtimeoff = SPI_getslotbinval(trigslot, attnum[a_time_off], &isnull);
 	if (isnull)
 		elog(ERROR, "timetravel (%s): %s must be NOT NULL", relname, args[a_time_off]);
 
@@ -255,13 +257,13 @@ timetravel(PG_FUNCTION_ARGS)
 	 * If DELETE/UPDATE of tuple with stop_date neq INFINITY then say upper
 	 * Executor to skip operation for this tuple
 	 */
-	if (newtuple != NULL)
+	if (newslot != NULL)
 	{							/* UPDATE */
-		newtimeon = SPI_getbinval(newtuple, tupdesc, attnum[a_time_on], &isnull);
+		newtimeon = SPI_getslotbinval(newslot, attnum[a_time_on], &isnull);
 		if (isnull)
 			elog(ERROR, "timetravel (%s): %s must be NOT NULL", relname, args[a_time_on]);
 
-		newtimeoff = SPI_getbinval(newtuple, tupdesc, attnum[a_time_off], &isnull);
+		newtimeoff = SPI_getslotbinval(newslot, attnum[a_time_off], &isnull);
 		if (isnull)
 			elog(ERROR, "timetravel (%s): %s must be NOT NULL", relname, args[a_time_off]);
 
@@ -286,7 +288,7 @@ timetravel(PG_FUNCTION_ARGS)
 	cnulls = (char *) palloc(natts * sizeof(char));
 	for (i = 0; i < natts; i++)
 	{
-		cvals[i] = SPI_getbinval(trigtuple, tupdesc, i + 1, &isnull);
+		cvals[i] = SPI_getslotbinval(trigslot, i + 1, &isnull);
 		cnulls[i] = (isnull) ? 'n' : ' ';
 	}
 
@@ -294,7 +296,7 @@ timetravel(PG_FUNCTION_ARGS)
 	cvals[attnum[a_time_off] - 1] = newtimeoff; /* stop_date eq current date */
 	cnulls[attnum[a_time_off] - 1] = ' ';
 
-	if (!newtuple)
+	if (!newslot)
 	{							/* DELETE */
 		if (argc == MaxAttrNum)
 		{
@@ -362,7 +364,7 @@ timetravel(PG_FUNCTION_ARGS)
 		elog(ERROR, "timetravel (%s): SPI_execp returned %d", relname, ret);
 
 	/* Tuple to return to upper Executor ... */
-	if (newtuple)
+	if (newslot)
 	{							/* UPDATE */
 		int			chnattrs = 0;
 		int			chattrs[MaxAttrNum];
@@ -402,11 +404,11 @@ timetravel(PG_FUNCTION_ARGS)
 		 * Use SPI_modifytuple() here because we are inside SPI environment
 		 * but rettuple must be allocated in caller's context.
 		 */
-		rettuple = SPI_modifytuple(rel, newtuple, chnattrs, chattrs, newvals, newnulls);
+		rettuple = SPI_modifytuple(rel, newslot->tts_tuple, chnattrs, chattrs, newvals, newnulls);
 	}
 	else
 		/* DELETE case */
-		rettuple = trigtuple;
+		rettuple = trigslot->tts_tuple;
 
 	SPI_finish();				/* don't forget say Bye to SPI mgr */
 

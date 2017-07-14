@@ -408,14 +408,14 @@ ExecSimpleRelationInsert(EState *estate, TupleTableSlot *slot)
 
 		/* OK, store the tuple and create index entries for it */
 		simple_heap_insert(rel, tuple);
-
+		ItemPointerCopy(&(tuple->t_self), &(slot->tts_tid));
 		if (resultRelInfo->ri_NumIndices > 0)
 			recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
 												   estate, false, NULL,
 												   NIL);
 
 		/* AFTER ROW INSERT Triggers */
-		ExecARInsertTriggers(estate, resultRelInfo, tuple,
+		ExecARInsertTriggers(estate, resultRelInfo, slot,
 							 recheckIndexes, NULL);
 
 		/*
@@ -481,10 +481,11 @@ ExecSimpleRelationUpdate(EState *estate, EPQState *epqstate,
 												   estate, false, NULL,
 												   NIL);
 
+		ItemPointerCopy(&(tuple->t_self), &(slot->tts_tid));
 		/* AFTER ROW UPDATE Triggers */
 		ExecARUpdateTriggers(estate, resultRelInfo,
 							 &searchslot->tts_tuple->t_self,
-							 NULL, tuple, recheckIndexes, NULL);
+							 NULL, slot, recheckIndexes, NULL);
 
 		list_free(recheckIndexes);
 	}

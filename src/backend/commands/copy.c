@@ -2024,13 +2024,9 @@ CopyTo(CopyState cstate)
 
 	if (cstate->rel)
 	{
-		Datum	   *values;
-		bool	   *nulls;
 		HeapScanDesc scandesc;
-		HeapTuple	tuple;
-
-		values = (Datum *) palloc(num_phys_attrs * sizeof(Datum));
-		nulls = (bool *) palloc(num_phys_attrs * sizeof(bool));
+		HeapTuple tuple;
+		TupleTableSlot *slot = MakeSingleTupleTableSlot(tupDesc);
 
 		scandesc = heap_beginscan(cstate->rel, GetActiveSnapshot(), 0, NULL);
 
@@ -2039,18 +2035,16 @@ CopyTo(CopyState cstate)
 		{
 			CHECK_FOR_INTERRUPTS();
 
-			/* Deconstruct the tuple ... faster than repeated heap_getattr */
-			heap_deform_tuple(tuple, tupDesc, values, nulls);
+			ExecStoreTuple(tuple, slot, InvalidBuffer, false);
+			slot_getallattrs(slot);
 
 			/* Format and send the data */
-			CopyOneRowTo(cstate, HeapTupleGetOid(tuple), values, nulls);
+			CopyOneRowTo(cstate, HeapTupleGetOid(slot->tts_tuple), slot->tts_values, slot->tts_isnull);
 			processed++;
 		}
 
+		ExecDropSingleTupleTableSlot(slot);
 		heap_endscan(scandesc);
-
-		pfree(values);
-		pfree(nulls);
 	}
 	else
 	{
@@ -2739,6 +2733,7 @@ CopyFrom(CopyState cstate)
 					heap_insert(resultRelInfo->ri_RelationDesc, tuple, mycid,
 								hi_options, bistate);
 
+					ItemPointerCopy(&(tuple->t_self), &(slot->tts_tid));
 					if (resultRelInfo->ri_NumIndices > 0)
 						recheckIndexes = ExecInsertIndexTuples(slot,
 															   &(tuple->t_self),
@@ -2748,7 +2743,7 @@ CopyFrom(CopyState cstate)
 															   NIL);
 
 					/* AFTER ROW INSERT Triggers */
-					ExecARInsertTriggers(estate, resultRelInfo, tuple,
+					ExecARInsertTriggers(estate, resultRelInfo, slot,
 										 recheckIndexes, cstate->transition_capture);
 
 					list_free(recheckIndexes);
@@ -2871,11 +2866,12 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 
 			cstate->cur_lineno = firstBufferedLineNo + i;
 			ExecStoreTuple(bufferedTuples[i], myslot, InvalidBuffer, false);
+			ItemPointerCopy(&(bufferedTuples[i]->t_self), &(myslot->tts_tid));
 			recheckIndexes =
 				ExecInsertIndexTuples(myslot, &(bufferedTuples[i]->t_self),
 									  estate, false, NULL, NIL);
 			ExecARInsertTriggers(estate, resultRelInfo,
-								 bufferedTuples[i],
+								 myslot,
 								 recheckIndexes, cstate->transition_capture);
 			list_free(recheckIndexes);
 		}
@@ -2892,8 +2888,10 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 		for (i = 0; i < nBufferedTuples; i++)
 		{
 			cstate->cur_lineno = firstBufferedLineNo + i;
+			ExecStoreTuple(bufferedTuples[i], myslot, InvalidBuffer, false);
+			ItemPointerCopy(&(bufferedTuples[i]->t_self), &(myslot->tts_tid));
 			ExecARInsertTriggers(estate, resultRelInfo,
-								 bufferedTuples[i],
+								 myslot,
 								 NIL, cstate->transition_capture);
 		}
 	}

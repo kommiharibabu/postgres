@@ -191,7 +191,7 @@ static int	ri_constraint_cache_valid_count = 0;
  * ----------
  */
 static bool ri_Check_Pk_Match(Relation pk_rel, Relation fk_rel,
-				  HeapTuple old_row,
+		 	 	  TupleTableSlot *oldslot,
 				  const RI_ConstraintInfo *riinfo);
 static Datum ri_restrict(TriggerData *trigdata, bool is_no_action);
 static Datum ri_setnull(TriggerData *trigdata);
@@ -205,12 +205,12 @@ static void ri_GenerateQual(StringInfo buf,
 				const char *rightop, Oid rightoptype);
 static void ri_add_cast_to(StringInfo buf, Oid typid);
 static void ri_GenerateQualCollation(StringInfo buf, Oid collation);
-static int ri_NullCheck(HeapTuple tup,
+static int ri_NullCheck(TupleTableSlot *slot,
 			 const RI_ConstraintInfo *riinfo, bool rel_is_pk);
 static void ri_BuildQueryKey(RI_QueryKey *key,
 				 const RI_ConstraintInfo *riinfo,
 				 int32 constr_queryno);
-static bool ri_KeysEqual(Relation rel, HeapTuple oldtup, HeapTuple newtup,
+static bool ri_KeysEqual(Relation rel, TupleTableSlot *oldslot, TupleTableSlot *newslot,
 			 const RI_ConstraintInfo *riinfo, bool rel_is_pk);
 static bool ri_AttributesEqual(Oid eq_opr, Oid typeid,
 				   Datum oldvalue, Datum newvalue);
@@ -232,14 +232,13 @@ static SPIPlanPtr ri_PlanCheck(const char *querystr, int nargs, Oid *argtypes,
 static bool ri_PerformCheck(const RI_ConstraintInfo *riinfo,
 				RI_QueryKey *qkey, SPIPlanPtr qplan,
 				Relation fk_rel, Relation pk_rel,
-				HeapTuple old_tuple, HeapTuple new_tuple,
+				TupleTableSlot *oldslot, TupleTableSlot *newslot,
 				bool detectNewRows, int expect_OK);
-static void ri_ExtractValues(Relation rel, HeapTuple tup,
-				 const RI_ConstraintInfo *riinfo, bool rel_is_pk,
-				 Datum *vals, char *nulls);
+static void ri_ExtractValues(TupleTableSlot *slot, const RI_ConstraintInfo *riinfo,
+				bool rel_is_pk, Datum *vals, char *nulls);
 static void ri_ReportViolation(const RI_ConstraintInfo *riinfo,
 				   Relation pk_rel, Relation fk_rel,
-				   HeapTuple violator, TupleDesc tupdesc,
+				   TupleTableSlot* violator, TupleDesc tupdesc,
 				   int queryno) pg_attribute_noreturn();
 
 
@@ -255,8 +254,7 @@ RI_FKey_check(TriggerData *trigdata)
 	const RI_ConstraintInfo *riinfo;
 	Relation	fk_rel;
 	Relation	pk_rel;
-	HeapTuple	new_row;
-	Buffer		new_row_buf;
+	TupleTableSlot *newslot;
 	RI_QueryKey qkey;
 	SPIPlanPtr	qplan;
 	int			i;
@@ -268,15 +266,9 @@ RI_FKey_check(TriggerData *trigdata)
 									trigdata->tg_relation, false);
 
 	if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
-	{
-		new_row = trigdata->tg_newtuple;
-		new_row_buf = trigdata->tg_newtuplebuf;
-	}
+		newslot = trigdata->tg_newslot;
 	else
-	{
-		new_row = trigdata->tg_trigtuple;
-		new_row_buf = trigdata->tg_trigtuplebuf;
-	}
+		newslot = trigdata->tg_trigslot;
 
 	/*
 	 * We should not even consider checking the row if it is no longer valid,
@@ -286,13 +278,8 @@ RI_FKey_check(TriggerData *trigdata)
 	 * and lock on the buffer to call HeapTupleSatisfiesVisibility.  Caller
 	 * should be holding pin, but not lock.
 	 */
-	LockBuffer(new_row_buf, BUFFER_LOCK_SHARE);
-	if (!HeapTupleSatisfiesVisibility(new_row, SnapshotSelf, new_row_buf))
-	{
-		LockBuffer(new_row_buf, BUFFER_LOCK_UNLOCK);
+	if (!HeapTupleSatisfiesVisibility(newslot->tts_tuple, SnapshotSelf, InvalidBuffer))
 		return PointerGetDatum(NULL);
-	}
-	LockBuffer(new_row_buf, BUFFER_LOCK_UNLOCK);
 
 	/*
 	 * Get the relation descriptors of the FK and PK tables.
@@ -308,7 +295,7 @@ RI_FKey_check(TriggerData *trigdata)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("MATCH PARTIAL not yet implemented")));
 
-	switch (ri_NullCheck(new_row, riinfo, false))
+	switch (ri_NullCheck(newslot, riinfo, false))
 	{
 		case RI_KEYS_ALL_NULL:
 
@@ -438,7 +425,7 @@ RI_FKey_check(TriggerData *trigdata)
 	 */
 	ri_PerformCheck(riinfo, &qkey, qplan,
 					fk_rel, pk_rel,
-					NULL, new_row,
+					NULL, newslot,
 					false,
 					SPI_OK_SELECT);
 
@@ -506,7 +493,7 @@ RI_FKey_check_upd(PG_FUNCTION_ARGS)
  */
 static bool
 ri_Check_Pk_Match(Relation pk_rel, Relation fk_rel,
-				  HeapTuple old_row,
+				  TupleTableSlot *oldslot,
 				  const RI_ConstraintInfo *riinfo)
 {
 	SPIPlanPtr	qplan;
@@ -515,7 +502,7 @@ ri_Check_Pk_Match(Relation pk_rel, Relation fk_rel,
 	bool		result;
 
 	/* Only called for non-null rows */
-	Assert(ri_NullCheck(old_row, riinfo, true) == RI_KEYS_NONE_NULL);
+	Assert(ri_NullCheck(oldslot, riinfo, true) == RI_KEYS_NONE_NULL);
 
 	if (SPI_connect() != SPI_OK_CONNECT)
 		elog(ERROR, "SPI_connect failed");
@@ -573,8 +560,8 @@ ri_Check_Pk_Match(Relation pk_rel, Relation fk_rel,
 	 */
 	result = ri_PerformCheck(riinfo, &qkey, qplan,
 							 fk_rel, pk_rel,
-							 old_row, NULL,
-							 true,	/* treat like update */
+							 oldslot, NULL,
+							 true,		/* treat like update */
 							 SPI_OK_SELECT);
 
 	if (SPI_finish() != SPI_OK_FINISH)
@@ -691,7 +678,7 @@ ri_restrict(TriggerData *trigdata, bool is_no_action)
 	const RI_ConstraintInfo *riinfo;
 	Relation	fk_rel;
 	Relation	pk_rel;
-	HeapTuple	old_row;
+	TupleTableSlot *oldslot;
 	RI_QueryKey qkey;
 	SPIPlanPtr	qplan;
 
@@ -709,7 +696,7 @@ ri_restrict(TriggerData *trigdata, bool is_no_action)
 	 */
 	fk_rel = heap_open(riinfo->fk_relid, RowShareLock);
 	pk_rel = trigdata->tg_relation;
-	old_row = trigdata->tg_trigtuple;
+	oldslot = trigdata->tg_trigslot;
 
 	switch (riinfo->confmatchtype)
 	{
@@ -725,7 +712,7 @@ ri_restrict(TriggerData *trigdata, bool is_no_action)
 			 */
 		case FKCONSTR_MATCH_SIMPLE:
 		case FKCONSTR_MATCH_FULL:
-			switch (ri_NullCheck(old_row, riinfo, true))
+			switch (ri_NullCheck(oldslot, riinfo, true))
 			{
 				case RI_KEYS_ALL_NULL:
 				case RI_KEYS_SOME_NULL:
@@ -750,9 +737,9 @@ ri_restrict(TriggerData *trigdata, bool is_no_action)
 			 */
 			if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
 			{
-				HeapTuple	new_row = trigdata->tg_newtuple;
+				TupleTableSlot *newslot = trigdata->tg_newslot;
 
-				if (ri_KeysEqual(pk_rel, old_row, new_row, riinfo, true))
+				if (ri_KeysEqual(pk_rel, oldslot, newslot, riinfo, true))
 				{
 					heap_close(fk_rel, RowShareLock);
 					return PointerGetDatum(NULL);
@@ -766,7 +753,7 @@ ri_restrict(TriggerData *trigdata, bool is_no_action)
 			 * allow another row to be substituted.
 			 */
 			if (is_no_action &&
-				ri_Check_Pk_Match(pk_rel, fk_rel, old_row, riinfo))
+				ri_Check_Pk_Match(pk_rel, fk_rel, oldslot, riinfo))
 			{
 				heap_close(fk_rel, RowShareLock);
 				return PointerGetDatum(NULL);
@@ -831,8 +818,8 @@ ri_restrict(TriggerData *trigdata, bool is_no_action)
 			 */
 			ri_PerformCheck(riinfo, &qkey, qplan,
 							fk_rel, pk_rel,
-							old_row, NULL,
-							true,	/* must detect new rows */
+							oldslot, NULL,
+							true,		/* must detect new rows */
 							SPI_OK_SELECT);
 
 			if (SPI_finish() != SPI_OK_FINISH)
@@ -875,7 +862,7 @@ RI_FKey_cascade_del(PG_FUNCTION_ARGS)
 	const RI_ConstraintInfo *riinfo;
 	Relation	fk_rel;
 	Relation	pk_rel;
-	HeapTuple	old_row;
+	TupleTableSlot *oldslot;
 	RI_QueryKey qkey;
 	SPIPlanPtr	qplan;
 	int			i;
@@ -899,7 +886,7 @@ RI_FKey_cascade_del(PG_FUNCTION_ARGS)
 	 */
 	fk_rel = heap_open(riinfo->fk_relid, RowExclusiveLock);
 	pk_rel = trigdata->tg_relation;
-	old_row = trigdata->tg_trigtuple;
+	oldslot = trigdata->tg_trigslot;
 
 	switch (riinfo->confmatchtype)
 	{
@@ -912,7 +899,7 @@ RI_FKey_cascade_del(PG_FUNCTION_ARGS)
 			 */
 		case FKCONSTR_MATCH_SIMPLE:
 		case FKCONSTR_MATCH_FULL:
-			switch (ri_NullCheck(old_row, riinfo, true))
+			switch (ri_NullCheck(oldslot, riinfo, true))
 			{
 				case RI_KEYS_ALL_NULL:
 				case RI_KEYS_SOME_NULL:
@@ -987,8 +974,8 @@ RI_FKey_cascade_del(PG_FUNCTION_ARGS)
 			 */
 			ri_PerformCheck(riinfo, &qkey, qplan,
 							fk_rel, pk_rel,
-							old_row, NULL,
-							true,	/* must detect new rows */
+							oldslot, NULL,
+							true,		/* must detect new rows */
 							SPI_OK_DELETE);
 
 			if (SPI_finish() != SPI_OK_FINISH)
@@ -1031,8 +1018,8 @@ RI_FKey_cascade_upd(PG_FUNCTION_ARGS)
 	const RI_ConstraintInfo *riinfo;
 	Relation	fk_rel;
 	Relation	pk_rel;
-	HeapTuple	new_row;
-	HeapTuple	old_row;
+	TupleTableSlot *newslot;
+	TupleTableSlot *oldslot;
 	RI_QueryKey qkey;
 	SPIPlanPtr	qplan;
 	int			i;
@@ -1058,8 +1045,8 @@ RI_FKey_cascade_upd(PG_FUNCTION_ARGS)
 	 */
 	fk_rel = heap_open(riinfo->fk_relid, RowExclusiveLock);
 	pk_rel = trigdata->tg_relation;
-	new_row = trigdata->tg_newtuple;
-	old_row = trigdata->tg_trigtuple;
+	newslot = trigdata->tg_newslot;
+	oldslot = trigdata->tg_trigslot;
 
 	switch (riinfo->confmatchtype)
 	{
@@ -1072,7 +1059,7 @@ RI_FKey_cascade_upd(PG_FUNCTION_ARGS)
 			 */
 		case FKCONSTR_MATCH_SIMPLE:
 		case FKCONSTR_MATCH_FULL:
-			switch (ri_NullCheck(old_row, riinfo, true))
+			switch (ri_NullCheck(oldslot, riinfo, true))
 			{
 				case RI_KEYS_ALL_NULL:
 				case RI_KEYS_SOME_NULL:
@@ -1095,7 +1082,7 @@ RI_FKey_cascade_upd(PG_FUNCTION_ARGS)
 			/*
 			 * No need to do anything if old and new keys are equal
 			 */
-			if (ri_KeysEqual(pk_rel, old_row, new_row, riinfo, true))
+			if (ri_KeysEqual(pk_rel, oldslot, newslot, riinfo, true))
 			{
 				heap_close(fk_rel, RowExclusiveLock);
 				return PointerGetDatum(NULL);
@@ -1168,8 +1155,8 @@ RI_FKey_cascade_upd(PG_FUNCTION_ARGS)
 			 */
 			ri_PerformCheck(riinfo, &qkey, qplan,
 							fk_rel, pk_rel,
-							old_row, new_row,
-							true,	/* must detect new rows */
+							oldslot, newslot,
+							true,		/* must detect new rows */
 							SPI_OK_UPDATE);
 
 			if (SPI_finish() != SPI_OK_FINISH)
@@ -1251,7 +1238,7 @@ ri_setnull(TriggerData *trigdata)
 	const RI_ConstraintInfo *riinfo;
 	Relation	fk_rel;
 	Relation	pk_rel;
-	HeapTuple	old_row;
+	TupleTableSlot *oldslot;
 	RI_QueryKey qkey;
 	SPIPlanPtr	qplan;
 	int			i;
@@ -1270,7 +1257,7 @@ ri_setnull(TriggerData *trigdata)
 	 */
 	fk_rel = heap_open(riinfo->fk_relid, RowExclusiveLock);
 	pk_rel = trigdata->tg_relation;
-	old_row = trigdata->tg_trigtuple;
+	oldslot = trigdata->tg_trigslot;
 
 	switch (riinfo->confmatchtype)
 	{
@@ -1286,7 +1273,7 @@ ri_setnull(TriggerData *trigdata)
 			 */
 		case FKCONSTR_MATCH_SIMPLE:
 		case FKCONSTR_MATCH_FULL:
-			switch (ri_NullCheck(old_row, riinfo, true))
+			switch (ri_NullCheck(oldslot, riinfo, true))
 			{
 				case RI_KEYS_ALL_NULL:
 				case RI_KEYS_SOME_NULL:
@@ -1311,9 +1298,9 @@ ri_setnull(TriggerData *trigdata)
 			 */
 			if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
 			{
-				HeapTuple	new_row = trigdata->tg_newtuple;
+				TupleTableSlot	*newslot = trigdata->tg_newslot;
 
-				if (ri_KeysEqual(pk_rel, old_row, new_row, riinfo, true))
+				if (ri_KeysEqual(pk_rel, oldslot, newslot, riinfo, true))
 				{
 					heap_close(fk_rel, RowExclusiveLock);
 					return PointerGetDatum(NULL);
@@ -1385,8 +1372,8 @@ ri_setnull(TriggerData *trigdata)
 			 */
 			ri_PerformCheck(riinfo, &qkey, qplan,
 							fk_rel, pk_rel,
-							old_row, NULL,
-							true,	/* must detect new rows */
+							oldslot, NULL,
+							true,		/* must detect new rows */
 							SPI_OK_UPDATE);
 
 			if (SPI_finish() != SPI_OK_FINISH)
@@ -1468,7 +1455,7 @@ ri_setdefault(TriggerData *trigdata)
 	const RI_ConstraintInfo *riinfo;
 	Relation	fk_rel;
 	Relation	pk_rel;
-	HeapTuple	old_row;
+	TupleTableSlot *oldslot;
 	RI_QueryKey qkey;
 	SPIPlanPtr	qplan;
 
@@ -1486,7 +1473,7 @@ ri_setdefault(TriggerData *trigdata)
 	 */
 	fk_rel = heap_open(riinfo->fk_relid, RowExclusiveLock);
 	pk_rel = trigdata->tg_relation;
-	old_row = trigdata->tg_trigtuple;
+	oldslot = trigdata->tg_trigslot;
 
 	switch (riinfo->confmatchtype)
 	{
@@ -1502,7 +1489,7 @@ ri_setdefault(TriggerData *trigdata)
 			 */
 		case FKCONSTR_MATCH_SIMPLE:
 		case FKCONSTR_MATCH_FULL:
-			switch (ri_NullCheck(old_row, riinfo, true))
+			switch (ri_NullCheck(oldslot, riinfo, true))
 			{
 				case RI_KEYS_ALL_NULL:
 				case RI_KEYS_SOME_NULL:
@@ -1527,9 +1514,9 @@ ri_setdefault(TriggerData *trigdata)
 			 */
 			if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
 			{
-				HeapTuple	new_row = trigdata->tg_newtuple;
+				TupleTableSlot *newslot = trigdata->tg_newslot;
 
-				if (ri_KeysEqual(pk_rel, old_row, new_row, riinfo, true))
+				if (ri_KeysEqual(pk_rel, oldslot, newslot, riinfo, true))
 				{
 					heap_close(fk_rel, RowExclusiveLock);
 					return PointerGetDatum(NULL);
@@ -1602,8 +1589,8 @@ ri_setdefault(TriggerData *trigdata)
 			 */
 			ri_PerformCheck(riinfo, &qkey, qplan,
 							fk_rel, pk_rel,
-							old_row, NULL,
-							true,	/* must detect new rows */
+							oldslot, NULL,
+							true,		/* must detect new rows */
 							SPI_OK_UPDATE);
 
 			if (SPI_finish() != SPI_OK_FINISH)
@@ -1659,7 +1646,7 @@ ri_setdefault(TriggerData *trigdata)
  */
 bool
 RI_FKey_pk_upd_check_required(Trigger *trigger, Relation pk_rel,
-							  HeapTuple old_row, HeapTuple new_row)
+							  TupleTableSlot *oldslot, TupleTableSlot *newslot)
 {
 	const RI_ConstraintInfo *riinfo;
 
@@ -1677,11 +1664,11 @@ RI_FKey_pk_upd_check_required(Trigger *trigger, Relation pk_rel,
 			 * If any old key value is NULL, the row could not have been
 			 * referenced by an FK row, so no check is needed.
 			 */
-			if (ri_NullCheck(old_row, riinfo, true) != RI_KEYS_NONE_NULL)
+			if (ri_NullCheck(oldslot, riinfo, true) != RI_KEYS_NONE_NULL)
 				return false;
 
 			/* If all old and new key values are equal, no check is needed */
-			if (ri_KeysEqual(pk_rel, old_row, new_row, riinfo, true))
+			if (ri_KeysEqual(pk_rel, oldslot, newslot, riinfo, true))
 				return false;
 
 			/* Else we need to fire the trigger. */
@@ -1716,7 +1703,7 @@ RI_FKey_pk_upd_check_required(Trigger *trigger, Relation pk_rel,
  */
 bool
 RI_FKey_fk_upd_check_required(Trigger *trigger, Relation fk_rel,
-							  HeapTuple old_row, HeapTuple new_row)
+							TupleTableSlot *oldslot, TupleTableSlot *newslot)
 {
 	const RI_ConstraintInfo *riinfo;
 
@@ -1733,7 +1720,7 @@ RI_FKey_fk_upd_check_required(Trigger *trigger, Relation fk_rel,
 			 * If any new key value is NULL, the row must satisfy the
 			 * constraint, so no check is needed.
 			 */
-			if (ri_NullCheck(new_row, riinfo, false) != RI_KEYS_NONE_NULL)
+			if (ri_NullCheck(newslot, riinfo, false) != RI_KEYS_NONE_NULL)
 				return false;
 
 			/*
@@ -1744,11 +1731,11 @@ RI_FKey_fk_upd_check_required(Trigger *trigger, Relation fk_rel,
 			 * UPDATE check.  (We could skip this if we knew the INSERT
 			 * trigger already fired, but there is no easy way to know that.)
 			 */
-			if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(old_row->t_data)))
+			if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(oldslot->tts_tuple->t_data)))
 				return true;
 
 			/* If all old and new key values are equal, no check is needed */
-			if (ri_KeysEqual(fk_rel, old_row, new_row, riinfo, false))
+			if (ri_KeysEqual(fk_rel, oldslot, newslot, riinfo, false))
 				return false;
 
 			/* Else we need to fire the trigger. */
@@ -1764,7 +1751,7 @@ RI_FKey_fk_upd_check_required(Trigger *trigger, Relation fk_rel,
 			 * invalidated before the constraint is to be checked, but we
 			 * should queue the event to apply the check later.
 			 */
-			switch (ri_NullCheck(new_row, riinfo, false))
+			switch (ri_NullCheck(newslot, riinfo, false))
 			{
 				case RI_KEYS_ALL_NULL:
 					return false;
@@ -1782,11 +1769,11 @@ RI_FKey_fk_upd_check_required(Trigger *trigger, Relation fk_rel,
 			 * UPDATE check.  (We could skip this if we knew the INSERT
 			 * trigger already fired, but there is no easy way to know that.)
 			 */
-			if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(old_row->t_data)))
+			if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(oldslot->tts_tuple->t_data)))
 				return true;
 
 			/* If all old and new key values are equal, no check is needed */
-			if (ri_KeysEqual(fk_rel, old_row, new_row, riinfo, false))
+			if (ri_KeysEqual(fk_rel, oldslot, newslot, riinfo, false))
 				return false;
 
 			/* Else we need to fire the trigger. */
@@ -2035,9 +2022,11 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 	/* Did we find a tuple violating the constraint? */
 	if (SPI_processed > 0)
 	{
-		HeapTuple	tuple = SPI_tuptable->vals[0];
+		TupleTableSlot *slot = MakeSingleTupleTableSlot(SPI_tuptable->tupdesc);
 		TupleDesc	tupdesc = SPI_tuptable->tupdesc;
 		RI_ConstraintInfo fake_riinfo;
+
+		slot = ExecStoreTuple(SPI_tuptable->vals[0], slot, InvalidBuffer, false);
 
 		/*
 		 * The columns to look at in the result tuple are 1..N, not whatever
@@ -2058,7 +2047,7 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 		 * disallows partially-null FK rows.
 		 */
 		if (fake_riinfo.confmatchtype == FKCONSTR_MATCH_FULL &&
-			ri_NullCheck(tuple, &fake_riinfo, false) != RI_KEYS_NONE_NULL)
+			ri_NullCheck(slot, &fake_riinfo, false) != RI_KEYS_NONE_NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_FOREIGN_KEY_VIOLATION),
 					 errmsg("insert or update on table \"%s\" violates foreign key constraint \"%s\"",
@@ -2075,8 +2064,10 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 		 */
 		ri_ReportViolation(&fake_riinfo,
 						   pk_rel, fk_rel,
-						   tuple, tupdesc,
+						   slot, tupdesc,
 						   RI_PLAN_CHECK_LOOKUPPK);
+
+		ExecDropSingleTupleTableSlot(slot);
 	}
 
 	if (SPI_finish() != SPI_OK_FINISH)
@@ -2615,11 +2606,10 @@ static bool
 ri_PerformCheck(const RI_ConstraintInfo *riinfo,
 				RI_QueryKey *qkey, SPIPlanPtr qplan,
 				Relation fk_rel, Relation pk_rel,
-				HeapTuple old_tuple, HeapTuple new_tuple,
+				TupleTableSlot *oldslot, TupleTableSlot *newslot,
 				bool detectNewRows, int expect_OK)
 {
-	Relation	query_rel,
-				source_rel;
+	Relation	query_rel;
 	bool		source_is_pk;
 	Snapshot	test_snapshot;
 	Snapshot	crosscheck_snapshot;
@@ -2647,28 +2637,22 @@ ri_PerformCheck(const RI_ConstraintInfo *riinfo,
 	 * need some less klugy way to determine this.
 	 */
 	if (qkey->constr_queryno == RI_PLAN_CHECK_LOOKUPPK)
-	{
-		source_rel = fk_rel;
 		source_is_pk = false;
-	}
 	else
-	{
-		source_rel = pk_rel;
 		source_is_pk = true;
-	}
 
 	/* Extract the parameters to be passed into the query */
-	if (new_tuple)
+	if (newslot)
 	{
-		ri_ExtractValues(source_rel, new_tuple, riinfo, source_is_pk,
+		ri_ExtractValues(newslot, riinfo, source_is_pk,
 						 vals, nulls);
-		if (old_tuple)
-			ri_ExtractValues(source_rel, old_tuple, riinfo, source_is_pk,
+		if (oldslot)
+			ri_ExtractValues(oldslot, riinfo, source_is_pk,
 							 vals + riinfo->nkeys, nulls + riinfo->nkeys);
 	}
 	else
 	{
-		ri_ExtractValues(source_rel, old_tuple, riinfo, source_is_pk,
+		ri_ExtractValues(oldslot, riinfo, source_is_pk,
 						 vals, nulls);
 	}
 
@@ -2738,7 +2722,7 @@ ri_PerformCheck(const RI_ConstraintInfo *riinfo,
 		(SPI_processed == 0) == (qkey->constr_queryno == RI_PLAN_CHECK_LOOKUPPK))
 		ri_ReportViolation(riinfo,
 						   pk_rel, fk_rel,
-						   new_tuple ? new_tuple : old_tuple,
+						   newslot ? newslot : oldslot,
 						   NULL,
 						   qkey->constr_queryno);
 
@@ -2749,11 +2733,9 @@ ri_PerformCheck(const RI_ConstraintInfo *riinfo,
  * Extract fields from a tuple into Datum/nulls arrays
  */
 static void
-ri_ExtractValues(Relation rel, HeapTuple tup,
-				 const RI_ConstraintInfo *riinfo, bool rel_is_pk,
-				 Datum *vals, char *nulls)
+ri_ExtractValues(TupleTableSlot *slot, const RI_ConstraintInfo *riinfo,
+				bool rel_is_pk, Datum *vals, char *nulls)
 {
-	TupleDesc	tupdesc = rel->rd_att;
 	const int16 *attnums;
 	int			i;
 	bool		isnull;
@@ -2765,8 +2747,7 @@ ri_ExtractValues(Relation rel, HeapTuple tup,
 
 	for (i = 0; i < riinfo->nkeys; i++)
 	{
-		vals[i] = heap_getattr(tup, attnums[i], tupdesc,
-							   &isnull);
+		vals[i] = slot_getattr(slot, attnums[i], &isnull);
 		nulls[i] = isnull ? 'n' : ' ';
 	}
 }
@@ -2783,7 +2764,7 @@ ri_ExtractValues(Relation rel, HeapTuple tup,
 static void
 ri_ReportViolation(const RI_ConstraintInfo *riinfo,
 				   Relation pk_rel, Relation fk_rel,
-				   HeapTuple violator, TupleDesc tupdesc,
+				   TupleTableSlot *violator, TupleDesc tupdesc,
 				   int queryno)
 {
 	StringInfoData key_names;
@@ -2862,7 +2843,7 @@ ri_ReportViolation(const RI_ConstraintInfo *riinfo,
 					   *val;
 
 			name = SPI_fname(tupdesc, fnum);
-			val = SPI_getvalue(violator, tupdesc, fnum);
+			val = SPI_getslotvalue(violator, fnum);
 			if (!val)
 				val = "null";
 
@@ -2915,7 +2896,7 @@ ri_ReportViolation(const RI_ConstraintInfo *riinfo,
  * ----------
  */
 static int
-ri_NullCheck(HeapTuple tup,
+ri_NullCheck(TupleTableSlot *slot,
 			 const RI_ConstraintInfo *riinfo, bool rel_is_pk)
 {
 	const int16 *attnums;
@@ -2930,7 +2911,7 @@ ri_NullCheck(HeapTuple tup,
 
 	for (i = 0; i < riinfo->nkeys; i++)
 	{
-		if (heap_attisnull(tup, attnums[i]))
+		if (slot_attisnull(slot, attnums[i]))
 			nonenull = false;
 		else
 			allnull = false;
@@ -3081,10 +3062,9 @@ ri_HashPreparedPlan(RI_QueryKey *key, SPIPlanPtr plan)
  * ----------
  */
 static bool
-ri_KeysEqual(Relation rel, HeapTuple oldtup, HeapTuple newtup,
+ri_KeysEqual(Relation rel, TupleTableSlot *oldslot, TupleTableSlot *newslot,
 			 const RI_ConstraintInfo *riinfo, bool rel_is_pk)
 {
-	TupleDesc	tupdesc = RelationGetDescr(rel);
 	const int16 *attnums;
 	const Oid  *eq_oprs;
 	int			i;
@@ -3109,14 +3089,14 @@ ri_KeysEqual(Relation rel, HeapTuple oldtup, HeapTuple newtup,
 		/*
 		 * Get one attribute's oldvalue. If it is NULL - they're not equal.
 		 */
-		oldvalue = heap_getattr(oldtup, attnums[i], tupdesc, &isnull);
+		oldvalue = slot_getattr(oldslot, attnums[i], &isnull);
 		if (isnull)
 			return false;
 
 		/*
 		 * Get one attribute's newvalue. If it is NULL - they're not equal.
 		 */
-		newvalue = heap_getattr(newtup, attnums[i], tupdesc, &isnull);
+		newvalue = slot_getattr(newslot, attnums[i], &isnull);
 		if (isnull)
 			return false;
 

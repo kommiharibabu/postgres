@@ -345,7 +345,7 @@ funny_dup17(PG_FUNCTION_ARGS)
 	bool	   *recursion;
 	Relation	rel;
 	TupleDesc	tupdesc;
-	HeapTuple	tuple;
+	TupleTableSlot *slot;
 	char	   *query,
 			   *fieldval,
 			   *fieldtype;
@@ -357,7 +357,7 @@ funny_dup17(PG_FUNCTION_ARGS)
 	if (!CALLED_AS_TRIGGER(fcinfo))
 		elog(ERROR, "funny_dup17: not fired by trigger manager");
 
-	tuple = trigdata->tg_trigtuple;
+	slot = trigdata->tg_trigslot;
 	rel = trigdata->tg_relation;
 	tupdesc = rel->rd_att;
 	if (TRIGGER_FIRED_BEFORE(trigdata->tg_event))
@@ -385,17 +385,17 @@ funny_dup17(PG_FUNCTION_ARGS)
 	if (*level == 17)
 	{
 		*recursion = false;
-		return PointerGetDatum(tuple);
+		return PointerGetDatum(slot->tts_tuple);
 	}
 
 	if (!(*recursion))
-		return PointerGetDatum(tuple);
+		return PointerGetDatum(slot->tts_tuple);
 
 	(*level)++;
 
 	SPI_connect();
 
-	fieldval = SPI_getvalue(tuple, tupdesc, 1);
+	fieldval = SPI_getslotvalue(slot, 1);
 	fieldtype = SPI_gettype(tupdesc, 1);
 
 	query = (char *) palloc(100 + NAMEDATALEN * 3 +
@@ -441,7 +441,7 @@ funny_dup17(PG_FUNCTION_ARGS)
 	if (*level == 0)
 		*xid = InvalidTransactionId;
 
-	return PointerGetDatum(tuple);
+	return PointerGetDatum(slot->tts_tuple);
 }
 
 #define TTDUMMY_INFINITY	999999
@@ -466,8 +466,8 @@ ttdummy(PG_FUNCTION_ARGS)
 	char	   *cnulls;			/* column nulls */
 	char	   *relname;		/* triggered relation name */
 	Relation	rel;			/* triggered relation */
-	HeapTuple	trigtuple;
-	HeapTuple	newtuple = NULL;
+	TupleTableSlot *trigslot;
+	TupleTableSlot *newslot = NULL;
 	HeapTuple	rettuple;
 	TupleDesc	tupdesc;		/* tuple description */
 	int			natts;			/* # of attributes */
@@ -484,9 +484,9 @@ ttdummy(PG_FUNCTION_ARGS)
 	if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
 		elog(ERROR, "ttdummy: cannot process INSERT event");
 	if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
-		newtuple = trigdata->tg_newtuple;
+		newslot = trigdata->tg_newslot;
 
-	trigtuple = trigdata->tg_trigtuple;
+	trigslot = trigdata->tg_trigslot;
 
 	rel = trigdata->tg_relation;
 	relname = SPI_getrelname(rel);
@@ -495,7 +495,8 @@ ttdummy(PG_FUNCTION_ARGS)
 	if (ttoff)					/* OFF - nothing to do */
 	{
 		pfree(relname);
-		return PointerGetDatum((newtuple != NULL) ? newtuple : trigtuple);
+		return PointerGetDatum((newslot != NULL) ?
+				newslot->tts_tuple : trigslot->tts_tuple);
 	}
 
 	trigger = trigdata->tg_trigger;
@@ -519,20 +520,20 @@ ttdummy(PG_FUNCTION_ARGS)
 				 relname, args[i]);
 	}
 
-	oldon = SPI_getbinval(trigtuple, tupdesc, attnum[0], &isnull);
+	oldon = SPI_getslotbinval(trigslot, attnum[0], &isnull);
 	if (isnull)
 		elog(ERROR, "ttdummy (%s): %s must be NOT NULL", relname, args[0]);
 
-	oldoff = SPI_getbinval(trigtuple, tupdesc, attnum[1], &isnull);
+	oldoff = SPI_getslotbinval(trigslot, attnum[1], &isnull);
 	if (isnull)
 		elog(ERROR, "ttdummy (%s): %s must be NOT NULL", relname, args[1]);
 
-	if (newtuple != NULL)		/* UPDATE */
+	if (newslot != NULL)		/* UPDATE */
 	{
-		newon = SPI_getbinval(newtuple, tupdesc, attnum[0], &isnull);
+		newon = SPI_getslotbinval(newslot, attnum[0], &isnull);
 		if (isnull)
 			elog(ERROR, "ttdummy (%s): %s must be NOT NULL", relname, args[0]);
-		newoff = SPI_getbinval(newtuple, tupdesc, attnum[1], &isnull);
+		newoff = SPI_getslotbinval(newslot, attnum[1], &isnull);
 		if (isnull)
 			elog(ERROR, "ttdummy (%s): %s must be NOT NULL", relname, args[1]);
 
@@ -567,13 +568,13 @@ ttdummy(PG_FUNCTION_ARGS)
 	cnulls = (char *) palloc(natts * sizeof(char));
 	for (i = 0; i < natts; i++)
 	{
-		cvals[i] = SPI_getbinval((newtuple != NULL) ? newtuple : trigtuple,
-								 tupdesc, i + 1, &isnull);
+		cvals[i] = SPI_getslotbinval((newslot != NULL) ? newslot : trigslot,
+								 i + 1, &isnull);
 		cnulls[i] = (isnull) ? 'n' : ' ';
 	}
 
 	/* change date column(s) */
-	if (newtuple)				/* UPDATE */
+	if (newslot)				/* UPDATE */
 	{
 		cvals[attnum[0] - 1] = newoff;	/* start_date eq current date */
 		cnulls[attnum[0] - 1] = ' ';
@@ -626,10 +627,10 @@ ttdummy(PG_FUNCTION_ARGS)
 		elog(ERROR, "ttdummy (%s): SPI_execp returned %d", relname, ret);
 
 	/* Tuple to return to upper Executor ... */
-	if (newtuple)				/* UPDATE */
-		rettuple = SPI_modifytuple(rel, trigtuple, 1, &(attnum[1]), &newoff, NULL);
-	else						/* DELETE */
-		rettuple = trigtuple;
+	if (newslot)				/* UPDATE */
+		trigslot = SPI_modifyslot(trigslot, 1, &(attnum[1]), &newoff, NULL);
+
+	rettuple = trigslot->tts_tuple;
 
 	SPI_finish();				/* don't forget say Bye to SPI mgr */
 

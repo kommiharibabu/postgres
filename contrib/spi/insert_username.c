@@ -29,7 +29,7 @@ insert_username(PG_FUNCTION_ARGS)
 	char	  **args;			/* arguments */
 	char	   *relname;		/* triggered relation name */
 	Relation	rel;			/* triggered relation */
-	HeapTuple	rettuple = NULL;
+	TupleTableSlot *retslot;
 	TupleDesc	tupdesc;		/* tuple description */
 	int			attnum;
 
@@ -45,9 +45,9 @@ insert_username(PG_FUNCTION_ARGS)
 		elog(ERROR, "insert_username: must be fired before event");
 
 	if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
-		rettuple = trigdata->tg_trigtuple;
+		retslot = trigdata->tg_trigslot;
 	else if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
-		rettuple = trigdata->tg_newtuple;
+		retslot = trigdata->tg_newslot;
 	else
 		/* internal error */
 		elog(ERROR, "insert_username: cannot process DELETE events");
@@ -83,10 +83,10 @@ insert_username(PG_FUNCTION_ARGS)
 	newnull = false;
 
 	/* construct new tuple */
-	rettuple = heap_modify_tuple_by_cols(rettuple, tupdesc,
+	retslot = heap_modify_slot_by_cols(retslot,
 										 1, &attnum, &newval, &newnull);
 
 	pfree(relname);
 
-	return PointerGetDatum(rettuple);
+	return PointerGetDatum(retslot->tts_tuple);
 }

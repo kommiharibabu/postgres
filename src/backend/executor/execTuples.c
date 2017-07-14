@@ -116,6 +116,7 @@ MakeTupleTableSlot(void)
 	slot->tts_shouldFree = false;
 	slot->tts_shouldFreeMin = false;
 	slot->tts_tuple = NULL;
+	ItemPointerSetInvalid(&(slot->tts_tid));
 	slot->tts_tupleDescriptor = NULL;
 	slot->tts_mcxt = CurrentMemoryContext;
 	slot->tts_buffer = InvalidBuffer;
@@ -369,6 +370,8 @@ ExecStoreTuple(HeapTuple tuple,
 			IncrBufferRefCount(buffer);
 	}
 
+	ItemPointerCopy(&(tuple->t_self), &(slot->tts_tid));
+
 	return slot;
 }
 
@@ -424,6 +427,63 @@ ExecStoreMinimalTuple(MinimalTuple mtup,
 	/* Mark extracted state invalid */
 	slot->tts_nvalid = 0;
 
+	return slot;
+}
+
+/*
+ * heap_modify_slot_by_cols
+ *		form a new tuple from an old tuple and a set of replacement values.
+ *
+ * This is like heap_modify_tuple, except that instead of specifying which
+ * column(s) to replace by a boolean map, an array of target column numbers
+ * is used.  This is often more convenient when a fixed number of columns
+ * are to be replaced.  The replCols, replValues, and replIsnull arrays must
+ * be of length nCols.  Target column numbers are indexed from 1.
+ *
+ * The result is allocated in the current memory context.
+ */
+TupleTableSlot*
+heap_modify_slot_by_cols(TupleTableSlot *slot,
+						 int nCols,
+						 int *replCols,
+						 Datum *replValues,
+						 bool *replIsnull)
+{
+	int			numberOfAttributes = slot->tts_tupleDescriptor->natts;
+	HeapTuple	newTuple;
+	int			i;
+
+	slot_getallattrs(slot);
+
+	for (i = 0; i < nCols; i++)
+	{
+		int			attnum = replCols[i];
+
+		if (attnum <= 0 || attnum > numberOfAttributes)
+			elog(ERROR, "invalid column number %d", attnum);
+		slot->tts_values[attnum - 1] = replValues[i];
+		slot->tts_isnull[attnum - 1] = replIsnull[i];
+	}
+
+	/*
+	 * create a new tuple from the values and isnull arrays
+	 */
+	newTuple = heap_form_tuple(slot->tts_tupleDescriptor, slot->tts_values, slot->tts_isnull);
+
+	/*
+	 * copy the identification info of the old tuple: t_ctid, t_self, and OID
+	 * (if any)
+	 */
+	newTuple->t_data->t_ctid = slot->tts_tuple->t_data->t_ctid;
+	newTuple->t_self = slot->tts_tuple->t_self;
+	newTuple->t_tableOid = slot->tts_tuple->t_tableOid;
+	if (slot->tts_tupleDescriptor->tdhasoid)
+		HeapTupleSetOid(newTuple, HeapTupleGetOid(slot->tts_tuple));
+
+	if (slot->tts_shouldFree)
+		heap_freetuple(slot->tts_tuple);
+
+	slot->tts_tuple = newTuple;
 	return slot;
 }
 
