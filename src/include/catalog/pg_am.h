@@ -59,6 +59,7 @@ typedef FormData_pg_am *Form_pg_am;
  * ----------------
  */
 #define AMTYPE_INDEX					'i' /* index access method */
+#define AMTYPE_TABLE					't' /* table access method */
 
 /* ----------------
  *		initial contents of pg_am
