@@ -84,6 +84,14 @@ typedef BulkInsertState (*GetBulkInsertState_function) (void);
 typedef void (*FreeBulkInsertState_function) (BulkInsertState bistate);
 typedef void (*ReleaseBulkInsertState_function) (BulkInsertState bistate);
 
+typedef RewriteState (*BeginHeapRewrite_function) (Relation OldHeap, Relation NewHeap,
+				   TransactionId OldestXmin, TransactionId FreezeXid,
+				   MultiXactId MultiXactCutoff, bool use_wal);
+typedef void (*EndHeapRewrite_function) (RewriteState state);
+typedef void (*RewriteHeapTuple_function) (RewriteState state, HeapTuple oldTuple,
+				   HeapTuple newTuple);
+typedef bool (*RewriteHeapDeadTuple_function) (RewriteState state, HeapTuple oldTuple);
+
 typedef StorageScanDesc(*ScanBegin_function) (Relation relation,
 											  Snapshot snapshot,
 											  int nkeys, ScanKey key,
@@ -157,6 +165,11 @@ typedef struct StorageAmRoutine
 	GetBulkInsertState_function getbulkinsertstate;
 	FreeBulkInsertState_function freebulkinsertstate;
 	ReleaseBulkInsertState_function releasebulkinsertstate;
+
+	BeginHeapRewrite_function begin_heap_rewrite;
+	EndHeapRewrite_function end_heap_rewrite;
+	RewriteHeapTuple_function rewrite_heap_tuple;
+	RewriteHeapDeadTuple_function rewrite_heap_dead_tuple;
 
 	/* Operations on relation scans */
 	ScanBegin_function scan_begin;

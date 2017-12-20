@@ -30,6 +30,8 @@ typedef void *StorageTuple;
 
 typedef struct BulkInsertStateData *BulkInsertState;
 
+/* struct definition is private to rewriteheap.c */
+typedef struct RewriteStateData *RewriteState;
 
 /*
  * slot storage routine functions

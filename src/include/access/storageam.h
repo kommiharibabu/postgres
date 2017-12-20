@@ -120,4 +120,12 @@ extern BulkInsertState storage_getbulkinsertstate(Relation rel);
 extern void storage_freebulkinsertstate(Relation rel, BulkInsertState bistate);
 extern void storage_releasebulkinsertstate(Relation rel, BulkInsertState bistate);
 
+extern RewriteState storage_begin_rewrite(Relation OldHeap, Relation NewHeap,
+				   TransactionId OldestXmin, TransactionId FreezeXid,
+				   MultiXactId MultiXactCutoff, bool use_wal);
+extern void storage_end_rewrite(Relation rel, RewriteState state);
+extern void storage_rewrite_tuple(Relation rel, RewriteState state, HeapTuple oldTuple,
+				   HeapTuple newTuple);
+extern bool storage_rewrite_dead_tuple(Relation rel, RewriteState state, HeapTuple oldTuple);
+
 #endif

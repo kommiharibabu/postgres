@@ -401,3 +401,36 @@ storage_releasebulkinsertstate(Relation rel, BulkInsertState bistate)
 {
 	rel->rd_stamroutine->releasebulkinsertstate(bistate);
 }
+
+/*
+ * -------------------
+ * storage tuple rewrite functions
+ * -------------------
+ */
+RewriteState
+storage_begin_rewrite(Relation OldHeap, Relation NewHeap,
+				   TransactionId OldestXmin, TransactionId FreezeXid,
+				   MultiXactId MultiXactCutoff, bool use_wal)
+{
+	return NewHeap->rd_stamroutine->begin_heap_rewrite(OldHeap, NewHeap,
+			OldestXmin, FreezeXid, MultiXactCutoff, use_wal);
+}
+
+void
+storage_end_rewrite(Relation rel, RewriteState state)
+{
+	rel->rd_stamroutine->end_heap_rewrite(state);
+}
+
+void
+storage_rewrite_tuple(Relation rel, RewriteState state, HeapTuple oldTuple,
+				   HeapTuple newTuple)
+{
+	rel->rd_stamroutine->rewrite_heap_tuple(state, oldTuple, newTuple);
+}
+
+bool
+storage_rewrite_dead_tuple(Relation rel, RewriteState state, HeapTuple oldTuple)
+{
+	return rel->rd_stamroutine->rewrite_heap_dead_tuple(state, oldTuple);
+}

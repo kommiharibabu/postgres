@@ -22,6 +22,7 @@
 
 #include "access/heapam.h"
 #include "access/relscan.h"
+#include "access/rewriteheap.h"
 #include "access/storageamapi.h"
 #include "pgstat.h"
 #include "utils/builtins.h"
@@ -331,6 +332,11 @@ heapam_storage_handler(PG_FUNCTION_ARGS)
 	amroutine->getbulkinsertstate = GetBulkInsertState;
 	amroutine->freebulkinsertstate = FreeBulkInsertState;
 	amroutine->releasebulkinsertstate = ReleaseBulkInsertStatePin;
+
+	amroutine->begin_heap_rewrite = begin_heap_rewrite;
+	amroutine->end_heap_rewrite = end_heap_rewrite;
+	amroutine->rewrite_heap_tuple = rewrite_heap_tuple;
+	amroutine->rewrite_heap_dead_tuple = rewrite_heap_dead_tuple;
 
 	PG_RETURN_POINTER(amroutine);
 }
