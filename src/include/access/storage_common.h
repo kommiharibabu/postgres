@@ -28,6 +28,9 @@
 /* A physical tuple coming from a storage AM scan */
 typedef void *StorageTuple;
 
+typedef struct BulkInsertStateData *BulkInsertState;
+
+
 /*
  * slot storage routine functions
  */

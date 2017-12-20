@@ -31,8 +31,6 @@
 #define HEAP_INSERT_FROZEN		0x0004
 #define HEAP_INSERT_SPECULATIVE 0x0008
 
-typedef struct BulkInsertStateData *BulkInsertState;
-
 /*
  * Possible lock modes for a tuple.
  */
@@ -148,7 +146,7 @@ extern void heap_get_latest_tid(Relation relation, Snapshot snapshot,
 extern void setLastTid(const ItemPointer tid);
 
 extern BulkInsertState GetBulkInsertState(void);
-extern void FreeBulkInsertState(BulkInsertState);
+extern void FreeBulkInsertState(BulkInsertState bistate);
 extern void ReleaseBulkInsertStatePin(BulkInsertState bistate);
 
 extern Oid heap_insert(Relation relation, HeapTuple tup, CommandId cid,

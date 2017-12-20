@@ -116,4 +116,8 @@ extern void storage_get_latest_tid(Relation relation,
 
 extern void storage_sync(Relation rel);
 
+extern BulkInsertState storage_getbulkinsertstate(Relation rel);
+extern void storage_freebulkinsertstate(Relation rel, BulkInsertState bistate);
+extern void storage_releasebulkinsertstate(Relation rel, BulkInsertState bistate);
+
 #endif

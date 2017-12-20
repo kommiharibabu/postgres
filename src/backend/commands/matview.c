@@ -52,7 +52,7 @@ typedef struct
 	Relation	transientrel;	/* relation to write to */
 	CommandId	output_cid;		/* cmin to insert in output tuples */
 	int			hi_options;		/* heap_insert performance options */
-	BulkInsertState bistate;	/* bulk insert state */
+	void       *bistate;		/* bulk insert state */
 } DR_transientrel;
 
 static int	matview_maintenance_depth = 0;
@@ -479,7 +479,7 @@ transientrel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	myState->hi_options = HEAP_INSERT_SKIP_FSM | HEAP_INSERT_FROZEN;
 	if (!XLogIsNeeded())
 		myState->hi_options |= HEAP_INSERT_SKIP_WAL;
-	myState->bistate = GetBulkInsertState();
+	myState->bistate = storage_getbulkinsertstate(transientrel);
 
 	/* Not using WAL requires smgr_targblock be initially invalid */
 	Assert(RelationGetTargetBlock(transientrel) == InvalidBlockNumber);
@@ -522,7 +522,7 @@ transientrel_shutdown(DestReceiver *self)
 {
 	DR_transientrel *myState = (DR_transientrel *) self;
 
-	FreeBulkInsertState(myState->bistate);
+	storage_freebulkinsertstate(myState->transientrel, myState->bistate);
 
 	/* If we skipped using WAL, must heap_sync before commit */
 	if (myState->hi_options & HEAP_INSERT_SKIP_WAL)

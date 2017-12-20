@@ -328,5 +328,9 @@ heapam_storage_handler(PG_FUNCTION_ARGS)
 	amroutine->tuple_get_latest_tid = heap_get_latest_tid;
 	amroutine->relation_sync = heap_sync;
 
+	amroutine->getbulkinsertstate = GetBulkInsertState;
+	amroutine->freebulkinsertstate = FreeBulkInsertState;
+	amroutine->releasebulkinsertstate = ReleaseBulkInsertStatePin;
+
 	PG_RETURN_POINTER(amroutine);
 }

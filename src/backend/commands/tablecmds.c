@@ -4384,7 +4384,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 	ListCell   *l;
 	EState	   *estate;
 	CommandId	mycid;
-	BulkInsertState bistate;
+	void       *bistate;
 	int			hi_options;
 	ExprState  *partqualstate = NULL;
 
@@ -4410,7 +4410,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 	if (newrel)
 	{
 		mycid = GetCurrentCommandId(true);
-		bistate = GetBulkInsertState();
+		bistate = storage_getbulkinsertstate(newrel);
 
 		hi_options = HEAP_INSERT_SKIP_FSM;
 		if (!XLogIsNeeded())
@@ -4685,7 +4685,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 	heap_close(oldrel, NoLock);
 	if (newrel)
 	{
-		FreeBulkInsertState(bistate);
+		storage_freebulkinsertstate(newrel, bistate);
 
 		/* If we skipped writing WAL, then we need to sync the heap. */
 		if (hi_options & HEAP_INSERT_SKIP_WAL)

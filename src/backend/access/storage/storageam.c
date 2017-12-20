@@ -378,3 +378,26 @@ storage_sync(Relation rel)
 {
 	rel->rd_stamroutine->relation_sync(rel);
 }
+
+/*
+ * -------------------
+ * storage Bulk Insert functions
+ * -------------------
+ */
+BulkInsertState
+storage_getbulkinsertstate(Relation rel)
+{
+	return rel->rd_stamroutine->getbulkinsertstate();
+}
+
+void
+storage_freebulkinsertstate(Relation rel, BulkInsertState bistate)
+{
+	rel->rd_stamroutine->freebulkinsertstate(bistate);
+}
+
+void
+storage_releasebulkinsertstate(Relation rel, BulkInsertState bistate)
+{
+	rel->rd_stamroutine->releasebulkinsertstate(bistate);
+}

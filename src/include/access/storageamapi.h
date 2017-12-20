@@ -80,6 +80,9 @@ typedef StorageTuple(*TupleFromDatum_function) (Datum data, Oid tableoid);
 
 typedef void (*RelationSync_function) (Relation relation);
 
+typedef BulkInsertState (*GetBulkInsertState_function) (void);
+typedef void (*FreeBulkInsertState_function) (BulkInsertState bistate);
+typedef void (*ReleaseBulkInsertState_function) (BulkInsertState bistate);
 
 typedef StorageScanDesc(*ScanBegin_function) (Relation relation,
 											  Snapshot snapshot,
@@ -150,6 +153,10 @@ typedef struct StorageAmRoutine
 	TupleFromDatum_function tuple_from_datum;
 
 	RelationSync_function relation_sync;	/* heap_sync */
+
+	GetBulkInsertState_function getbulkinsertstate;
+	FreeBulkInsertState_function freebulkinsertstate;
+	ReleaseBulkInsertState_function releasebulkinsertstate;
 
 	/* Operations on relation scans */
 	ScanBegin_function scan_begin;
