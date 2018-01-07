@@ -55,6 +55,21 @@ ConditionVariablePrepareToSleep(ConditionVariable *cv)
 	int			pgprocno = MyProc->pgprocno;
 
 	/*
+	 * If first time through in this process, create a WaitEventSet, which
+	 * we'll reuse for all condition variable sleeps.
+	 */
+	if (cv_wait_event_set == NULL)
+	{
+		WaitEventSet *new_event_set;
+
+		new_event_set = CreateWaitEventSet(TopMemoryContext, 1);
+		AddWaitEventToSet(new_event_set, WL_LATCH_SET, PGINVALID_SOCKET,
+						  MyLatch, NULL);
+		/* Don't set cv_wait_event_set until we have a correct WES. */
+		cv_wait_event_set = new_event_set;
+	}
+
+	/*
 	 * It's not legal to prepare a sleep until the previous sleep has been
 	 * completed or canceled.
 	 */
@@ -62,14 +77,6 @@ ConditionVariablePrepareToSleep(ConditionVariable *cv)
 
 	/* Record the condition variable on which we will sleep. */
 	cv_sleep_target = cv;
-
-	/* Create a reusable WaitEventSet. */
-	if (cv_wait_event_set == NULL)
-	{
-		cv_wait_event_set = CreateWaitEventSet(TopMemoryContext, 1);
-		AddWaitEventToSet(cv_wait_event_set, WL_LATCH_SET, PGINVALID_SOCKET,
-						  MyLatch, NULL);
-	}
 
 	/*
 	 * Reset my latch before adding myself to the queue and before entering
@@ -179,11 +186,14 @@ ConditionVariableCancelSleep(void)
 }
 
 /*
- * Wake up one sleeping process, assuming there is at least one.
+ * Wake up the oldest process sleeping on the CV, if there is any.
  *
- * The return value indicates whether or not we woke somebody up.
+ * Note: it's difficult to tell whether this has any real effect: we know
+ * whether we took an entry off the list, but the entry might only be a
+ * sentinel.  Hence, think twice before proposing that this should return
+ * a flag telling whether it woke somebody.
  */
-bool
+void
 ConditionVariableSignal(ConditionVariable *cv)
 {
 	PGPROC	   *proc = NULL;
@@ -196,33 +206,92 @@ ConditionVariableSignal(ConditionVariable *cv)
 
 	/* If we found someone sleeping, set their latch to wake them up. */
 	if (proc != NULL)
-	{
 		SetLatch(&proc->procLatch);
-		return true;
-	}
-
-	/* No sleeping processes. */
-	return false;
 }
 
 /*
- * Wake up all sleeping processes.
+ * Wake up all processes sleeping on the given CV.
  *
- * The return value indicates the number of processes we woke.
+ * This guarantees to wake all processes that were sleeping on the CV
+ * at time of call, but processes that add themselves to the list mid-call
+ * will typically not get awakened.
  */
-int
+void
 ConditionVariableBroadcast(ConditionVariable *cv)
 {
-	int			nwoken = 0;
+	int			pgprocno = MyProc->pgprocno;
+	PGPROC	   *proc = NULL;
+	bool		have_sentinel = false;
 
 	/*
-	 * Let's just do this the dumbest way possible.  We could try to dequeue
-	 * all the sleepers at once to save spinlock cycles, but it's a bit hard
-	 * to get that right in the face of possible sleep cancelations, and we
-	 * don't want to loop holding the mutex.
+	 * In some use-cases, it is common for awakened processes to immediately
+	 * re-queue themselves.  If we just naively try to reduce the wakeup list
+	 * to empty, we'll get into a potentially-indefinite loop against such a
+	 * process.  The semantics we really want are just to be sure that we have
+	 * wakened all processes that were in the list at entry.  We can use our
+	 * own cvWaitLink as a sentinel to detect when we've finished.
+	 *
+	 * A seeming flaw in this approach is that someone else might signal the
+	 * CV and in doing so remove our sentinel entry.  But that's fine: since
+	 * CV waiters are always added and removed in order, that must mean that
+	 * every previous waiter has been wakened, so we're done.  We'll get an
+	 * extra "set" on our latch from the someone else's signal, which is
+	 * slightly inefficient but harmless.
+	 *
+	 * We can't insert our cvWaitLink as a sentinel if it's already in use in
+	 * some other proclist.  While that's not expected to be true for typical
+	 * uses of this function, we can deal with it by simply canceling any
+	 * prepared CV sleep.  The next call to ConditionVariableSleep will take
+	 * care of re-establishing the lost state.
 	 */
-	while (ConditionVariableSignal(cv))
-		++nwoken;
+	ConditionVariableCancelSleep();
 
-	return nwoken;
+	/*
+	 * Inspect the state of the queue.  If it's empty, we have nothing to do.
+	 * If there's exactly one entry, we need only remove and signal that
+	 * entry.  Otherwise, remove the first entry and insert our sentinel.
+	 */
+	SpinLockAcquire(&cv->mutex);
+	/* While we're here, let's assert we're not in the list. */
+	Assert(!proclist_contains(&cv->wakeup, pgprocno, cvWaitLink));
+
+	if (!proclist_is_empty(&cv->wakeup))
+	{
+		proc = proclist_pop_head_node(&cv->wakeup, cvWaitLink);
+		if (!proclist_is_empty(&cv->wakeup))
+		{
+			proclist_push_tail(&cv->wakeup, pgprocno, cvWaitLink);
+			have_sentinel = true;
+		}
+	}
+	SpinLockRelease(&cv->mutex);
+
+	/* Awaken first waiter, if there was one. */
+	if (proc != NULL)
+		SetLatch(&proc->procLatch);
+
+	while (have_sentinel)
+	{
+		/*
+		 * Each time through the loop, remove the first wakeup list entry, and
+		 * signal it unless it's our sentinel.  Repeat as long as the sentinel
+		 * remains in the list.
+		 *
+		 * Notice that if someone else removes our sentinel, we will waken one
+		 * additional process before exiting.  That's intentional, because if
+		 * someone else signals the CV, they may be intending to waken some
+		 * third process that added itself to the list after we added the
+		 * sentinel.  Better to give a spurious wakeup (which should be
+		 * harmless beyond wasting some cycles) than to lose a wakeup.
+		 */
+		proc = NULL;
+		SpinLockAcquire(&cv->mutex);
+		if (!proclist_is_empty(&cv->wakeup))
+			proc = proclist_pop_head_node(&cv->wakeup, cvWaitLink);
+		have_sentinel = proclist_contains(&cv->wakeup, pgprocno, cvWaitLink);
+		SpinLockRelease(&cv->mutex);
+
+		if (proc != NULL && proc != MyProc)
+			SetLatch(&proc->procLatch);
+	}
 }
