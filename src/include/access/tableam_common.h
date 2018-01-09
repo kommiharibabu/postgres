@@ -56,9 +56,6 @@ typedef MinimalTuple (*SlotGetMinTuple_function) (TupleTableSlot *slot, bool pal
 
 typedef void (*SlotUpdateTableoid_function) (TupleTableSlot *slot, Oid tableoid);
 
-typedef void (*SpeculativeAbort_function) (Relation rel,
-										   TupleTableSlot *slot);
-
 typedef struct SlotTableAmRoutine
 {
 	/* Operations on TupleTableSlot */

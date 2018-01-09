@@ -15,6 +15,7 @@
 
 #include "access/genam.h"
 #include "access/heapam.h"
+#include "access/tableam.h"
 #include "access/sysattr.h"
 #include "access/htup_details.h"
 #include "access/xact.h"
@@ -2352,17 +2353,21 @@ ExecBRInsertTriggers(EState *estate, ResultRelInfo *relinfo,
 
 void
 ExecARInsertTriggers(EState *estate, ResultRelInfo *relinfo,
-					 HeapTuple trigtuple, List *recheckIndexes,
+					 TupleTableSlot *slot, List *recheckIndexes,
 					 TransitionCaptureState *transition_capture)
 {
 	TriggerDesc *trigdesc = relinfo->ri_TrigDesc;
 
 	if ((trigdesc && trigdesc->trig_insert_after_row) ||
 		(transition_capture && transition_capture->tcs_insert_new_table))
+	{
+		HeapTuple	trigtuple = ExecHeapifySlot(slot);
+
 		AfterTriggerSaveEvent(estate, relinfo, TRIGGER_EVENT_INSERT,
 							  true, NULL, trigtuple,
 							  recheckIndexes, NULL,
 							  transition_capture);
+	}
 }
 
 TupleTableSlot *
@@ -3017,9 +3022,10 @@ GetTupleForTrigger(EState *estate,
 				   TupleTableSlot **newSlot)
 {
 	Relation	relation = relinfo->ri_RelationDesc;
-	HeapTupleData tuple;
+	TableTuple tuple;
 	HeapTuple	result;
 	Buffer		buffer;
+	tuple_data	t_data;
 
 	if (newSlot != NULL)
 	{
@@ -3035,11 +3041,11 @@ GetTupleForTrigger(EState *estate,
 		 * lock tuple for update
 		 */
 ltrmark:;
-		tuple.t_self = *tid;
-		test = heap_lock_tuple(relation, &tuple,
-							   estate->es_output_cid,
-							   lockmode, LockWaitBlock,
-							   false, &buffer, &hufd);
+		test = table_lock_tuple(relation, tid, &tuple,
+								  estate->es_output_cid,
+								  lockmode, LockWaitBlock,
+								  false, &buffer, &hufd);
+		result = tuple;
 		switch (test)
 		{
 			case HeapTupleSelfUpdated:
@@ -3071,7 +3077,8 @@ ltrmark:;
 					ereport(ERROR,
 							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 							 errmsg("could not serialize access due to concurrent update")));
-				if (!ItemPointerEquals(&hufd.ctid, &tuple.t_self))
+				t_data = relation->rd_tableamroutine->get_tuple_data(tuple, TID);
+				if (!ItemPointerEquals(&hufd.ctid, &(t_data.tid)))
 				{
 					/* it was updated, so look at the updated version */
 					TupleTableSlot *epqslot;
@@ -3117,6 +3124,7 @@ ltrmark:;
 	{
 		Page		page;
 		ItemId		lp;
+		HeapTupleData tupledata;
 
 		buffer = ReadBuffer(relation, ItemPointerGetBlockNumber(tid));
 
@@ -3135,17 +3143,17 @@ ltrmark:;
 
 		Assert(ItemIdIsNormal(lp));
 
-		tuple.t_data = (HeapTupleHeader) PageGetItem(page, lp);
-		tuple.t_len = ItemIdGetLength(lp);
-		tuple.t_self = *tid;
-		tuple.t_tableOid = RelationGetRelid(relation);
+		tupledata.t_data = (HeapTupleHeader) PageGetItem(page, lp);
+		tupledata.t_len = ItemIdGetLength(lp);
+		tupledata.t_self = *tid;
+		tupledata.t_tableOid = RelationGetRelid(relation);
 
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+
+		result = heap_copytuple(&tupledata);
 	}
 
-	result = heap_copytuple(&tuple);
 	ReleaseBuffer(buffer);
-
 	return result;
 }
 
@@ -3951,8 +3959,8 @@ AfterTriggerExecute(AfterTriggerEvent event,
 	AfterTriggerShared evtshared = GetTriggerSharedData(event);
 	Oid			tgoid = evtshared->ats_tgoid;
 	TriggerData LocTriggerData;
-	HeapTupleData tuple1;
-	HeapTupleData tuple2;
+	TableTuple tuple1;
+	TableTuple tuple2;
 	HeapTuple	rettuple;
 	Buffer		buffer1 = InvalidBuffer;
 	Buffer		buffer2 = InvalidBuffer;
@@ -4025,10 +4033,9 @@ AfterTriggerExecute(AfterTriggerEvent event,
 		default:
 			if (ItemPointerIsValid(&(event->ate_ctid1)))
 			{
-				ItemPointerCopy(&(event->ate_ctid1), &(tuple1.t_self));
-				if (!heap_fetch(rel, SnapshotAny, &tuple1, &buffer1, false, NULL))
+				if (!table_fetch(rel, &(event->ate_ctid1), SnapshotAny, &tuple1, &buffer1, false, NULL))
 					elog(ERROR, "failed to fetch tuple1 for AFTER trigger");
-				LocTriggerData.tg_trigtuple = &tuple1;
+				LocTriggerData.tg_trigtuple = tuple1;
 				LocTriggerData.tg_trigtuplebuf = buffer1;
 			}
 			else
@@ -4042,10 +4049,9 @@ AfterTriggerExecute(AfterTriggerEvent event,
 				AFTER_TRIGGER_2CTID &&
 				ItemPointerIsValid(&(event->ate_ctid2)))
 			{
-				ItemPointerCopy(&(event->ate_ctid2), &(tuple2.t_self));
-				if (!heap_fetch(rel, SnapshotAny, &tuple2, &buffer2, false, NULL))
+				if (!table_fetch(rel, &(event->ate_ctid2), SnapshotAny, &tuple2, &buffer2, false, NULL))
 					elog(ERROR, "failed to fetch tuple2 for AFTER trigger");
-				LocTriggerData.tg_newtuple = &tuple2;
+				LocTriggerData.tg_newtuple = tuple2;
 				LocTriggerData.tg_newtuplebuf = buffer2;
 			}
 			else

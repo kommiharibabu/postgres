@@ -1916,13 +1916,13 @@ heap_getnext(HeapScanDesc scan, ScanDirection direction)
  */
 bool
 heap_fetch(Relation relation,
+		   ItemPointer tid,
 		   Snapshot snapshot,
 		   HeapTuple tuple,
 		   Buffer *userbuf,
 		   bool keep_buf,
 		   Relation stats_relation)
 {
-	ItemPointer tid = &(tuple->t_self);
 	ItemId		lp;
 	Buffer		buffer;
 	Page		page;
@@ -1956,7 +1956,6 @@ heap_fetch(Relation relation,
 			ReleaseBuffer(buffer);
 			*userbuf = InvalidBuffer;
 		}
-		tuple->t_data = NULL;
 		return false;
 	}
 
@@ -1978,13 +1977,13 @@ heap_fetch(Relation relation,
 			ReleaseBuffer(buffer);
 			*userbuf = InvalidBuffer;
 		}
-		tuple->t_data = NULL;
 		return false;
 	}
 
 	/*
-	 * fill in *tuple fields
+	 * fill in tuple fields and place it in stuple
 	 */
+	ItemPointerCopy(tid, &(tuple->t_self));
 	tuple->t_data = (HeapTupleHeader) PageGetItem(page, lp);
 	tuple->t_len = ItemIdGetLength(lp);
 	tuple->t_tableOid = RelationGetRelid(relation);
@@ -2334,7 +2333,6 @@ heap_get_latest_tid(Relation relation,
 		UnlockReleaseBuffer(buffer);
 	}							/* end of loop */
 }
-
 
 /*
  * UpdateXmaxHintBits - update tuple hint bits after xmax transaction ends
@@ -4642,7 +4640,7 @@ heap_lock_tuple(Relation relation, HeapTuple tuple,
 	tuple->t_tableOid = RelationGetRelid(relation);
 
 l3:
-	result = relation->rd_tableamroutine->snapshot_satisfiesUpdate(tuple, cid, *buffer);
+	result = HeapTupleSatisfiesUpdate(tuple, cid, *buffer);
 
 	if (result == HeapTupleInvisible)
 	{
@@ -4935,7 +4933,7 @@ l3:
 		 * or we must wait for the locking transaction or multixact; so below
 		 * we ensure that we grab buffer lock after the sleep.
 		 */
-		if (require_sleep && result == HeapTupleUpdated)
+		if (require_sleep && (result == HeapTupleUpdated))
 		{
 			LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 			goto failed;
@@ -5706,9 +5704,8 @@ heap_lock_updated_tuple_rec(Relation rel, ItemPointer tid, TransactionId xid,
 		new_infomask = 0;
 		new_xmax = InvalidTransactionId;
 		block = ItemPointerGetBlockNumber(&tupid);
-		ItemPointerCopy(&tupid, &(mytup.t_self));
 
-		if (!heap_fetch(rel, SnapshotAny, &mytup, &buf, false, NULL))
+		if (!heap_fetch(rel, &tupid, SnapshotAny, &mytup, &buf, false, NULL))
 		{
 			/*
 			 * if we fail to find the updated version of the tuple, it's
@@ -6055,13 +6052,17 @@ heap_lock_updated_tuple(Relation rel, HeapTuple tuple, ItemPointer ctid,
  * An explicit confirmation WAL record also makes logical decoding simpler.
  */
 void
-heap_finish_speculative(Relation relation, HeapTuple tuple)
+heap_finish_speculative(Relation relation, TupleTableSlot *slot)
 {
+	HeapamTuple *stuple = (HeapamTuple *) slot->tts_storage;
+	HeapTuple	tuple = stuple->hst_heaptuple;
 	Buffer		buffer;
 	Page		page;
 	OffsetNumber offnum;
 	ItemId		lp = NULL;
 	HeapTupleHeader htup;
+
+	Assert(slot->tts_speculativeToken != 0);
 
 	buffer = ReadBuffer(relation, ItemPointerGetBlockNumber(&(tuple->t_self)));
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
@@ -6117,6 +6118,7 @@ heap_finish_speculative(Relation relation, HeapTuple tuple)
 	END_CRIT_SECTION();
 
 	UnlockReleaseBuffer(buffer);
+	slot->tts_speculativeToken = 0;
 }
 
 /*
@@ -6146,8 +6148,10 @@ heap_finish_speculative(Relation relation, HeapTuple tuple)
  * confirmation records.
  */
 void
-heap_abort_speculative(Relation relation, HeapTuple tuple)
+heap_abort_speculative(Relation relation, TupleTableSlot *slot)
 {
+	HeapamTuple *stuple = (HeapamTuple *) slot->tts_storage;
+	HeapTuple	tuple = stuple->hst_heaptuple;
 	TransactionId xid = GetCurrentTransactionId();
 	ItemPointer tid = &(tuple->t_self);
 	ItemId		lp;
@@ -6156,6 +6160,10 @@ heap_abort_speculative(Relation relation, HeapTuple tuple)
 	BlockNumber block;
 	Buffer		buffer;
 
+	/*
+	 * Assert(slot->tts_speculativeToken != 0); This needs some update in
+	 * toast
+	 */
 	Assert(ItemPointerIsValid(tid));
 
 	block = ItemPointerGetBlockNumber(tid);
@@ -6269,6 +6277,7 @@ heap_abort_speculative(Relation relation, HeapTuple tuple)
 
 	/* count deletion, as we counted the insertion too */
 	pgstat_count_heap_delete(relation);
+	slot->tts_speculativeToken = 0;
 }
 
 /*

@@ -134,7 +134,7 @@ extern void heap_parallelscan_initialize(ParallelHeapScanDesc target,
 extern void heap_parallelscan_reinitialize(ParallelHeapScanDesc parallel_scan);
 extern HeapScanDesc heap_beginscan_parallel(Relation, ParallelHeapScanDesc);
 
-extern bool heap_fetch(Relation relation, Snapshot snapshot,
+extern bool heap_fetch(Relation relation, ItemPointer tid, Snapshot snapshot,
 		   HeapTuple tuple, Buffer *userbuf, bool keep_buf,
 		   Relation stats_relation);
 extern bool heap_hot_search_buffer(ItemPointer tid, Relation relation,
@@ -142,7 +142,6 @@ extern bool heap_hot_search_buffer(ItemPointer tid, Relation relation,
 					   bool *all_dead, bool first_call);
 extern bool heap_hot_search(ItemPointer tid, Relation relation,
 				Snapshot snapshot, bool *all_dead);
-
 extern void heap_get_latest_tid(Relation relation, Snapshot snapshot,
 					ItemPointer tid);
 extern void setLastTid(const ItemPointer tid);
@@ -158,8 +157,8 @@ extern void heap_multi_insert(Relation relation, HeapTuple *tuples, int ntuples,
 extern HTSU_Result heap_delete(Relation relation, ItemPointer tid,
 			CommandId cid, Snapshot crosscheck, bool wait,
 			HeapUpdateFailureData *hufd);
-extern void heap_finish_speculative(Relation relation, HeapTuple tuple);
-extern void heap_abort_speculative(Relation relation, HeapTuple tuple);
+extern void heap_finish_speculative(Relation relation, TupleTableSlot *slot);
+extern void heap_abort_speculative(Relation relation, TupleTableSlot *slot);
 extern HTSU_Result heap_update(Relation relation, ItemPointer otid,
 			HeapTuple newtup,
 			CommandId cid, Snapshot crosscheck, bool wait,
@@ -168,6 +167,7 @@ extern HTSU_Result heap_lock_tuple(Relation relation, HeapTuple tuple,
 				CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
 				bool follow_update,
 				Buffer *buffer, HeapUpdateFailureData *hufd);
+
 extern void heap_inplace_update(Relation relation, HeapTuple tuple);
 extern bool heap_freeze_tuple(HeapTupleHeader tuple,
 				  TransactionId relfrozenxid, TransactionId relminmxid,
