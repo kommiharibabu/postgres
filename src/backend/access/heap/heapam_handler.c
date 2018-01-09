@@ -35,5 +35,7 @@ heap_tableam_handler(PG_FUNCTION_ARGS)
 	amroutine->snapshot_satisfiesUpdate = HeapTupleSatisfiesUpdate;
 	amroutine->snapshot_satisfiesVacuum = HeapTupleSatisfiesVacuum;
 
+	amroutine->slot_storageam = slot_tableam_handler;
+
 	PG_RETURN_POINTER(amroutine);
 }

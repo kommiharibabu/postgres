@@ -41,6 +41,8 @@ typedef struct TableAmRoutine
 	SnapshotSatisfiesUpdate_function snapshot_satisfiesUpdate;	/* HeapTupleSatisfiesUpdate */
 	SnapshotSatisfiesVacuum_function snapshot_satisfiesVacuum;	/* HeapTupleSatisfiesVacuum */
 
+	slot_tableam_hook slot_storageam;
+
 }			TableAmRoutine;
 
 extern TableAmRoutine * GetTableAmRoutine(Oid amhandler);

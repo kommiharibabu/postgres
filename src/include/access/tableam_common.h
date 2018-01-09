@@ -21,6 +21,7 @@
 #include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "executor/tuptable.h"
 #include "storage/bufpage.h"
 #include "storage/bufmgr.h"
 
@@ -37,5 +38,41 @@ typedef enum
 	HEAPTUPLE_INSERT_IN_PROGRESS,	/* inserting xact is still in progress */
 	HEAPTUPLE_DELETE_IN_PROGRESS	/* deleting xact is still in progress */
 } HTSV_Result;
+
+/*
+ * slot table AM routine functions
+ */
+typedef void (*SlotStoreTuple_function) (TupleTableSlot *slot,
+										 TableTuple tuple,
+										 bool shouldFree,
+										 bool minumumtuple);
+typedef void (*SlotClearTuple_function) (TupleTableSlot *slot);
+typedef Datum (*SlotGetattr_function) (TupleTableSlot *slot,
+									   int attnum, bool *isnull);
+typedef void (*SlotVirtualizeTuple_function) (TupleTableSlot *slot, int16 upto);
+
+typedef HeapTuple (*SlotGetTuple_function) (TupleTableSlot *slot, bool palloc_copy);
+typedef MinimalTuple (*SlotGetMinTuple_function) (TupleTableSlot *slot, bool palloc_copy);
+
+typedef void (*SlotUpdateTableoid_function) (TupleTableSlot *slot, Oid tableoid);
+
+typedef void (*SpeculativeAbort_function) (Relation rel,
+										   TupleTableSlot *slot);
+
+typedef struct SlotTableAmRoutine
+{
+	/* Operations on TupleTableSlot */
+	SlotStoreTuple_function slot_store_tuple;
+	SlotVirtualizeTuple_function slot_virtualize_tuple;
+	SlotClearTuple_function slot_clear_tuple;
+	SlotGetattr_function slot_getattr;
+	SlotGetTuple_function slot_tuple;
+	SlotGetMinTuple_function slot_min_tuple;
+	SlotUpdateTableoid_function slot_update_tableoid;
+}			SlotTableAmRoutine;
+
+typedef SlotTableAmRoutine * (*slot_tableam_hook) (void);
+
+extern SlotTableAmRoutine * slot_tableam_handler(void);
 
 #endif							/* TABLEAM_COMMON_H */
