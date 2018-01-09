@@ -3203,6 +3203,7 @@ l1:
 	{
 		Assert(result == HeapTupleSelfUpdated ||
 			   result == HeapTupleUpdated ||
+			   result == HeapTupleDeleted ||
 			   result == HeapTupleBeingUpdated);
 		Assert(!(tp.t_data->t_infomask & HEAP_XMAX_INVALID));
 		hufd->ctid = tp.t_data->t_ctid;
@@ -3216,6 +3217,8 @@ l1:
 			UnlockTupleTuplock(relation, &(tp.t_self), LockTupleExclusive);
 		if (vmbuffer != InvalidBuffer)
 			ReleaseBuffer(vmbuffer);
+		if (result == HeapTupleUpdated && ItemPointerEquals(tid, &hufd->ctid))
+			result = HeapTupleDeleted;
 		return result;
 	}
 
@@ -3423,6 +3426,10 @@ simple_heap_delete(Relation relation, ItemPointer tid)
 
 		case HeapTupleUpdated:
 			elog(ERROR, "tuple concurrently updated");
+			break;
+
+		case HeapTupleDeleted:
+			elog(ERROR, "tuple concurrently deleted");
 			break;
 
 		default:
@@ -3844,6 +3851,7 @@ l2:
 	{
 		Assert(result == HeapTupleSelfUpdated ||
 			   result == HeapTupleUpdated ||
+			   result == HeapTupleDeleted ||
 			   result == HeapTupleBeingUpdated);
 		Assert(!(oldtup.t_data->t_infomask & HEAP_XMAX_INVALID));
 		hufd->ctid = oldtup.t_data->t_ctid;
@@ -3862,6 +3870,8 @@ l2:
 		bms_free(id_attrs);
 		bms_free(modified_attrs);
 		bms_free(interesting_attrs);
+		if (result == HeapTupleUpdated && ItemPointerEquals(otid, &hufd->ctid))
+			result = HeapTupleDeleted;
 		return result;
 	}
 
@@ -4480,6 +4490,10 @@ simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup)
 			elog(ERROR, "tuple concurrently updated");
 			break;
 
+		case HeapTupleDeleted:
+			elog(ERROR, "tuple concurrently deleted");
+			break;
+
 		default:
 			elog(ERROR, "unrecognized heap_update status: %u", result);
 			break;
@@ -4532,6 +4546,7 @@ get_mxact_status_for_lock(LockTupleMode mode, bool is_update)
  *	HeapTupleInvisible: lock failed because tuple was never visible to us
  *	HeapTupleSelfUpdated: lock failed because tuple updated by self
  *	HeapTupleUpdated: lock failed because tuple updated by other xact
+ *	HeapTupleDeleted: lock failed because tuple deleted by other xact
  *	HeapTupleWouldBlock: lock couldn't be acquired and wait_policy is skip
  *
  * In the failure cases other than HeapTupleInvisible, the routine fills
@@ -4600,7 +4615,7 @@ l3:
 		result = HeapTupleInvisible;
 		goto out_locked;
 	}
-	else if (result == HeapTupleBeingUpdated || result == HeapTupleUpdated)
+	else if (result == HeapTupleBeingUpdated || result == HeapTupleUpdated || result == HeapTupleDeleted)
 	{
 		TransactionId xwait;
 		uint16		infomask;
@@ -4880,7 +4895,7 @@ l3:
 		 * or we must wait for the locking transaction or multixact; so below
 		 * we ensure that we grab buffer lock after the sleep.
 		 */
-		if (require_sleep && (result == HeapTupleUpdated))
+		if (require_sleep && (result == HeapTupleUpdated || result == HeapTupleDeleted))
 		{
 			LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 			goto failed;
@@ -5040,6 +5055,8 @@ l3:
 			HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_data->t_infomask) ||
 			HeapTupleHeaderIsOnlyLocked(tuple->t_data))
 			result = HeapTupleMayBeUpdated;
+		else if (ItemPointerEquals(&tuple->t_self, &tuple->t_data->t_ctid))
+			result = HeapTupleDeleted;
 		else
 			result = HeapTupleUpdated;
 	}
@@ -5048,7 +5065,7 @@ failed:
 	if (result != HeapTupleMayBeUpdated)
 	{
 		Assert(result == HeapTupleSelfUpdated || result == HeapTupleUpdated ||
-			   result == HeapTupleWouldBlock);
+			   result == HeapTupleWouldBlock || result == HeapTupleDeleted);
 		Assert(!(tuple->t_data->t_infomask & HEAP_XMAX_INVALID));
 		hufd->ctid = tuple->t_data->t_ctid;
 		hufd->xmax = HeapTupleHeaderGetUpdateXid(tuple->t_data);
@@ -5927,6 +5944,10 @@ next:
 	result = HeapTupleMayBeUpdated;
 
 out_locked:
+
+	if (result == HeapTupleUpdated && ItemPointerEquals(&mytup.t_self, &mytup.t_data->t_ctid))
+		result = HeapTupleDeleted;
+
 	UnlockReleaseBuffer(buf);
 
 	if (vmbuffer != InvalidBuffer)

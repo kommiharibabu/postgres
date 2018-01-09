@@ -41,13 +41,14 @@ table_fetch(Relation relation,
  *	table_lock_tuple - lock a tuple in shared or exclusive mode
  */
 HTSU_Result
-table_lock_tuple(Relation relation, ItemPointer tid, TableTuple * stuple,
-				   CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
-				   bool follow_updates, Buffer *buffer, HeapUpdateFailureData *hufd)
+table_lock_tuple(Relation relation, ItemPointer tid, Snapshot snapshot,
+				   TableTuple *stuple, CommandId cid, LockTupleMode mode,
+				   LockWaitPolicy wait_policy, uint8 flags,
+				   HeapUpdateFailureData *hufd)
 {
-	return relation->rd_tableamroutine->tuple_lock(relation, tid, stuple,
+	return relation->rd_tableamroutine->tuple_lock(relation, tid, snapshot, stuple,
 												cid, mode, wait_policy,
-												follow_updates, buffer, hufd);
+												flags, hufd);
 }
 
 /* ----------------

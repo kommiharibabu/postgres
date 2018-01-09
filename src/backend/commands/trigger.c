@@ -3024,8 +3024,6 @@ GetTupleForTrigger(EState *estate,
 	Relation	relation = relinfo->ri_RelationDesc;
 	TableTuple tuple;
 	HeapTuple	result;
-	Buffer		buffer;
-	tuple_data	t_data;
 
 	if (newSlot != NULL)
 	{
@@ -3040,11 +3038,11 @@ GetTupleForTrigger(EState *estate,
 		/*
 		 * lock tuple for update
 		 */
-ltrmark:;
-		test = table_lock_tuple(relation, tid, &tuple,
+		test = table_lock_tuple(relation, tid, estate->es_snapshot, &tuple,
 								  estate->es_output_cid,
 								  lockmode, LockWaitBlock,
-								  false, &buffer, &hufd);
+								  IsolationUsesXactSnapshot() ? 0 : TUPLE_LOCK_FLAG_FIND_LAST_VERSION,
+								  &hufd);
 		result = tuple;
 		switch (test)
 		{
@@ -3065,63 +3063,55 @@ ltrmark:;
 							 errhint("Consider using an AFTER trigger instead of a BEFORE trigger to propagate changes to other rows.")));
 
 				/* treat it as deleted; do not process */
-				ReleaseBuffer(buffer);
 				return NULL;
 
 			case HeapTupleMayBeUpdated:
-				break;
 
-			case HeapTupleUpdated:
-				ReleaseBuffer(buffer);
-				if (IsolationUsesXactSnapshot())
-					ereport(ERROR,
-							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-							 errmsg("could not serialize access due to concurrent update")));
-				t_data = relation->rd_tableamroutine->get_tuple_data(tuple, TID);
-				if (!ItemPointerEquals(&hufd.ctid, &(t_data.tid)))
+				if (hufd.traversed)
 				{
-					/* it was updated, so look at the updated version */
 					TupleTableSlot *epqslot;
 
 					epqslot = EvalPlanQual(estate,
 										   epqstate,
 										   relation,
 										   relinfo->ri_RangeTableIndex,
-										   lockmode,
-										   &hufd.ctid,
-										   hufd.xmax);
-					if (!TupIsNull(epqslot))
-					{
-						*tid = hufd.ctid;
-						*newSlot = epqslot;
+										   tuple);
 
-						/*
-						 * EvalPlanQual already locked the tuple, but we
-						 * re-call heap_lock_tuple anyway as an easy way of
-						 * re-fetching the correct tuple.  Speed is hardly a
-						 * criterion in this path anyhow.
-						 */
-						goto ltrmark;
-					}
+					/* If PlanQual failed for updated tuple - we must not process this tuple!*/
+					if (TupIsNull(epqslot))
+						return NULL;
+
+					*newSlot = epqslot;
 				}
+				break;
 
-				/*
-				 * if tuple was deleted or PlanQual failed for updated tuple -
-				 * we must not process this tuple!
-				 */
+			case HeapTupleUpdated:
+				if (IsolationUsesXactSnapshot())
+					ereport(ERROR,
+							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+							 errmsg("could not serialize access due to concurrent update")));
+				elog(ERROR, "wrong heap_lock_tuple status: %u", test);
+				break;
+
+			case HeapTupleDeleted:
+				if (IsolationUsesXactSnapshot())
+					ereport(ERROR,
+							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+							 errmsg("could not serialize access due to concurrent update")));
+				/* tuple was deleted */
 				return NULL;
 
 			case HeapTupleInvisible:
 				elog(ERROR, "attempted to lock invisible tuple");
 
 			default:
-				ReleaseBuffer(buffer);
 				elog(ERROR, "unrecognized heap_lock_tuple status: %u", test);
 				return NULL;	/* keep compiler quiet */
 		}
 	}
 	else
 	{
+		Buffer		buffer;
 		Page		page;
 		ItemId		lp;
 		HeapTupleData tupledata;
@@ -3151,9 +3141,9 @@ ltrmark:;
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 
 		result = heap_copytuple(&tupledata);
+		ReleaseBuffer(buffer);
 	}
 
-	ReleaseBuffer(buffer);
 	return result;
 }
 

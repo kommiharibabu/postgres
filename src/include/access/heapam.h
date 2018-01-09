@@ -69,6 +69,7 @@ typedef struct HeapUpdateFailureData
 	ItemPointerData ctid;
 	TransactionId xmax;
 	CommandId	cmax;
+	bool		traversed;
 } HeapUpdateFailureData;
 
 

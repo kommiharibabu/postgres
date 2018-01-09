@@ -87,10 +87,10 @@ extern bool table_hot_search_buffer(ItemPointer tid, Relation relation, Buffer b
 extern bool table_hot_search(ItemPointer tid, Relation relation, Snapshot snapshot,
 				   bool *all_dead);
 
-extern HTSU_Result table_lock_tuple(Relation relation, ItemPointer tid, TableTuple * stuple,
-				   CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
-				   bool follow_updates,
-				   Buffer *buffer, HeapUpdateFailureData *hufd);
+extern HTSU_Result table_lock_tuple(Relation relation, ItemPointer tid, Snapshot snapshot,
+				   TableTuple *stuple, CommandId cid, LockTupleMode mode,
+				   LockWaitPolicy wait_policy, uint8 flags,
+				   HeapUpdateFailureData *hufd);
 
 extern Oid table_insert(Relation relation, TupleTableSlot *slot, CommandId cid,
 			   int options, BulkInsertState bistate, InsertIndexTuples IndexFunc,

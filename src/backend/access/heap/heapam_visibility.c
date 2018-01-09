@@ -616,7 +616,11 @@ HeapTupleSatisfiesUpdate(TableTuple stup, CommandId curcid,
 	{
 		if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))
 			return HeapTupleMayBeUpdated;
-		return HeapTupleUpdated;	/* updated by other */
+		/* updated by other */
+		if (ItemPointerEquals(&htup->t_self, &tuple->t_ctid))
+			return HeapTupleDeleted;
+		else
+			return HeapTupleUpdated;
 	}
 
 	if (tuple->t_infomask & HEAP_XMAX_IS_MULTI)
@@ -657,7 +661,12 @@ HeapTupleSatisfiesUpdate(TableTuple stup, CommandId curcid,
 			return HeapTupleBeingUpdated;
 
 		if (TransactionIdDidCommit(xmax))
-			return HeapTupleUpdated;
+		{
+			if (ItemPointerEquals(&htup->t_self, &tuple->t_ctid))
+				return HeapTupleDeleted;
+			else
+				return HeapTupleUpdated;
+		}
 
 		/*
 		 * By here, the update in the Xmax is either aborted or crashed, but
@@ -713,7 +722,12 @@ HeapTupleSatisfiesUpdate(TableTuple stup, CommandId curcid,
 
 	SetHintBits(tuple, buffer, HEAP_XMAX_COMMITTED,
 				HeapTupleHeaderGetRawXmax(tuple));
-	return HeapTupleUpdated;	/* updated by other */
+
+	/* updated by other */
+	if (ItemPointerEquals(&htup->t_self, &tuple->t_ctid))
+		return HeapTupleDeleted;
+	else
+		return HeapTupleUpdated;
 }
 
 /*
