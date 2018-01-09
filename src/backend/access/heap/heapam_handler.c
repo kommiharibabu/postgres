@@ -310,6 +310,15 @@ heap_tableam_handler(PG_FUNCTION_ARGS)
 
 	amroutine->slot_storageam = slot_tableam_handler;
 
+	amroutine->scan_begin = heap_beginscan;
+	amroutine->scansetlimits = heap_setscanlimits;
+	amroutine->scan_getnext = heap_getnext;
+	amroutine->scan_getnextslot = heap_getnextslot;
+	amroutine->scan_end = heap_endscan;
+	amroutine->scan_rescan = heap_rescan;
+	amroutine->scan_update_snapshot = heap_update_snapshot;
+	amroutine->hot_search_buffer = heap_hot_search_buffer;
+
 	amroutine->tuple_fetch = heapam_fetch;
 	amroutine->tuple_insert = heapam_heap_insert;
 	amroutine->tuple_delete = heapam_heap_delete;

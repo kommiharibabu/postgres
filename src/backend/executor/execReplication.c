@@ -118,7 +118,7 @@ RelationFindReplTupleByIndex(Relation rel, Oid idxoid,
 							 TupleTableSlot *searchslot,
 							 TupleTableSlot *outslot)
 {
-	HeapTuple	scantuple;
+	TableTuple scantuple;
 	ScanKeyData skey[INDEX_MAX_KEYS];
 	IndexScanDesc scan;
 	SnapshotData snap;
@@ -228,8 +228,7 @@ RelationFindReplTupleSeq(Relation rel, LockTupleMode lockmode,
 						 TupleTableSlot *searchslot, TupleTableSlot *outslot)
 {
 	TupleTableSlot *scanslot;
-	HeapTuple	scantuple;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	SnapshotData snap;
 	TransactionId xwait;
 	bool		found;
@@ -239,19 +238,19 @@ RelationFindReplTupleSeq(Relation rel, LockTupleMode lockmode,
 
 	/* Start a heap scan. */
 	InitDirtySnapshot(snap);
-	scan = heap_beginscan(rel, &snap, 0, NULL);
+	scan = table_beginscan(rel, &snap, 0, NULL);
 
 	scanslot = MakeSingleTupleTableSlot(desc);
 
 retry:
 	found = false;
 
-	heap_rescan(scan, NULL);
+	table_rescan(scan, NULL);
 
 	/* Try to find the tuple */
-	while ((scantuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	while ((scanslot = table_scan_getnextslot(scan, ForwardScanDirection, scanslot))
+		   && !TupIsNull(scanslot))
 	{
-		ExecStoreTuple(scantuple, scanslot, InvalidBuffer, false);
 		if (!ExecSlotCompare(scanslot, searchslot))
 			continue;
 
@@ -313,7 +312,7 @@ retry:
 		}
 	}
 
-	heap_endscan(scan);
+	table_endscan(scan);
 	ExecDropSingleTupleTableSlot(scanslot);
 
 	return found;

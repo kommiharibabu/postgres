@@ -22,6 +22,7 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/session.h"
+#include "access/tableam.h"
 #include "access/sysattr.h"
 #include "access/xact.h"
 #include "access/xlog.h"
@@ -1218,10 +1219,10 @@ ThereIsAtLeastOneRole(void)
 
 	pg_authid_rel = heap_open(AuthIdRelationId, AccessShareLock);
 
-	scan = heap_beginscan_catalog(pg_authid_rel, 0, NULL);
-	result = (heap_getnext(scan, ForwardScanDirection) != NULL);
+	scan = table_beginscan_catalog(pg_authid_rel, 0, NULL);
+	result = (table_scan_getnext(scan, ForwardScanDirection) != NULL);
 
-	heap_endscan(scan);
+	table_endscan(scan);
 	heap_close(pg_authid_rel, AccessShareLock);
 
 	return result;

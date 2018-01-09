@@ -2033,10 +2033,10 @@ CopyTo(CopyState cstate)
 		values = (Datum *) palloc(num_phys_attrs * sizeof(Datum));
 		nulls = (bool *) palloc(num_phys_attrs * sizeof(bool));
 
-		scandesc = heap_beginscan(cstate->rel, GetActiveSnapshot(), 0, NULL);
+		scandesc = table_beginscan(cstate->rel, GetActiveSnapshot(), 0, NULL);
 
 		processed = 0;
-		while ((tuple = heap_getnext(scandesc, ForwardScanDirection)) != NULL)
+		while ((tuple = table_scan_getnext(scandesc, ForwardScanDirection)) != NULL)
 		{
 			CHECK_FOR_INTERRUPTS();
 
@@ -2048,7 +2048,7 @@ CopyTo(CopyState cstate)
 			processed++;
 		}
 
-		heap_endscan(scandesc);
+		table_endscan(scandesc);
 
 		pfree(values);
 		pfree(nulls);

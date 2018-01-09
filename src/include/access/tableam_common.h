@@ -28,6 +28,7 @@
 
 /* A physical tuple coming from a table AM scan */
 typedef void *TableTuple;
+typedef void *TableScanDesc;
 
 /* Result codes for HeapTupleSatisfiesVacuum */
 typedef enum

@@ -682,7 +682,7 @@ ExecFetchSlotMinimalTuple(TupleTableSlot *slot)
 Datum
 ExecFetchSlotTupleDatum(TupleTableSlot *slot)
 {
-	HeapTuple	tup;
+	TableTuple tup;
 	TupleDesc	tupdesc;
 
 	/* Fetch slot's contents in regular-physical-tuple form */
@@ -766,7 +766,7 @@ ExecHeapifySlot(TupleTableSlot *slot)
 TupleTableSlot *
 ExecCopySlot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 {
-	HeapTuple	newTuple;
+	TableTuple newTuple;
 	MemoryContext oldContext;
 
 	/*
@@ -1086,7 +1086,7 @@ TupleDescGetAttInMetadata(TupleDesc tupdesc)
  * values is an array of C strings, one for each attribute of the return tuple.
  * A NULL string pointer indicates we want to create a NULL field.
  */
-HeapTuple
+TableTuple
 BuildTupleFromCStrings(AttInMetadata *attinmeta, char **values)
 {
 	TupleDesc	tupdesc = attinmeta->tupdesc;
@@ -1094,7 +1094,7 @@ BuildTupleFromCStrings(AttInMetadata *attinmeta, char **values)
 	Datum	   *dvalues;
 	bool	   *nulls;
 	int			i;
-	HeapTuple	tuple;
+	TableTuple tuple;
 
 	dvalues = (Datum *) palloc(natts * sizeof(Datum));
 	nulls = (bool *) palloc(natts * sizeof(bool));

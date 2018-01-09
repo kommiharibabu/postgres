@@ -42,6 +42,34 @@ typedef List *(*InsertIndexTuples) (TupleTableSlot *slot, EState *estate, bool n
 /* Function pointer to let the index tuple delete from storage am */
 typedef void (*DeleteIndexTuples) (Relation rel, ItemPointer tid, TransactionId old_xmin);
 
+extern HeapScanDesc table_beginscan_parallel(Relation relation, ParallelHeapScanDesc parallel_scan);
+
+extern void table_setscanlimits(HeapScanDesc sscan, BlockNumber startBlk, BlockNumber numBlks);
+extern HeapScanDesc table_beginscan(Relation relation, Snapshot snapshot,
+				  int nkeys, ScanKey key);
+extern HeapScanDesc table_beginscan_catalog(Relation relation, int nkeys, ScanKey key);
+extern HeapScanDesc table_beginscan_strat(Relation relation, Snapshot snapshot,
+						int nkeys, ScanKey key,
+						bool allow_strat, bool allow_sync);
+extern HeapScanDesc table_beginscan_bm(Relation relation, Snapshot snapshot,
+					 int nkeys, ScanKey key);
+extern HeapScanDesc table_beginscan_sampling(Relation relation, Snapshot snapshot,
+						   int nkeys, ScanKey key,
+						   bool allow_strat, bool allow_sync, bool allow_pagemode);
+
+extern void table_endscan(HeapScanDesc scan);
+extern void table_rescan(HeapScanDesc scan, ScanKey key);
+extern void table_rescan_set_params(HeapScanDesc scan, ScanKey key,
+						  bool allow_strat, bool allow_sync, bool allow_pagemode);
+extern void table_scan_update_snapshot(HeapScanDesc scan, Snapshot snapshot);
+
+extern TableTuple table_scan_getnext(HeapScanDesc sscan, ScanDirection direction);
+extern TupleTableSlot *table_scan_getnextslot(HeapScanDesc sscan, ScanDirection direction, TupleTableSlot *slot);
+
+extern void storage_get_latest_tid(Relation relation,
+					   Snapshot snapshot,
+					   ItemPointer tid);
+
 extern bool table_fetch(Relation relation,
 			  ItemPointer tid,
 			  Snapshot snapshot,
@@ -49,6 +77,13 @@ extern bool table_fetch(Relation relation,
 			  Buffer *userbuf,
 			  bool keep_buf,
 			  Relation stats_relation);
+
+extern bool table_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
+						  Snapshot snapshot, HeapTuple heapTuple,
+						  bool *all_dead, bool first_call);
+
+extern bool table_hot_search(ItemPointer tid, Relation relation, Snapshot snapshot,
+				   bool *all_dead);
 
 extern HTSU_Result table_lock_tuple(Relation relation, ItemPointer tid, TableTuple * stuple,
 				   CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
