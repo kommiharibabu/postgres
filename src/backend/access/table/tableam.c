@@ -20,6 +20,7 @@
 #include "utils/rel.h"
 #include "utils/tqual.h"
 
+
 /*
  *	table_fetch		- retrieve tuple with given tid
  */
@@ -97,6 +98,12 @@ tableam_get_heappagescandesc(TableScanDesc sscan)
 	Assert(sscan->rs_rd->rd_tableamroutine->scan_get_heappagescandesc != NULL);
 
 	return sscan->rs_rd->rd_tableamroutine->scan_get_heappagescandesc(sscan);
+}
+
+void
+table_syncscan_report_location(Relation rel, BlockNumber location)
+{
+	return rel->rd_tableamroutine->sync_scan_report_location(rel, location);
 }
 
 /*

@@ -45,6 +45,7 @@ typedef void (*DeleteIndexTuples) (Relation rel, ItemPointer tid, TransactionId 
 extern TableScanDesc table_beginscan_parallel(Relation relation, ParallelHeapScanDesc parallel_scan);
 extern ParallelHeapScanDesc tableam_get_parallelheapscandesc(TableScanDesc sscan);
 extern HeapPageScanDesc tableam_get_heappagescandesc(TableScanDesc sscan);
+extern void table_syncscan_report_location(Relation rel, BlockNumber location);
 extern void table_setscanlimits(TableScanDesc sscan, BlockNumber startBlk, BlockNumber numBlks);
 extern TableScanDesc table_beginscan(Relation relation, Snapshot snapshot,
 				  int nkeys, ScanKey key);

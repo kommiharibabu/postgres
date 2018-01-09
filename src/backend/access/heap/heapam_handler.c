@@ -503,6 +503,17 @@ heapam_fetch_tuple_from_offset(TableScanDesc sscan, BlockNumber blkno, OffsetNum
 	return &(scan->rs_ctup);
 }
 
+Size
+heapam_storage_shmem_size()
+{
+	return SyncScanShmemSize();
+}
+
+void
+heapam_storage_shmem_init()
+{
+	return SyncScanShmemInit();
+}
 
 Datum
 heap_tableam_handler(PG_FUNCTION_ARGS)
@@ -537,6 +548,7 @@ heap_tableam_handler(PG_FUNCTION_ARGS)
 	 * BitmapHeap and Sample Scans
 	 */
 	amroutine->scan_get_heappagescandesc = heapam_get_heappagescandesc;
+	amroutine->sync_scan_report_location = ss_report_location;
 
 	amroutine->tuple_fetch = heapam_fetch;
 	amroutine->tuple_insert = heapam_heap_insert;

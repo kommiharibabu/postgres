@@ -106,7 +106,7 @@ typedef TableScanDesc (*ScanBegin_function) (Relation relation,
 
 typedef ParallelHeapScanDesc (*ScanGetParallelheapscandesc_function) (TableScanDesc scan);
 typedef HeapPageScanDesc(*ScanGetHeappagescandesc_function) (TableScanDesc scan);
-
+typedef void (*SyncScanReportLocation_function) (Relation rel, BlockNumber location);
 typedef void (*ScanSetlimits_function) (TableScanDesc sscan, BlockNumber startBlk, BlockNumber numBlks);
 
 /* must return a TupleTableSlot? */
@@ -130,7 +130,6 @@ typedef void (*ScanUpdateSnapshot_function) (TableScanDesc scan, Snapshot snapsh
 typedef bool (*HotSearchBuffer_function) (ItemPointer tid, Relation relation,
 										  Buffer buffer, Snapshot snapshot, HeapTuple heapTuple,
 										  bool *all_dead, bool first_call);
-
 
 /*
  * API struct for a table AM.  Note this must be stored in a single palloc'd
@@ -178,6 +177,7 @@ typedef struct TableAmRoutine
 	ScanBegin_function scan_begin;
 	ScanGetParallelheapscandesc_function scan_get_parallelheapscandesc;
 	ScanGetHeappagescandesc_function scan_get_heappagescandesc;
+	SyncScanReportLocation_function sync_scan_report_location;
 	ScanSetlimits_function scansetlimits;
 	ScanGetnext_function scan_getnext;
 	ScanGetnextSlot_function scan_getnextslot;

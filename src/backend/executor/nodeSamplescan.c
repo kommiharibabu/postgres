@@ -512,7 +512,7 @@ tablesample_getnext(SampleScanState *scanstate)
 			 * We don't guarantee any specific ordering in general, though.
 			 */
 			if (pagescan->rs_syncscan)
-				ss_report_location(scan->rs_rd, blockno);
+				table_syncscan_report_location(scan->rs_rd, blockno);
 
 			finished = (blockno == pagescan->rs_startblock);
 		}

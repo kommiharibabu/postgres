@@ -222,4 +222,8 @@ extern void rewrite_heap_tuple(RewriteState state, HeapTuple oldTuple,
 				   HeapTuple newTuple);
 extern bool rewrite_heap_dead_tuple(RewriteState state, HeapTuple oldTuple);
 
+/* in heap/heapam_storage.c */
+extern Size heapam_storage_shmem_size(void);
+extern void heapam_storage_shmem_init(void);
+
 #endif							/* HEAPAM_H */
