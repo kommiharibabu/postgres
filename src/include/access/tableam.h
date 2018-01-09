@@ -118,4 +118,8 @@ extern void table_get_latest_tid(Relation relation,
 
 extern void table_sync(Relation rel);
 
+extern BulkInsertState table_getbulkinsertstate(Relation rel);
+extern void table_freebulkinsertstate(Relation rel, BulkInsertState bistate);
+extern void table_releasebulkinsertstate(Relation rel, BulkInsertState bistate);
+
 #endif		/* TABLEAM_H */

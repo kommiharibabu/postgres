@@ -2292,7 +2292,7 @@ CopyFrom(CopyState cstate)
 	ErrorContextCallback errcallback;
 	CommandId	mycid = GetCurrentCommandId(true);
 	int			hi_options = 0; /* start with default heap_insert options */
-	BulkInsertState bistate;
+	void       *bistate;
 	uint64		processed = 0;
 	bool		useHeapMultiInsert;
 	int			nBufferedTuples = 0;
@@ -2518,7 +2518,7 @@ CopyFrom(CopyState cstate)
 	values = (Datum *) palloc(tupDesc->natts * sizeof(Datum));
 	nulls = (bool *) palloc(tupDesc->natts * sizeof(bool));
 
-	bistate = GetBulkInsertState();
+	bistate = table_getbulkinsertstate(resultRelInfo->ri_RelationDesc);
 	econtext = GetPerTupleExprContext(estate);
 
 	/* Set up callback to identify error line number */
@@ -2598,7 +2598,7 @@ CopyFrom(CopyState cstate)
 			 */
 			if (prev_leaf_part_index != leaf_part_index)
 			{
-				ReleaseBulkInsertStatePin(bistate);
+				table_releasebulkinsertstate(resultRelInfo->ri_RelationDesc, bistate);
 				prev_leaf_part_index = leaf_part_index;
 			}
 
@@ -2771,7 +2771,7 @@ CopyFrom(CopyState cstate)
 	/* Done, clean up */
 	error_context_stack = errcallback.previous;
 
-	FreeBulkInsertState(bistate);
+	table_freebulkinsertstate(resultRelInfo->ri_RelationDesc, bistate);
 
 	MemoryContextSwitchTo(oldcontext);
 

@@ -39,6 +39,9 @@ typedef enum
 	HEAPTUPLE_DELETE_IN_PROGRESS	/* deleting xact is still in progress */
 } HTSV_Result;
 
+typedef struct BulkInsertStateData *BulkInsertState;
+
+
 /*
  * slot table AM routine functions
  */

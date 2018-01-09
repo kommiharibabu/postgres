@@ -389,3 +389,26 @@ table_sync(Relation rel)
 {
 	rel->rd_tableamroutine->relation_sync(rel);
 }
+
+/*
+ * -------------------
+ * storage Bulk Insert functions
+ * -------------------
+ */
+BulkInsertState
+table_getbulkinsertstate(Relation rel)
+{
+	return rel->rd_tableamroutine->getbulkinsertstate();
+}
+
+void
+table_freebulkinsertstate(Relation rel, BulkInsertState bistate)
+{
+	rel->rd_tableamroutine->freebulkinsertstate(bistate);
+}
+
+void
+table_releasebulkinsertstate(Relation rel, BulkInsertState bistate)
+{
+	rel->rd_tableamroutine->releasebulkinsertstate(bistate);
+}
