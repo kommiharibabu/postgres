@@ -41,6 +41,8 @@ typedef enum
 
 typedef struct BulkInsertStateData *BulkInsertState;
 
+/* struct definition is private to rewriteheap.c */
+typedef struct RewriteStateData *RewriteState;
 
 /*
  * slot table AM routine functions

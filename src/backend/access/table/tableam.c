@@ -412,3 +412,36 @@ table_releasebulkinsertstate(Relation rel, BulkInsertState bistate)
 {
 	rel->rd_tableamroutine->releasebulkinsertstate(bistate);
 }
+
+/*
+ * -------------------
+ * storage tuple rewrite functions
+ * -------------------
+ */
+RewriteState
+table_begin_rewrite(Relation OldHeap, Relation NewHeap,
+				   TransactionId OldestXmin, TransactionId FreezeXid,
+				   MultiXactId MultiXactCutoff, bool use_wal)
+{
+	return NewHeap->rd_tableamroutine->begin_heap_rewrite(OldHeap, NewHeap,
+			OldestXmin, FreezeXid, MultiXactCutoff, use_wal);
+}
+
+void
+table_end_rewrite(Relation rel, RewriteState state)
+{
+	rel->rd_tableamroutine->end_heap_rewrite(state);
+}
+
+void
+table_rewrite_tuple(Relation rel, RewriteState state, HeapTuple oldTuple,
+				   HeapTuple newTuple)
+{
+	rel->rd_tableamroutine->rewrite_heap_tuple(state, oldTuple, newTuple);
+}
+
+bool
+table_rewrite_dead_tuple(Relation rel, RewriteState state, HeapTuple oldTuple)
+{
+	return rel->rd_tableamroutine->rewrite_heap_dead_tuple(state, oldTuple);
+}

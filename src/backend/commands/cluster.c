@@ -74,9 +74,8 @@ static void copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex,
 			   TransactionId *pFreezeXid, MultiXactId *pCutoffMulti);
 static List *get_tables_to_cluster(MemoryContext cluster_context);
 static void reform_and_rewrite_tuple(HeapTuple tuple,
-						 TupleDesc oldTupDesc, TupleDesc newTupDesc,
-						 Datum *values, bool *isnull,
-						 bool newRelHasOids, RewriteState rwstate);
+						 Relation OldHeap, Relation NewHeap,
+						 Datum *values, bool *isnull, RewriteState rwstate);
 
 
 /*---------------------------------------------------------------------------
@@ -892,7 +891,7 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	is_system_catalog = IsSystemRelation(OldHeap);
 
 	/* Initialize the rewrite operation */
-	rwstate = begin_heap_rewrite(OldHeap, NewHeap, OldestXmin, FreezeXid,
+	rwstate = table_begin_rewrite(OldHeap, NewHeap, OldestXmin, FreezeXid,
 								 MultiXactCutoff, use_wal);
 
 	/*
@@ -1042,7 +1041,7 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 		{
 			tups_vacuumed += 1;
 			/* heap rewrite module still needs to see it... */
-			if (rewrite_heap_dead_tuple(rwstate, tuple))
+			if (table_rewrite_dead_tuple(NewHeap, rwstate, tuple))
 			{
 				/* A previous recently-dead tuple is now known dead */
 				tups_vacuumed += 1;
@@ -1056,9 +1055,8 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 			tuplesort_putheaptuple(tuplesort, tuple);
 		else
 			reform_and_rewrite_tuple(tuple,
-									 oldTupDesc, newTupDesc,
-									 values, isnull,
-									 NewHeap->rd_rel->relhasoids, rwstate);
+									 OldHeap, NewHeap,
+									 values, isnull, rwstate);
 	}
 
 	if (indexScan != NULL)
@@ -1085,16 +1083,15 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 				break;
 
 			reform_and_rewrite_tuple(tuple,
-									 oldTupDesc, newTupDesc,
-									 values, isnull,
-									 NewHeap->rd_rel->relhasoids, rwstate);
+									 OldHeap, NewHeap,
+									 values, isnull, rwstate);
 		}
 
 		tuplesort_end(tuplesort);
 	}
 
 	/* Write out any remaining tuples, and fsync if needed */
-	end_heap_rewrite(rwstate);
+	table_end_rewrite(NewHeap, rwstate);
 
 	/* Reset rd_toastoid just to be tidy --- it shouldn't be looked at again */
 	NewHeap->rd_toastoid = InvalidOid;
@@ -1748,10 +1745,11 @@ get_tables_to_cluster(MemoryContext cluster_context)
  */
 static void
 reform_and_rewrite_tuple(HeapTuple tuple,
-						 TupleDesc oldTupDesc, TupleDesc newTupDesc,
-						 Datum *values, bool *isnull,
-						 bool newRelHasOids, RewriteState rwstate)
+						 Relation OldHeap, Relation NewHeap,
+						 Datum *values, bool *isnull, RewriteState rwstate)
 {
+	TupleDesc oldTupDesc = RelationGetDescr(OldHeap);
+	TupleDesc newTupDesc = RelationGetDescr(NewHeap);
 	HeapTuple	copiedTuple;
 	int			i;
 
@@ -1767,11 +1765,11 @@ reform_and_rewrite_tuple(HeapTuple tuple,
 	copiedTuple = heap_form_tuple(newTupDesc, values, isnull);
 
 	/* Preserve OID, if any */
-	if (newRelHasOids)
+	if (NewHeap->rd_rel->relhasoids)
 		HeapTupleSetOid(copiedTuple, HeapTupleGetOid(tuple));
 
 	/* The heap rewrite module does the rest */
-	rewrite_heap_tuple(rwstate, tuple, copiedTuple);
+	table_rewrite_tuple(NewHeap, rwstate, tuple, copiedTuple);
 
 	heap_freetuple(copiedTuple);
 }

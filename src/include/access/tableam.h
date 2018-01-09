@@ -122,4 +122,12 @@ extern BulkInsertState table_getbulkinsertstate(Relation rel);
 extern void table_freebulkinsertstate(Relation rel, BulkInsertState bistate);
 extern void table_releasebulkinsertstate(Relation rel, BulkInsertState bistate);
 
+extern RewriteState table_begin_rewrite(Relation OldHeap, Relation NewHeap,
+				   TransactionId OldestXmin, TransactionId FreezeXid,
+				   MultiXactId MultiXactCutoff, bool use_wal);
+extern void table_end_rewrite(Relation rel, RewriteState state);
+extern void table_rewrite_tuple(Relation rel, RewriteState state, HeapTuple oldTuple,
+				   HeapTuple newTuple);
+extern bool table_rewrite_dead_tuple(Relation rel, RewriteState state, HeapTuple oldTuple);
+
 #endif		/* TABLEAM_H */

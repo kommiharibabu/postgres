@@ -212,4 +212,13 @@ extern bool HeapTupleHeaderIsOnlyLocked(HeapTupleHeader tuple);
 extern bool XidInMVCCSnapshot(TransactionId xid, Snapshot snapshot);
 extern bool HeapTupleIsSurelyDead(HeapTuple htup, TransactionId OldestXmin);
 
+/* in heap/rewriteheap.c */
+extern RewriteState begin_heap_rewrite(Relation OldHeap, Relation NewHeap,
+				   TransactionId OldestXmin, TransactionId FreezeXid,
+				   MultiXactId MultiXactCutoff, bool use_wal);
+extern void end_heap_rewrite(RewriteState state);
+extern void rewrite_heap_tuple(RewriteState state, HeapTuple oldTuple,
+				   HeapTuple newTuple);
+extern bool rewrite_heap_dead_tuple(RewriteState state, HeapTuple oldTuple);
+
 #endif							/* HEAPAM_H */
