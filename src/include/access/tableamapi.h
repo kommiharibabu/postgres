@@ -11,11 +11,18 @@
 #ifndef TABLEEAMAPI_H
 #define TABLEEAMAPI_H
 
+#include "access/tableam_common.h"
 #include "nodes/nodes.h"
 #include "fmgr.h"
+#include "utils/snapshot.h"
 
-/* A physical tuple coming from a table AM scan */
-typedef void *TableTuple;
+
+/*
+ * Storage routine function hooks
+ */
+typedef bool (*SnapshotSatisfies_function) (TableTuple htup, Snapshot snapshot, Buffer buffer);
+typedef HTSU_Result (*SnapshotSatisfiesUpdate_function) (TableTuple htup, CommandId curcid, Buffer buffer);
+typedef HTSV_Result (*SnapshotSatisfiesVacuum_function) (TableTuple htup, TransactionId OldestXmin, Buffer buffer);
 
 /*
  * API struct for a table AM.  Note this must be stored in a single palloc'd
@@ -29,6 +36,10 @@ typedef void *TableTuple;
 typedef struct TableAmRoutine
 {
 	NodeTag		type;
+
+	SnapshotSatisfies_function snapshot_satisfies;
+	SnapshotSatisfiesUpdate_function snapshot_satisfiesUpdate;	/* HeapTupleSatisfiesUpdate */
+	SnapshotSatisfiesVacuum_function snapshot_satisfiesVacuum;	/* HeapTupleSatisfiesVacuum */
 
 }			TableAmRoutine;
 

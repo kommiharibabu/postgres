@@ -459,7 +459,7 @@ bitgetpage(HeapScanDesc scan, TBMIterateResult *tbmres)
 			loctup.t_len = ItemIdGetLength(lp);
 			loctup.t_tableOid = scan->rs_rd->rd_id;
 			ItemPointerSet(&loctup.t_self, page, offnum);
-			valid = HeapTupleSatisfiesVisibility(&loctup, snapshot, buffer);
+			valid = HeapTupleSatisfiesVisibility(scan->rs_rd->rd_tableamroutine, &loctup, snapshot, buffer);
 			if (valid)
 			{
 				scan->rs_vistuples[ntup++] = offnum;

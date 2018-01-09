@@ -20,6 +20,7 @@
  */
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/tableamapi.h"
 #include "utils/builtins.h"
 
@@ -28,6 +29,11 @@ Datum
 heap_tableam_handler(PG_FUNCTION_ARGS)
 {
 	TableAmRoutine *amroutine = makeNode(TableAmRoutine);
+
+	amroutine->snapshot_satisfies = HeapTupleSatisfies;
+
+	amroutine->snapshot_satisfiesUpdate = HeapTupleSatisfiesUpdate;
+	amroutine->snapshot_satisfiesVacuum = HeapTupleSatisfiesVacuum;
 
 	PG_RETURN_POINTER(amroutine);
 }

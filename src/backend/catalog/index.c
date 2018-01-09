@@ -2420,6 +2420,7 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 	TransactionId OldestXmin;
 	BlockNumber root_blkno = InvalidBlockNumber;
 	OffsetNumber root_offsets[MaxHeapTuplesPerPage];
+	TableAmRoutine *method;
 
 	/*
 	 * sanity checks
@@ -2513,6 +2514,8 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 	Assert(snapshot == SnapshotAny ? TransactionIdIsValid(OldestXmin) :
 		   !TransactionIdIsValid(OldestXmin));
 	Assert(snapshot == SnapshotAny || !anyvisible);
+	
+	method = heapRelation->rd_tableamroutine;
 
 	/* set our scan endpoints */
 	if (!allow_sync)
@@ -2587,8 +2590,8 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 			 */
 			LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
 
-			switch (HeapTupleSatisfiesVacuum(heapTuple, OldestXmin,
-											 scan->rs_cbuf))
+			switch (method->snapshot_satisfiesVacuum(heapTuple, OldestXmin,
+													 scan->rs_cbuf))
 			{
 				case HEAPTUPLE_DEAD:
 					/* Definitely dead, we can ignore it */

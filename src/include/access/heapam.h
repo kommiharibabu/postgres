@@ -16,6 +16,7 @@
 
 #include "access/sdir.h"
 #include "access/skey.h"
+#include "access/tableam_common.h"
 #include "nodes/lockoptions.h"
 #include "nodes/primnodes.h"
 #include "storage/bufpage.h"
@@ -199,5 +200,17 @@ extern void ss_report_location(Relation rel, BlockNumber location);
 extern BlockNumber ss_get_location(Relation rel, BlockNumber relnblocks);
 extern void SyncScanShmemInit(void);
 extern Size SyncScanShmemSize(void);
+
+/* in heap/heapam_visibility.c */
+extern bool HeapTupleSatisfies(TableTuple stup, Snapshot snapshot, Buffer buffer);
+extern HTSU_Result HeapTupleSatisfiesUpdate(TableTuple stup, CommandId curcid,
+						 Buffer buffer);
+extern HTSV_Result HeapTupleSatisfiesVacuum(TableTuple stup, TransactionId OldestXmin,
+						 Buffer buffer);
+extern void HeapTupleSetHintBits(HeapTupleHeader tuple, Buffer buffer,
+					 uint16 infomask, TransactionId xid);
+extern bool HeapTupleHeaderIsOnlyLocked(HeapTupleHeader tuple);
+extern bool XidInMVCCSnapshot(TransactionId xid, Snapshot snapshot);
+extern bool HeapTupleIsSurelyDead(HeapTuple htup, TransactionId OldestXmin);
 
 #endif							/* HEAPAM_H */
