@@ -55,10 +55,6 @@ ConditionVariableInit(ConditionVariable *cv)
  * condition between calling ConditionVariablePrepareToSleep and calling
  * ConditionVariableSleep.  If that is inconvenient, omit calling
  * ConditionVariablePrepareToSleep.
- *
- * Only one condition variable can be used at a time, ie,
- * ConditionVariableCancelSleep must be called before any attempt is made
- * to sleep on a different condition variable.
  */
 void
 ConditionVariablePrepareToSleep(ConditionVariable *cv)
@@ -73,18 +69,25 @@ ConditionVariablePrepareToSleep(ConditionVariable *cv)
 	{
 		WaitEventSet *new_event_set;
 
-		new_event_set = CreateWaitEventSet(TopMemoryContext, 1);
+		new_event_set = CreateWaitEventSet(TopMemoryContext, 2);
 		AddWaitEventToSet(new_event_set, WL_LATCH_SET, PGINVALID_SOCKET,
 						  MyLatch, NULL);
+		AddWaitEventToSet(new_event_set, WL_POSTMASTER_DEATH, PGINVALID_SOCKET,
+						  NULL, NULL);
 		/* Don't set cv_wait_event_set until we have a correct WES. */
 		cv_wait_event_set = new_event_set;
 	}
 
 	/*
-	 * It's not legal to prepare a sleep until the previous sleep has been
-	 * completed or canceled.
+	 * If some other sleep is already prepared, cancel it; this is necessary
+	 * because we have just one static variable tracking the prepared sleep,
+	 * and also only one cvWaitLink in our PGPROC.  It's okay to do this
+	 * because whenever control does return to the other test-and-sleep loop,
+	 * its ConditionVariableSleep call will just re-establish that sleep as
+	 * the prepared one.
 	 */
-	Assert(cv_sleep_target == NULL);
+	if (cv_sleep_target != NULL)
+		ConditionVariableCancelSleep();
 
 	/* Record the condition variable on which we will sleep. */
 	cv_sleep_target = cv;
@@ -133,25 +136,34 @@ ConditionVariableSleep(ConditionVariable *cv, uint32 wait_event_info)
 	 * is recommended because it avoids manipulations of the wait list, or not
 	 * met initially, in which case preparing first is better because it
 	 * avoids one extra test of the exit condition.
+	 *
+	 * If we are currently prepared to sleep on some other CV, we just cancel
+	 * that and prepare this one; see ConditionVariablePrepareToSleep.
 	 */
-	if (cv_sleep_target == NULL)
+	if (cv_sleep_target != cv)
 	{
 		ConditionVariablePrepareToSleep(cv);
 		return;
 	}
-
-	/* Any earlier condition variable sleep must have been canceled. */
-	Assert(cv_sleep_target == cv);
 
 	do
 	{
 		CHECK_FOR_INTERRUPTS();
 
 		/*
-		 * Wait for latch to be set.  We don't care about the result because
-		 * our contract permits spurious returns.
+		 * Wait for latch to be set.  (If we're awakened for some other
+		 * reason, the code below will cope anyway.)
 		 */
 		WaitEventSetWait(cv_wait_event_set, -1, &event, 1, wait_event_info);
+
+		if (event.events & WL_POSTMASTER_DEATH)
+		{
+			/*
+			 * Emergency bailout if postmaster has died.  This is to avoid the
+			 * necessity for manual cleanup of all postmaster children.
+			 */
+			exit(1);
+		}
 
 		/* Reset latch before examining the state of the wait list. */
 		ResetLatch(MyLatch);
@@ -265,7 +277,8 @@ ConditionVariableBroadcast(ConditionVariable *cv)
 	 * prepared CV sleep.  The next call to ConditionVariableSleep will take
 	 * care of re-establishing the lost state.
 	 */
-	ConditionVariableCancelSleep();
+	if (cv_sleep_target != NULL)
+		ConditionVariableCancelSleep();
 
 	/*
 	 * Inspect the state of the queue.  If it's empty, we have nothing to do.
