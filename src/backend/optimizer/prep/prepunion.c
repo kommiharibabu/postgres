@@ -1832,7 +1832,7 @@ make_inh_translation_list(Relation oldrelation, Relation newrelation,
 		 */
 		if (old_attno < newnatts &&
 			(att = TupleDescAttr(new_tupdesc, old_attno)) != NULL &&
-			!att->attisdropped && att->attinhcount != 0 &&
+			!att->attisdropped &&
 			strcmp(attname, NameStr(att->attname)) == 0)
 			new_attno = old_attno;
 		else
@@ -1840,7 +1840,7 @@ make_inh_translation_list(Relation oldrelation, Relation newrelation,
 			for (new_attno = 0; new_attno < newnatts; new_attno++)
 			{
 				att = TupleDescAttr(new_tupdesc, new_attno);
-				if (!att->attisdropped && att->attinhcount != 0 &&
+				if (!att->attisdropped &&
 					strcmp(attname, NameStr(att->attname)) == 0)
 					break;
 			}
@@ -2502,7 +2502,7 @@ build_child_join_sjinfo(PlannerInfo *root, SpecialJoinInfo *parent_sjinfo,
  * 		Find AppendRelInfo structures for all relations specified by relids.
  *
  * The AppendRelInfos are returned in an array, which can be pfree'd by the
- * caller. *nappinfos is set to the the number of entries in the array.
+ * caller. *nappinfos is set to the number of entries in the array.
  */
 AppendRelInfo **
 find_appinfos_by_relids(PlannerInfo *root, Relids relids, int *nappinfos)
