@@ -158,6 +158,7 @@ typedef struct IndexInfo
 	bool		ii_ReadyForInserts;
 	bool		ii_Concurrent;
 	bool		ii_BrokenHotChain;
+	Oid			ii_Am;
 	void	   *ii_AmCache;
 	MemoryContext ii_Context;
 } IndexInfo;
@@ -991,8 +992,8 @@ typedef struct ModifyTableState
 	/* controls transition table population for specified operation */
 	struct TransitionCaptureState *mt_oc_transition_capture;
 	/* controls transition table population for INSERT...ON CONFLICT UPDATE */
-	TupleConversionMap **mt_transition_tupconv_maps;
-	/* Per plan/partition tuple conversion */
+	TupleConversionMap **mt_per_subplan_tupconv_maps;
+	/* Per plan map for tuple conversion from child to root */
 } ModifyTableState;
 
 /* ----------------

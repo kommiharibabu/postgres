@@ -115,7 +115,7 @@
 typedef struct PrivTarget
 {
 	GrantTargetType targtype;
-	GrantObjectType objtype;
+	ObjectType	objtype;
 	List	   *objs;
 } PrivTarget;
 
@@ -290,7 +290,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <ival>	add_drop opt_asc_desc opt_nulls_order
 
 %type <node>	alter_table_cmd alter_type_cmd opt_collate_clause
-	   replica_identity partition_cmd
+	   replica_identity partition_cmd index_partition_cmd
 %type <list>	alter_table_cmds alter_type_cmds
 %type <list>    alter_identity_column_option_list
 %type <defelt>  alter_identity_column_option
@@ -1891,6 +1891,15 @@ AlterTableStmt:
 					n->missing_ok = true;
 					$$ = (Node *)n;
 				}
+		|	ALTER INDEX qualified_name index_partition_cmd
+				{
+					AlterTableStmt *n = makeNode(AlterTableStmt);
+					n->relation = $3;
+					n->cmds = list_make1($4);
+					n->relkind = OBJECT_INDEX;
+					n->missing_ok = false;
+					$$ = (Node *)n;
+				}
 		|	ALTER INDEX ALL IN_P TABLESPACE name SET TABLESPACE name opt_nowait
 				{
 					AlterTableMoveAllStmt *n =
@@ -2017,6 +2026,22 @@ partition_cmd:
 					PartitionCmd *cmd = makeNode(PartitionCmd);
 
 					n->subtype = AT_DetachPartition;
+					cmd->name = $3;
+					cmd->bound = NULL;
+					n->def = (Node *) cmd;
+
+					$$ = (Node *) n;
+				}
+		;
+
+index_partition_cmd:
+			/* ALTER INDEX <name> ATTACH PARTITION <index_name> */
+			ATTACH PARTITION qualified_name
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					PartitionCmd *cmd = makeNode(PartitionCmd);
+
+					n->subtype = AT_AttachPartition;
 					cmd->name = $3;
 					cmd->bound = NULL;
 					n->def = (Node *) cmd;
@@ -7002,7 +7027,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
-					n->objtype = ACL_OBJECT_RELATION;
+					n->objtype = OBJECT_TABLE;
 					n->objs = $1;
 					$$ = n;
 				}
@@ -7010,7 +7035,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
-					n->objtype = ACL_OBJECT_RELATION;
+					n->objtype = OBJECT_TABLE;
 					n->objs = $2;
 					$$ = n;
 				}
@@ -7018,7 +7043,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
-					n->objtype = ACL_OBJECT_SEQUENCE;
+					n->objtype = OBJECT_SEQUENCE;
 					n->objs = $2;
 					$$ = n;
 				}
@@ -7026,7 +7051,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
-					n->objtype = ACL_OBJECT_FDW;
+					n->objtype = OBJECT_FDW;
 					n->objs = $4;
 					$$ = n;
 				}
@@ -7034,7 +7059,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
-					n->objtype = ACL_OBJECT_FOREIGN_SERVER;
+					n->objtype = OBJECT_FOREIGN_SERVER;
 					n->objs = $3;
 					$$ = n;
 				}
@@ -7042,7 +7067,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
-					n->objtype = ACL_OBJECT_FUNCTION;
+					n->objtype = OBJECT_FUNCTION;
 					n->objs = $2;
 					$$ = n;
 				}
@@ -7050,7 +7075,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
-					n->objtype = ACL_OBJECT_PROCEDURE;
+					n->objtype = OBJECT_PROCEDURE;
 					n->objs = $2;
 					$$ = n;
 				}
@@ -7058,7 +7083,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
-					n->objtype = ACL_OBJECT_ROUTINE;
+					n->objtype = OBJECT_ROUTINE;
 					n->objs = $2;
 					$$ = n;
 				}
@@ -7066,7 +7091,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
-					n->objtype = ACL_OBJECT_DATABASE;
+					n->objtype = OBJECT_DATABASE;
 					n->objs = $2;
 					$$ = n;
 				}
@@ -7074,7 +7099,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
-					n->objtype = ACL_OBJECT_DOMAIN;
+					n->objtype = OBJECT_DOMAIN;
 					n->objs = $2;
 					$$ = n;
 				}
@@ -7082,7 +7107,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
-					n->objtype = ACL_OBJECT_LANGUAGE;
+					n->objtype = OBJECT_LANGUAGE;
 					n->objs = $2;
 					$$ = n;
 				}
@@ -7090,7 +7115,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
-					n->objtype = ACL_OBJECT_LARGEOBJECT;
+					n->objtype = OBJECT_LARGEOBJECT;
 					n->objs = $3;
 					$$ = n;
 				}
@@ -7098,7 +7123,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
-					n->objtype = ACL_OBJECT_NAMESPACE;
+					n->objtype = OBJECT_SCHEMA;
 					n->objs = $2;
 					$$ = n;
 				}
@@ -7106,7 +7131,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
-					n->objtype = ACL_OBJECT_TABLESPACE;
+					n->objtype = OBJECT_TABLESPACE;
 					n->objs = $2;
 					$$ = n;
 				}
@@ -7114,7 +7139,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
-					n->objtype = ACL_OBJECT_TYPE;
+					n->objtype = OBJECT_TYPE;
 					n->objs = $2;
 					$$ = n;
 				}
@@ -7122,7 +7147,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_ALL_IN_SCHEMA;
-					n->objtype = ACL_OBJECT_RELATION;
+					n->objtype = OBJECT_TABLE;
 					n->objs = $5;
 					$$ = n;
 				}
@@ -7130,7 +7155,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_ALL_IN_SCHEMA;
-					n->objtype = ACL_OBJECT_SEQUENCE;
+					n->objtype = OBJECT_SEQUENCE;
 					n->objs = $5;
 					$$ = n;
 				}
@@ -7138,7 +7163,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_ALL_IN_SCHEMA;
-					n->objtype = ACL_OBJECT_FUNCTION;
+					n->objtype = OBJECT_FUNCTION;
 					n->objs = $5;
 					$$ = n;
 				}
@@ -7146,7 +7171,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_ALL_IN_SCHEMA;
-					n->objtype = ACL_OBJECT_PROCEDURE;
+					n->objtype = OBJECT_PROCEDURE;
 					n->objs = $5;
 					$$ = n;
 				}
@@ -7154,7 +7179,7 @@ privilege_target:
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_ALL_IN_SCHEMA;
-					n->objtype = ACL_OBJECT_ROUTINE;
+					n->objtype = OBJECT_ROUTINE;
 					n->objs = $5;
 					$$ = n;
 				}
@@ -7312,12 +7337,12 @@ DefACLAction:
 		;
 
 defacl_privilege_target:
-			TABLES			{ $$ = ACL_OBJECT_RELATION; }
-			| FUNCTIONS		{ $$ = ACL_OBJECT_FUNCTION; }
-			| ROUTINES		{ $$ = ACL_OBJECT_FUNCTION; }
-			| SEQUENCES		{ $$ = ACL_OBJECT_SEQUENCE; }
-			| TYPES_P		{ $$ = ACL_OBJECT_TYPE; }
-			| SCHEMAS		{ $$ = ACL_OBJECT_NAMESPACE; }
+			TABLES			{ $$ = OBJECT_TABLE; }
+			| FUNCTIONS		{ $$ = OBJECT_FUNCTION; }
+			| ROUTINES		{ $$ = OBJECT_FUNCTION; }
+			| SEQUENCES		{ $$ = OBJECT_SEQUENCE; }
+			| TYPES_P		{ $$ = OBJECT_TYPE; }
+			| SCHEMAS		{ $$ = OBJECT_SCHEMA; }
 		;
 
 
@@ -7330,7 +7355,7 @@ defacl_privilege_target:
  *****************************************************************************/
 
 IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_index_name
-			ON qualified_name access_method_clause '(' index_params ')'
+			ON relation_expr access_method_clause '(' index_params ')'
 			opt_reloptions OptTableSpace where_clause
 				{
 					IndexStmt *n = makeNode(IndexStmt);
@@ -7338,6 +7363,7 @@ IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_index_name
 					n->concurrent = $4;
 					n->idxname = $5;
 					n->relation = $7;
+					n->relationId = InvalidOid;
 					n->accessMethod = $8;
 					n->indexParams = $10;
 					n->options = $12;
@@ -7356,7 +7382,7 @@ IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_index_name
 					$$ = (Node *)n;
 				}
 			| CREATE opt_unique INDEX opt_concurrently IF_P NOT EXISTS index_name
-			ON qualified_name access_method_clause '(' index_params ')'
+			ON relation_expr access_method_clause '(' index_params ')'
 			opt_reloptions OptTableSpace where_clause
 				{
 					IndexStmt *n = makeNode(IndexStmt);
@@ -7364,6 +7390,7 @@ IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_index_name
 					n->concurrent = $4;
 					n->idxname = $8;
 					n->relation = $10;
+					n->relationId = InvalidOid;
 					n->accessMethod = $11;
 					n->indexParams = $13;
 					n->options = $15;
