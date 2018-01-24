@@ -11,28 +11,6 @@
  * IDENTIFICATION
  *	  src/backend/libpq/be-secure-openssl.c
  *
- *	  Since the server static private key ($DataDir/server.key)
- *	  will normally be stored unencrypted so that the database
- *	  backend can restart automatically, it is important that
- *	  we select an algorithm that continues to provide confidentiality
- *	  even if the attacker has the server's private key.  Ephemeral
- *	  DH (EDH) keys provide this and more (Perfect Forward Secrecy
- *	  aka PFS).
- *
- *	  N.B., the static private key should still be protected to
- *	  the largest extent possible, to minimize the risk of
- *	  impersonations.
- *
- *	  Another benefit of EDH is that it allows the backend and
- *	  clients to use DSA keys.  DSA keys can only provide digital
- *	  signatures, not encryption, and are often acceptable in
- *	  jurisdictions where RSA keys are unacceptable.
- *
- *	  The downside to EDH is that it makes it impossible to
- *	  use ssldump(1) if there's a problem establishing an SSL
- *	  session.  In this case you'll need to temporarily disable
- *	  EDH (see initialize_dh()).
- *
  *-------------------------------------------------------------------------
  */
 
@@ -87,58 +65,16 @@ static SSL_CTX *SSL_context = NULL;
 static bool SSL_initialized = false;
 static bool ssl_passwd_cb_called = false;
 
-/* ------------------------------------------------------------ */
-/*						 Hardcoded values						*/
-/* ------------------------------------------------------------ */
-
-/*
- *	Hardcoded DH parameters, used in ephemeral DH keying.
- *	As discussed above, EDH protects the confidentiality of
- *	sessions even if the static private key is compromised,
- *	so we are *highly* motivated to ensure that we can use
- *	EDH even if the DBA has not provided custom DH parameters.
- *
- *	We could refuse SSL connections unless a good DH parameter
- *	file exists, but some clients may quietly renegotiate an
- *	unsecured connection without fully informing the user.
- *	Very uncool. Alternatively, the system could refuse to start
- *	if a DH parameters is not specified, but this would tend to
- *	piss off DBAs.
- *
- *	If you want to create your own hardcoded DH parameters
- *	for fun and profit, review "Assigned Number for SKIP
- *	Protocols" (http://www.skip-vpn.org/spec/numbers.html)
- *	for suggestions.
- */
-
-static const char file_dh2048[] =
-"-----BEGIN DH PARAMETERS-----\n\
-MIIBCAKCAQEA9kJXtwh/CBdyorrWqULzBej5UxE5T7bxbrlLOCDaAadWoxTpj0BV\n\
-89AHxstDqZSt90xkhkn4DIO9ZekX1KHTUPj1WV/cdlJPPT2N286Z4VeSWc39uK50\n\
-T8X8dryDxUcwYc58yWb/Ffm7/ZFexwGq01uejaClcjrUGvC/RgBYK+X0iP1YTknb\n\
-zSC0neSRBzZrM2w4DUUdD3yIsxx8Wy2O9vPJI8BD8KVbGI2Ou1WMuF040zT9fBdX\n\
-Q6MdGGzeMyEstSr/POGxKUAYEY18hKcKctaGxAMZyAcpesqVDNmWn6vQClCbAkbT\n\
-CD1mpF1Bn5x8vYlLIhkmuquiXsNV6TILOwIBAg==\n\
------END DH PARAMETERS-----\n";
-
 
 /* ------------------------------------------------------------ */
 /*						 Public interface						*/
 /* ------------------------------------------------------------ */
 
-/*
- *	Initialize global SSL context.
- *
- * If isServerStart is true, report any errors as FATAL (so we don't return).
- * Otherwise, log errors at LOG level and return -1 to indicate trouble,
- * preserving the old SSL state if any.  Returns 0 if OK.
- */
 int
 be_tls_init(bool isServerStart)
 {
 	STACK_OF(X509_NAME) *root_cert_list = NULL;
 	SSL_CTX    *context;
-	struct stat buf;
 
 	/* This stuff need be done only once. */
 	if (!SSL_initialized)
@@ -196,63 +132,8 @@ be_tls_init(bool isServerStart)
 		goto error;
 	}
 
-	if (stat(ssl_key_file, &buf) != 0)
-	{
-		ereport(isServerStart ? FATAL : LOG,
-				(errcode_for_file_access(),
-				 errmsg("could not access private key file \"%s\": %m",
-						ssl_key_file)));
+	if (!check_ssl_key_file_permissions(ssl_key_file, isServerStart))
 		goto error;
-	}
-
-	if (!S_ISREG(buf.st_mode))
-	{
-		ereport(isServerStart ? FATAL : LOG,
-				(errcode(ERRCODE_CONFIG_FILE_ERROR),
-				 errmsg("private key file \"%s\" is not a regular file",
-						ssl_key_file)));
-		goto error;
-	}
-
-	/*
-	 * Refuse to load key files owned by users other than us or root.
-	 *
-	 * XXX surely we can check this on Windows somehow, too.
-	 */
-#if !defined(WIN32) && !defined(__CYGWIN__)
-	if (buf.st_uid != geteuid() && buf.st_uid != 0)
-	{
-		ereport(isServerStart ? FATAL : LOG,
-				(errcode(ERRCODE_CONFIG_FILE_ERROR),
-				 errmsg("private key file \"%s\" must be owned by the database user or root",
-						ssl_key_file)));
-		goto error;
-	}
-#endif
-
-	/*
-	 * Require no public access to key file. If the file is owned by us,
-	 * require mode 0600 or less. If owned by root, require 0640 or less to
-	 * allow read access through our gid, or a supplementary gid that allows
-	 * to read system-wide certificates.
-	 *
-	 * XXX temporarily suppress check when on Windows, because there may not
-	 * be proper support for Unix-y file permissions.  Need to think of a
-	 * reasonable check to apply on Windows.  (See also the data directory
-	 * permission check in postmaster.c)
-	 */
-#if !defined(WIN32) && !defined(__CYGWIN__)
-	if ((buf.st_uid == geteuid() && buf.st_mode & (S_IRWXG | S_IRWXO)) ||
-		(buf.st_uid == 0 && buf.st_mode & (S_IWGRP | S_IXGRP | S_IRWXO)))
-	{
-		ereport(isServerStart ? FATAL : LOG,
-				(errcode(ERRCODE_CONFIG_FILE_ERROR),
-				 errmsg("private key file \"%s\" has group or world access",
-						ssl_key_file),
-				 errdetail("File must have permissions u=rw (0600) or less if owned by the database user, or permissions u=rw,g=r (0640) or less if owned by root.")));
-		goto error;
-	}
-#endif
 
 	/*
 	 * OK, try to load the private key file.
@@ -412,9 +293,6 @@ error:
 	return -1;
 }
 
-/*
- *	Destroy global SSL context, if any.
- */
 void
 be_tls_destroy(void)
 {
@@ -424,9 +302,6 @@ be_tls_destroy(void)
 	ssl_loaded_verify_locations = false;
 }
 
-/*
- *	Attempt to negotiate SSL connection.
- */
 int
 be_tls_open_server(Port *port)
 {
@@ -585,19 +460,12 @@ aloop:
 		port->peer_cert_valid = true;
 	}
 
-	ereport(DEBUG2,
-			(errmsg("SSL connection from \"%s\"",
-					port->peer_cn ? port->peer_cn : "(anonymous)")));
-
 	/* set up debugging/info callback */
 	SSL_CTX_set_info_callback(SSL_context, info_cb);
 
 	return 0;
 }
 
-/*
- *	Close SSL connection.
- */
 void
 be_tls_close(Port *port)
 {
@@ -622,9 +490,6 @@ be_tls_close(Port *port)
 	}
 }
 
-/*
- *	Read data from a secure connection.
- */
 ssize_t
 be_tls_read(Port *port, void *ptr, size_t len, int *waitfor)
 {
@@ -684,9 +549,6 @@ be_tls_read(Port *port, void *ptr, size_t len, int *waitfor)
 	return n;
 }
 
-/*
- *	Write data to a secure connection.
- */
 ssize_t
 be_tls_write(Port *port, void *ptr, size_t len, int *waitfor)
 {
@@ -1080,7 +942,7 @@ initialize_dh(SSL_CTX *context, bool isServerStart)
 	if (ssl_dh_params_file[0])
 		dh = load_dh_file(ssl_dh_params_file, isServerStart);
 	if (!dh)
-		dh = load_dh_buffer(file_dh2048, sizeof file_dh2048);
+		dh = load_dh_buffer(FILE_DH2048, sizeof(FILE_DH2048));
 	if (!dh)
 	{
 		ereport(isServerStart ? FATAL : LOG,
@@ -1162,9 +1024,6 @@ SSLerrmessage(unsigned long ecode)
 	return errbuf;
 }
 
-/*
- * Return information about the SSL connection
- */
 int
 be_tls_get_cipher_bits(Port *port)
 {
@@ -1215,12 +1074,6 @@ be_tls_get_peerdn_name(Port *port, char *ptr, size_t len)
 		ptr[0] = '\0';
 }
 
-/*
- * Routine to get the expected TLS Finished message information from the
- * client, useful for authorization when doing channel binding.
- *
- * Result is a palloc'd copy of the TLS Finished message with its size.
- */
 char *
 be_tls_get_peer_finished(Port *port, size_t *len)
 {
@@ -1239,13 +1092,6 @@ be_tls_get_peer_finished(Port *port, size_t *len)
 	return result;
 }
 
-/*
- * Get the server certificate hash for SCRAM channel binding type
- * tls-server-end-point.
- *
- * The result is a palloc'd hash of the server certificate with its
- * size, and NULL if there is no certificate available.
- */
 char *
 be_tls_get_certificate_hash(Port *port, size_t *len)
 {
