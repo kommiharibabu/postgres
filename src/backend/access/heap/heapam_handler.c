@@ -21,7 +21,9 @@
 #include "postgres.h"
 
 #include "access/heapam.h"
+#include "access/relscan.h"
 #include "access/tableamapi.h"
+#include "pgstat.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/rel.h"
@@ -298,6 +300,44 @@ heapam_form_tuple_by_datum(Datum data, Oid tableoid)
 	return heap_form_tuple_by_datum(data, tableoid);
 }
 
+static ParallelHeapScanDesc
+heapam_get_parallelheapscandesc(TableScanDesc sscan)
+{
+	HeapScanDesc scan = (HeapScanDesc) sscan;
+
+	return scan->rs_parallel;
+}
+
+static HeapPageScanDesc
+heapam_get_heappagescandesc(TableScanDesc sscan)
+{
+	HeapScanDesc scan = (HeapScanDesc) sscan;
+
+	return &scan->rs_pagescan;
+}
+
+static TableTuple
+heapam_fetch_tuple_from_offset(TableScanDesc sscan, BlockNumber blkno, OffsetNumber offset)
+{
+	HeapScanDesc scan = (HeapScanDesc) sscan;
+	Page		dp;
+	ItemId		lp;
+
+	dp = (Page) BufferGetPage(scan->rs_scan.rs_cbuf);
+	lp = PageGetItemId(dp, offset);
+	Assert(ItemIdIsNormal(lp));
+
+	scan->rs_ctup.t_data = (HeapTupleHeader) PageGetItem((Page) dp, lp);
+	scan->rs_ctup.t_len = ItemIdGetLength(lp);
+	scan->rs_ctup.t_tableOid = scan->rs_scan.rs_rd->rd_id;
+	ItemPointerSet(&scan->rs_ctup.t_self, blkno, offset);
+
+	pgstat_count_heap_fetch(scan->rs_scan.rs_rd);
+
+	return &(scan->rs_ctup);
+}
+
+
 Datum
 heap_tableam_handler(PG_FUNCTION_ARGS)
 {
@@ -318,6 +358,19 @@ heap_tableam_handler(PG_FUNCTION_ARGS)
 	amroutine->scan_rescan = heap_rescan;
 	amroutine->scan_update_snapshot = heap_update_snapshot;
 	amroutine->hot_search_buffer = heap_hot_search_buffer;
+	amroutine->scan_fetch_tuple_from_offset = heapam_fetch_tuple_from_offset;
+
+	/*
+	 * The following routine needs to be provided when the storage support
+	 * parallel sequential scan
+	 */
+	amroutine->scan_get_parallelheapscandesc = heapam_get_parallelheapscandesc;
+
+	/*
+	 * The following routine needs to be provided when the storage support
+	 * BitmapHeap and Sample Scans
+	 */
+	amroutine->scan_get_heappagescandesc = heapam_get_heappagescandesc;
 
 	amroutine->tuple_fetch = heapam_fetch;
 	amroutine->tuple_insert = heapam_heap_insert;

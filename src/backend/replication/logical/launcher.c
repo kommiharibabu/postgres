@@ -107,7 +107,7 @@ get_subscription_list(void)
 {
 	List	   *res = NIL;
 	Relation	rel;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	tup;
 	MemoryContext resultcxt;
 

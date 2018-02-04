@@ -56,7 +56,7 @@ table_lock_tuple(Relation relation, ItemPointer tid, TableTuple * stuple,
  *		Caller must hold a suitable lock on the correct relation.
  * ----------------
  */
-HeapScanDesc
+TableScanDesc
 table_beginscan_parallel(Relation relation, ParallelHeapScanDesc parallel_scan)
 {
 	Snapshot	snapshot;
@@ -79,6 +79,25 @@ table_beginscan_parallel(Relation relation, ParallelHeapScanDesc parallel_scan)
 												true, true, true, false, false, !parallel_scan->phs_snapshot_any);
 }
 
+ParallelHeapScanDesc
+tableam_get_parallelheapscandesc(TableScanDesc sscan)
+{
+	return sscan->rs_rd->rd_tableamroutine->scan_get_parallelheapscandesc(sscan);
+}
+
+HeapPageScanDesc
+tableam_get_heappagescandesc(TableScanDesc sscan)
+{
+	/*
+	 * Planner should have already validated whether the current storage
+	 * supports Page scans are not? This function will be called only from
+	 * Bitmap Heap scan and sample scan
+	 */
+	Assert(sscan->rs_rd->rd_tableamroutine->scan_get_heappagescandesc != NULL);
+
+	return sscan->rs_rd->rd_tableamroutine->scan_get_heappagescandesc(sscan);
+}
+
 /*
  * heap_setscanlimits - restrict range of a heapscan
  *
@@ -86,7 +105,7 @@ table_beginscan_parallel(Relation relation, ParallelHeapScanDesc parallel_scan)
  * numBlks is number of pages to scan (InvalidBlockNumber means "all")
  */
 void
-table_setscanlimits(HeapScanDesc sscan, BlockNumber startBlk, BlockNumber numBlks)
+table_setscanlimits(TableScanDesc sscan, BlockNumber startBlk, BlockNumber numBlks)
 {
 	sscan->rs_rd->rd_tableamroutine->scansetlimits(sscan, startBlk, numBlks);
 }
@@ -105,18 +124,18 @@ table_setscanlimits(HeapScanDesc sscan, BlockNumber startBlk, BlockNumber numBlk
  * block zero).  Both of these default to true with plain heap_beginscan.
  *
  * heap_beginscan_bm is an alternative entry point for setting up a
- * HeapScanDesc for a bitmap heap scan.  Although that scan technology is
+ * TableScanDesc for a bitmap heap scan.  Although that scan technology is
  * really quite unlike a standard seqscan, there is just enough commonality
  * to make it worth using the same data structure.
  *
  * heap_beginscan_sampling is an alternative entry point for setting up a
- * HeapScanDesc for a TABLESAMPLE scan.  As with bitmap scans, it's worth
+ * TableScanDesc for a TABLESAMPLE scan.  As with bitmap scans, it's worth
  * using the same data structure although the behavior is rather different.
  * In addition to the options offered by heap_beginscan_strat, this call
  * also allows control of whether page-mode visibility checking is used.
  * ----------------
  */
-HeapScanDesc
+TableScanDesc
 table_beginscan(Relation relation, Snapshot snapshot,
 				  int nkeys, ScanKey key)
 {
@@ -124,7 +143,7 @@ table_beginscan(Relation relation, Snapshot snapshot,
 												true, true, true, false, false, false);
 }
 
-HeapScanDesc
+TableScanDesc
 table_beginscan_catalog(Relation relation, int nkeys, ScanKey key)
 {
 	Oid			relid = RelationGetRelid(relation);
@@ -134,7 +153,7 @@ table_beginscan_catalog(Relation relation, int nkeys, ScanKey key)
 												true, true, true, false, false, true);
 }
 
-HeapScanDesc
+TableScanDesc
 table_beginscan_strat(Relation relation, Snapshot snapshot,
 						int nkeys, ScanKey key,
 						bool allow_strat, bool allow_sync)
@@ -144,7 +163,7 @@ table_beginscan_strat(Relation relation, Snapshot snapshot,
 												false, false, false);
 }
 
-HeapScanDesc
+TableScanDesc
 table_beginscan_bm(Relation relation, Snapshot snapshot,
 					 int nkeys, ScanKey key)
 {
@@ -152,7 +171,7 @@ table_beginscan_bm(Relation relation, Snapshot snapshot,
 												false, false, true, true, false, false);
 }
 
-HeapScanDesc
+TableScanDesc
 table_beginscan_sampling(Relation relation, Snapshot snapshot,
 						   int nkeys, ScanKey key,
 						   bool allow_strat, bool allow_sync, bool allow_pagemode)
@@ -167,7 +186,7 @@ table_beginscan_sampling(Relation relation, Snapshot snapshot,
  * ----------------
  */
 void
-table_rescan(HeapScanDesc scan,
+table_rescan(TableScanDesc scan,
 			   ScanKey key)
 {
 	scan->rs_rd->rd_tableamroutine->scan_rescan(scan, key, false, false, false, false);
@@ -183,7 +202,7 @@ table_rescan(HeapScanDesc scan,
  * ----------------
  */
 void
-table_rescan_set_params(HeapScanDesc scan, ScanKey key,
+table_rescan_set_params(TableScanDesc scan, ScanKey key,
 						  bool allow_strat, bool allow_sync, bool allow_pagemode)
 {
 	scan->rs_rd->rd_tableamroutine->scan_rescan(scan, key, true,
@@ -198,7 +217,7 @@ table_rescan_set_params(HeapScanDesc scan, ScanKey key,
  * ----------------
  */
 void
-table_endscan(HeapScanDesc scan)
+table_endscan(TableScanDesc scan)
 {
 	scan->rs_rd->rd_tableamroutine->scan_end(scan);
 }
@@ -211,22 +230,29 @@ table_endscan(HeapScanDesc scan)
  * ----------------
  */
 void
-table_scan_update_snapshot(HeapScanDesc scan, Snapshot snapshot)
+table_scan_update_snapshot(TableScanDesc scan, Snapshot snapshot)
 {
 	scan->rs_rd->rd_tableamroutine->scan_update_snapshot(scan, snapshot);
 }
 
 TableTuple
-table_scan_getnext(HeapScanDesc sscan, ScanDirection direction)
+table_scan_getnext(TableScanDesc sscan, ScanDirection direction)
 {
 	return sscan->rs_rd->rd_tableamroutine->scan_getnext(sscan, direction);
 }
 
 TupleTableSlot *
-table_scan_getnextslot(HeapScanDesc sscan, ScanDirection direction, TupleTableSlot *slot)
+table_scan_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *slot)
 {
 	return sscan->rs_rd->rd_tableamroutine->scan_getnextslot(sscan, direction, slot);
 }
+
+TableTuple
+table_tuple_fetch_from_offset(TableScanDesc sscan, BlockNumber blkno, OffsetNumber offset)
+{
+	return sscan->rs_rd->rd_tableamroutine->scan_fetch_tuple_from_offset(sscan, blkno, offset);
+}
+
 
 /*
  * Insert a tuple from a slot into table AM routine

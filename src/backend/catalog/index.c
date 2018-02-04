@@ -2067,7 +2067,7 @@ index_update_stats(Relation rel,
 		ReindexIsProcessingHeap(RelationRelationId))
 	{
 		/* don't assume syscache will work */
-		HeapScanDesc pg_class_scan;
+		TableScanDesc pg_class_scan;
 		ScanKeyData key[1];
 
 		ScanKeyInit(&key[0],
@@ -2375,7 +2375,7 @@ IndexBuildHeapScan(Relation heapRelation,
 				   bool allow_sync,
 				   IndexBuildCallback callback,
 				   void *callback_state,
-				   HeapScanDesc scan)
+				   TableScanDesc scan)
 {
 	return IndexBuildHeapRangeScan(heapRelation, indexRelation,
 								   indexInfo, allow_sync,
@@ -2404,7 +2404,7 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 						BlockNumber numblocks,
 						IndexBuildCallback callback,
 						void *callback_state,
-						HeapScanDesc scan)
+						TableScanDesc scan)
 {
 	bool		is_system_catalog;
 	bool		checking_uniqueness;
@@ -2880,7 +2880,7 @@ IndexCheckExclusion(Relation heapRelation,
 					Relation indexRelation,
 					IndexInfo *indexInfo)
 {
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	heapTuple;
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
@@ -3194,7 +3194,7 @@ validate_index_heapscan(Relation heapRelation,
 						Snapshot snapshot,
 						v_i_state *state)
 {
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	heapTuple;
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];

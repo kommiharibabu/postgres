@@ -1214,7 +1214,7 @@ static bool
 ThereIsAtLeastOneRole(void)
 {
 	Relation	pg_authid_rel;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	bool		result;
 
 	pg_authid_rel = heap_open(AuthIdRelationId, AccessShareLock);

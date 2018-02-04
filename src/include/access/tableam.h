@@ -42,29 +42,31 @@ typedef List *(*InsertIndexTuples) (TupleTableSlot *slot, EState *estate, bool n
 /* Function pointer to let the index tuple delete from storage am */
 typedef void (*DeleteIndexTuples) (Relation rel, ItemPointer tid, TransactionId old_xmin);
 
-extern HeapScanDesc table_beginscan_parallel(Relation relation, ParallelHeapScanDesc parallel_scan);
-
-extern void table_setscanlimits(HeapScanDesc sscan, BlockNumber startBlk, BlockNumber numBlks);
-extern HeapScanDesc table_beginscan(Relation relation, Snapshot snapshot,
+extern TableScanDesc table_beginscan_parallel(Relation relation, ParallelHeapScanDesc parallel_scan);
+extern ParallelHeapScanDesc tableam_get_parallelheapscandesc(TableScanDesc sscan);
+extern HeapPageScanDesc tableam_get_heappagescandesc(TableScanDesc sscan);
+extern void table_setscanlimits(TableScanDesc sscan, BlockNumber startBlk, BlockNumber numBlks);
+extern TableScanDesc table_beginscan(Relation relation, Snapshot snapshot,
 				  int nkeys, ScanKey key);
-extern HeapScanDesc table_beginscan_catalog(Relation relation, int nkeys, ScanKey key);
-extern HeapScanDesc table_beginscan_strat(Relation relation, Snapshot snapshot,
+extern TableScanDesc table_beginscan_catalog(Relation relation, int nkeys, ScanKey key);
+extern TableScanDesc table_beginscan_strat(Relation relation, Snapshot snapshot,
 						int nkeys, ScanKey key,
 						bool allow_strat, bool allow_sync);
-extern HeapScanDesc table_beginscan_bm(Relation relation, Snapshot snapshot,
+extern TableScanDesc table_beginscan_bm(Relation relation, Snapshot snapshot,
 					 int nkeys, ScanKey key);
-extern HeapScanDesc table_beginscan_sampling(Relation relation, Snapshot snapshot,
+extern TableScanDesc table_beginscan_sampling(Relation relation, Snapshot snapshot,
 						   int nkeys, ScanKey key,
 						   bool allow_strat, bool allow_sync, bool allow_pagemode);
 
-extern void table_endscan(HeapScanDesc scan);
-extern void table_rescan(HeapScanDesc scan, ScanKey key);
-extern void table_rescan_set_params(HeapScanDesc scan, ScanKey key,
+extern void table_endscan(TableScanDesc scan);
+extern void table_rescan(TableScanDesc scan, ScanKey key);
+extern void table_rescan_set_params(TableScanDesc scan, ScanKey key,
 						  bool allow_strat, bool allow_sync, bool allow_pagemode);
-extern void table_scan_update_snapshot(HeapScanDesc scan, Snapshot snapshot);
+extern void table_scan_update_snapshot(TableScanDesc scan, Snapshot snapshot);
 
-extern TableTuple table_scan_getnext(HeapScanDesc sscan, ScanDirection direction);
-extern TupleTableSlot *table_scan_getnextslot(HeapScanDesc sscan, ScanDirection direction, TupleTableSlot *slot);
+extern TableTuple table_scan_getnext(TableScanDesc sscan, ScanDirection direction);
+extern TupleTableSlot *table_scan_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *slot);
+extern TableTuple table_tuple_fetch_from_offset(TableScanDesc sscan, BlockNumber blkno, OffsetNumber offset);
 
 extern void storage_get_latest_tid(Relation relation,
 					   Snapshot snapshot,

@@ -1119,7 +1119,7 @@ typedef struct ScanState
 {
 	PlanState	ps;				/* its first field is NodeTag */
 	Relation	ss_currentRelation;
-	HeapScanDesc ss_currentScanDesc;
+	TableScanDesc ss_currentScanDesc;
 	TupleTableSlot *ss_ScanTupleSlot;
 } ScanState;
 
@@ -1140,6 +1140,7 @@ typedef struct SeqScanState
 typedef struct SampleScanState
 {
 	ScanState	ss;
+	HeapPageScanDesc pagescan;
 	List	   *args;			/* expr states for TABLESAMPLE params */
 	ExprState  *repeatable;		/* expr state for REPEATABLE expr */
 	/* use struct pointer to avoid including tsmapi.h here */
@@ -1368,6 +1369,7 @@ typedef struct ParallelBitmapHeapState
 typedef struct BitmapHeapScanState
 {
 	ScanState	ss;				/* its first field is NodeTag */
+	HeapPageScanDesc pagescan;
 	ExprState  *bitmapqualorig;
 	TIDBitmap  *tbm;
 	TBMIterator *tbmiterator;

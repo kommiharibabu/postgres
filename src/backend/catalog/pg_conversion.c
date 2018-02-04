@@ -151,7 +151,7 @@ RemoveConversionById(Oid conversionOid)
 {
 	Relation	rel;
 	HeapTuple	tuple;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	ScanKeyData scanKeyData;
 
 	ScanKeyInit(&scanKeyData,

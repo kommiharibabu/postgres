@@ -171,7 +171,7 @@ void
 DropSetting(Oid databaseid, Oid roleid)
 {
 	Relation	relsetting;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	ScanKeyData keys[2];
 	HeapTuple	tup;
 	int			numkeys = 0;

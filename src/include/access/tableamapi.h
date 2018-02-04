@@ -82,7 +82,7 @@ typedef TableTuple(*TupleFromDatum_function) (Datum data, Oid tableoid);
 typedef void (*RelationSync_function) (Relation relation);
 
 
-typedef HeapScanDesc (*ScanBegin_function) (Relation relation,
+typedef TableScanDesc (*ScanBegin_function) (Relation relation,
 											Snapshot snapshot,
 											int nkeys, ScanKey key,
 											ParallelHeapScanDesc parallel_scan,
@@ -92,22 +92,29 @@ typedef HeapScanDesc (*ScanBegin_function) (Relation relation,
 											bool is_bitmapscan,
 											bool is_samplescan,
 											bool temp_snap);
-typedef void (*ScanSetlimits_function) (HeapScanDesc sscan, BlockNumber startBlk, BlockNumber numBlks);
+
+typedef ParallelHeapScanDesc (*ScanGetParallelheapscandesc_function) (TableScanDesc scan);
+typedef HeapPageScanDesc(*ScanGetHeappagescandesc_function) (TableScanDesc scan);
+
+typedef void (*ScanSetlimits_function) (TableScanDesc sscan, BlockNumber startBlk, BlockNumber numBlks);
 
 /* must return a TupleTableSlot? */
-typedef TableTuple(*ScanGetnext_function) (HeapScanDesc scan,
+typedef TableTuple(*ScanGetnext_function) (TableScanDesc scan,
 											 ScanDirection direction);
 
-typedef TupleTableSlot *(*ScanGetnextSlot_function) (HeapScanDesc scan,
+typedef TupleTableSlot *(*ScanGetnextSlot_function) (TableScanDesc scan,
 													 ScanDirection direction, TupleTableSlot *slot);
 
-typedef void (*ScanEnd_function) (HeapScanDesc scan);
+typedef TableTuple(*ScanFetchTupleFromOffset_function) (TableScanDesc scan,
+														  BlockNumber blkno, OffsetNumber offset);
+
+typedef void (*ScanEnd_function) (TableScanDesc scan);
 
 
-typedef void (*ScanGetpage_function) (HeapScanDesc scan, BlockNumber page);
-typedef void (*ScanRescan_function) (HeapScanDesc scan, ScanKey key, bool set_params,
+typedef void (*ScanGetpage_function) (TableScanDesc scan, BlockNumber page);
+typedef void (*ScanRescan_function) (TableScanDesc scan, ScanKey key, bool set_params,
 									 bool allow_strat, bool allow_sync, bool allow_pagemode);
-typedef void (*ScanUpdateSnapshot_function) (HeapScanDesc scan, Snapshot snapshot);
+typedef void (*ScanUpdateSnapshot_function) (TableScanDesc scan, Snapshot snapshot);
 
 typedef bool (*HotSearchBuffer_function) (ItemPointer tid, Relation relation,
 										  Buffer buffer, Snapshot snapshot, HeapTuple heapTuple,
@@ -149,9 +156,12 @@ typedef struct TableAmRoutine
 
 	/* Operations on relation scans */
 	ScanBegin_function scan_begin;
+	ScanGetParallelheapscandesc_function scan_get_parallelheapscandesc;
+	ScanGetHeappagescandesc_function scan_get_heappagescandesc;
 	ScanSetlimits_function scansetlimits;
 	ScanGetnext_function scan_getnext;
 	ScanGetnextSlot_function scan_getnextslot;
+	ScanFetchTupleFromOffset_function scan_fetch_tuple_from_offset;
 	ScanEnd_function scan_end;
 	ScanGetpage_function scan_getpage;
 	ScanRescan_function scan_rescan;

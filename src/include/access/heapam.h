@@ -98,6 +98,8 @@ extern Relation heap_openrv_extended(const RangeVar *relation,
 #define heap_close(r,l)  relation_close(r,l)
 
 /* struct definitions appear in relscan.h */
+typedef struct HeapPageScanDescData *HeapPageScanDesc;
+typedef struct TableScanDescData *TableScanDesc;
 typedef struct HeapScanDescData *HeapScanDesc;
 typedef struct ParallelHeapScanDescData *ParallelHeapScanDesc;
 
@@ -107,7 +109,7 @@ typedef struct ParallelHeapScanDescData *ParallelHeapScanDesc;
  */
 #define HeapScanIsValid(scan) PointerIsValid(scan)
 
-extern HeapScanDesc heap_beginscan(Relation relation, Snapshot snapshot,
+extern TableScanDesc heap_beginscan(Relation relation, Snapshot snapshot,
 			   int nkeys, ScanKey key,
 			   ParallelHeapScanDesc parallel_scan,
 			   bool allow_strat,
@@ -116,22 +118,22 @@ extern HeapScanDesc heap_beginscan(Relation relation, Snapshot snapshot,
 			   bool is_bitmapscan,
 			   bool is_samplescan,
 			   bool temp_snap);
-extern void heap_setscanlimits(HeapScanDesc scan, BlockNumber startBlk,
+extern void heap_setscanlimits(TableScanDesc scan, BlockNumber startBlk,
 				   BlockNumber endBlk);
-extern void heapgetpage(HeapScanDesc scan, BlockNumber page);
-extern void heap_rescan(HeapScanDesc scan, ScanKey key, bool set_params,
+extern void heapgetpage(TableScanDesc scan, BlockNumber page);
+extern void heap_rescan(TableScanDesc scan, ScanKey key, bool set_params,
 			bool allow_strat, bool allow_sync, bool allow_pagemode);
-extern void heap_rescan_set_params(HeapScanDesc scan, ScanKey key,
+extern void heap_rescan_set_params(TableScanDesc scan, ScanKey key,
 					   bool allow_strat, bool allow_sync, bool allow_pagemode);
-extern void heap_endscan(HeapScanDesc scan);
-extern TableTuple heap_getnext(HeapScanDesc scan, ScanDirection direction);
-extern TupleTableSlot *heap_getnextslot(HeapScanDesc sscan, ScanDirection direction,
+extern void heap_endscan(TableScanDesc scan);
+extern TableTuple heap_getnext(TableScanDesc scan, ScanDirection direction);
+extern TupleTableSlot *heap_getnextslot(TableScanDesc sscan, ScanDirection direction,
 				 TupleTableSlot *slot);
 extern Size heap_parallelscan_estimate(Snapshot snapshot);
 extern void heap_parallelscan_initialize(ParallelHeapScanDesc target,
 							 Relation relation, Snapshot snapshot);
 extern void heap_parallelscan_reinitialize(ParallelHeapScanDesc parallel_scan);
-extern HeapScanDesc heap_beginscan_parallel(Relation, ParallelHeapScanDesc);
+extern TableScanDesc heap_beginscan_parallel(Relation, ParallelHeapScanDesc);
 
 extern bool heap_fetch(Relation relation, ItemPointer tid, Snapshot snapshot,
 		   HeapTuple tuple, Buffer *userbuf, bool keep_buf,
@@ -181,7 +183,7 @@ extern void simple_heap_update(Relation relation, ItemPointer otid,
 				   HeapTuple tup);
 
 extern void heap_sync(Relation relation);
-extern void heap_update_snapshot(HeapScanDesc scan, Snapshot snapshot);
+extern void heap_update_snapshot(TableScanDesc scan, Snapshot snapshot);
 
 /* in heap/pruneheap.c */
 extern void heap_page_prune_opt(Relation relation, Buffer buffer);
