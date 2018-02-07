@@ -87,5 +87,6 @@ DESCR("block range index (BRIN) access method");
 DATA(insert OID = 4001 (  heap_tableam         heap_tableam_handler s ));
 DESCR("heap table access method");
 #define HEAP_TABLE_AM_OID 4001
+#define DEFAULT_TABLE_ACCESS_METHOD "heap_tableam"
 
 #endif							/* PG_AM_H */

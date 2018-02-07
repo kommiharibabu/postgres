@@ -536,6 +536,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	static char *validnsps[] = HEAP_RELOPT_NAMESPACES;
 	Oid			ofTypeId;
 	ObjectAddress address;
+	Oid			accessMethodId = InvalidOid;
 
 	/*
 	 * Truncate relname to appropriate length (probably a waste of time, as
@@ -740,6 +741,32 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	}
 
 	/*
+	 * look up the access method, verify it can handle the requested features
+	 */
+	if (stmt->accessMethod != NULL)
+	{
+		HeapTuple	tuple;
+
+		tuple = SearchSysCache1(AMNAME, PointerGetDatum(stmt->accessMethod));
+		if (!HeapTupleIsValid(tuple))
+				ereport(ERROR,
+						(errcode(ERRCODE_UNDEFINED_OBJECT),
+						 errmsg("table access method \"%s\" does not exist",
+								 stmt->accessMethod)));
+		accessMethodId = HeapTupleGetOid(tuple);
+		ReleaseSysCache(tuple);
+	}
+	else if (relkind == RELKIND_RELATION ||
+			relkind == RELKIND_SEQUENCE ||
+			relkind == RELKIND_TOASTVALUE ||
+			relkind == RELKIND_VIEW ||
+			relkind == RELKIND_MATVIEW ||
+			relkind == RELKIND_PARTITIONED_TABLE)
+	{
+		accessMethodId = HEAP_TABLE_AM_OID;
+	}
+
+	/*
 	 * Create the relation.  Inherited defaults and constraints are passed in
 	 * for immediate handling --- since they don't need parsing, they can be
 	 * stored immediately.
@@ -751,6 +778,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 										  InvalidOid,
 										  ofTypeId,
 										  ownerId,
+										  accessMethodId,
 										  descriptor,
 										  list_concat(cookedDefaults,
 													  old_constraints),

@@ -894,6 +894,7 @@ index_create(Relation heapRelation,
 								tableSpaceId,
 								indexRelationId,
 								relFileNode,
+								accessMethodObjectId,
 								indexTupDesc,
 								relkind,
 								relpersistence,
@@ -917,7 +918,6 @@ index_create(Relation heapRelation,
 	 * XXX should have a cleaner way to create cataloged indexes
 	 */
 	indexRelation->rd_rel->relowner = heapRelation->rd_rel->relowner;
-	indexRelation->rd_rel->relam = accessMethodObjectId;
 	indexRelation->rd_rel->relhasoids = false;
 
 	/*

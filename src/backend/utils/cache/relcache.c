@@ -1891,11 +1891,8 @@ RelationInitTableAccessMethod(Relation relation)
 	HeapTuple	tuple;
 	Form_pg_am	aform;
 
-	/*
-	 * Relations that don't have a catalogued table access method use the
-	 * standard heap tableam module; otherwise a catalog lookup is in order.
-	 */
-	if (!OidIsValid(relation->rd_rel->relam))
+	if (IsCatalogRelation(relation) ||
+			!OidIsValid(relation->rd_rel->relam))
 	{
 		relation->rd_tableamhandler = HEAP_TABLE_AM_HANDLER_OID;
 	}
@@ -2081,6 +2078,7 @@ formrdesc(const char *relationName, Oid relationReltype,
 	/*
 	 * initialize the table am handler
 	 */
+	relation->rd_rel->relam = HEAP_TABLE_AM_OID;
 	relation->rd_tableamroutine = GetHeapamTableAmRoutine();
 
 	/*
@@ -3251,6 +3249,7 @@ RelationBuildLocalRelation(const char *relname,
 						   Oid relnamespace,
 						   TupleDesc tupDesc,
 						   Oid relid,
+						   Oid accessmtd,
 						   Oid relfilenode,
 						   Oid reltablespace,
 						   bool shared_relation,
@@ -3430,6 +3429,8 @@ RelationBuildLocalRelation(const char *relname,
 	RelationInitLockInfo(rel);	/* see lmgr.c */
 
 	RelationInitPhysicalAddr(rel);
+
+	rel->rd_rel->relam = accessmtd;
 
 	if (relkind == RELKIND_RELATION ||
 		relkind == RELKIND_MATVIEW ||
@@ -3963,6 +3964,7 @@ RelationCacheInitializePhase3(void)
 		if (relation->rd_tableamroutine == NULL &&
 			(relation->rd_rel->relkind == RELKIND_RELATION ||
 			 relation->rd_rel->relkind == RELKIND_MATVIEW ||
+			 relation->rd_rel->relkind == RELKIND_VIEW ||
 			 relation->rd_rel->relkind == RELKIND_PARTITIONED_TABLE ||
 			 relation->rd_rel->relkind == RELKIND_TOASTVALUE))
 		{
