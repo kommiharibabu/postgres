@@ -594,11 +594,11 @@ do_compile(FunctionCallInfo fcinfo,
 						 errhint("The arguments of the trigger can be accessed through TG_NARGS and TG_ARGV instead.")));
 
 			/* Add the record for referencing NEW ROW */
-			rec = plpgsql_build_record("new", 0, RECORDOID, true);
+			rec = plpgsql_build_record("new", 0, NULL, RECORDOID, true);
 			function->new_varno = rec->dno;
 
 			/* Add the record for referencing OLD ROW */
-			rec = plpgsql_build_record("old", 0, RECORDOID, true);
+			rec = plpgsql_build_record("old", 0, NULL, RECORDOID, true);
 			function->old_varno = rec->dno;
 
 			/* Add the variable tg_name */
@@ -607,7 +607,9 @@ do_compile(FunctionCallInfo fcinfo,
 																-1,
 																InvalidOid),
 										 true);
-			function->tg_name_varno = var->dno;
+			Assert(var->dtype == PLPGSQL_DTYPE_VAR);
+			var->dtype = PLPGSQL_DTYPE_PROMISE;
+			((PLpgSQL_var *) var)->promise = PLPGSQL_PROMISE_TG_NAME;
 
 			/* Add the variable tg_when */
 			var = plpgsql_build_variable("tg_when", 0,
@@ -615,7 +617,9 @@ do_compile(FunctionCallInfo fcinfo,
 																-1,
 																function->fn_input_collation),
 										 true);
-			function->tg_when_varno = var->dno;
+			Assert(var->dtype == PLPGSQL_DTYPE_VAR);
+			var->dtype = PLPGSQL_DTYPE_PROMISE;
+			((PLpgSQL_var *) var)->promise = PLPGSQL_PROMISE_TG_WHEN;
 
 			/* Add the variable tg_level */
 			var = plpgsql_build_variable("tg_level", 0,
@@ -623,7 +627,9 @@ do_compile(FunctionCallInfo fcinfo,
 																-1,
 																function->fn_input_collation),
 										 true);
-			function->tg_level_varno = var->dno;
+			Assert(var->dtype == PLPGSQL_DTYPE_VAR);
+			var->dtype = PLPGSQL_DTYPE_PROMISE;
+			((PLpgSQL_var *) var)->promise = PLPGSQL_PROMISE_TG_LEVEL;
 
 			/* Add the variable tg_op */
 			var = plpgsql_build_variable("tg_op", 0,
@@ -631,7 +637,9 @@ do_compile(FunctionCallInfo fcinfo,
 																-1,
 																function->fn_input_collation),
 										 true);
-			function->tg_op_varno = var->dno;
+			Assert(var->dtype == PLPGSQL_DTYPE_VAR);
+			var->dtype = PLPGSQL_DTYPE_PROMISE;
+			((PLpgSQL_var *) var)->promise = PLPGSQL_PROMISE_TG_OP;
 
 			/* Add the variable tg_relid */
 			var = plpgsql_build_variable("tg_relid", 0,
@@ -639,7 +647,9 @@ do_compile(FunctionCallInfo fcinfo,
 																-1,
 																InvalidOid),
 										 true);
-			function->tg_relid_varno = var->dno;
+			Assert(var->dtype == PLPGSQL_DTYPE_VAR);
+			var->dtype = PLPGSQL_DTYPE_PROMISE;
+			((PLpgSQL_var *) var)->promise = PLPGSQL_PROMISE_TG_RELID;
 
 			/* Add the variable tg_relname */
 			var = plpgsql_build_variable("tg_relname", 0,
@@ -647,7 +657,9 @@ do_compile(FunctionCallInfo fcinfo,
 																-1,
 																InvalidOid),
 										 true);
-			function->tg_relname_varno = var->dno;
+			Assert(var->dtype == PLPGSQL_DTYPE_VAR);
+			var->dtype = PLPGSQL_DTYPE_PROMISE;
+			((PLpgSQL_var *) var)->promise = PLPGSQL_PROMISE_TG_TABLE_NAME;
 
 			/* tg_table_name is now preferred to tg_relname */
 			var = plpgsql_build_variable("tg_table_name", 0,
@@ -655,7 +667,9 @@ do_compile(FunctionCallInfo fcinfo,
 																-1,
 																InvalidOid),
 										 true);
-			function->tg_table_name_varno = var->dno;
+			Assert(var->dtype == PLPGSQL_DTYPE_VAR);
+			var->dtype = PLPGSQL_DTYPE_PROMISE;
+			((PLpgSQL_var *) var)->promise = PLPGSQL_PROMISE_TG_TABLE_NAME;
 
 			/* add the variable tg_table_schema */
 			var = plpgsql_build_variable("tg_table_schema", 0,
@@ -663,7 +677,9 @@ do_compile(FunctionCallInfo fcinfo,
 																-1,
 																InvalidOid),
 										 true);
-			function->tg_table_schema_varno = var->dno;
+			Assert(var->dtype == PLPGSQL_DTYPE_VAR);
+			var->dtype = PLPGSQL_DTYPE_PROMISE;
+			((PLpgSQL_var *) var)->promise = PLPGSQL_PROMISE_TG_TABLE_SCHEMA;
 
 			/* Add the variable tg_nargs */
 			var = plpgsql_build_variable("tg_nargs", 0,
@@ -671,7 +687,9 @@ do_compile(FunctionCallInfo fcinfo,
 																-1,
 																InvalidOid),
 										 true);
-			function->tg_nargs_varno = var->dno;
+			Assert(var->dtype == PLPGSQL_DTYPE_VAR);
+			var->dtype = PLPGSQL_DTYPE_PROMISE;
+			((PLpgSQL_var *) var)->promise = PLPGSQL_PROMISE_TG_NARGS;
 
 			/* Add the variable tg_argv */
 			var = plpgsql_build_variable("tg_argv", 0,
@@ -679,7 +697,9 @@ do_compile(FunctionCallInfo fcinfo,
 																-1,
 																function->fn_input_collation),
 										 true);
-			function->tg_argv_varno = var->dno;
+			Assert(var->dtype == PLPGSQL_DTYPE_VAR);
+			var->dtype = PLPGSQL_DTYPE_PROMISE;
+			((PLpgSQL_var *) var)->promise = PLPGSQL_PROMISE_TG_ARGV;
 
 			break;
 
@@ -701,7 +721,9 @@ do_compile(FunctionCallInfo fcinfo,
 																-1,
 																function->fn_input_collation),
 										 true);
-			function->tg_event_varno = var->dno;
+			Assert(var->dtype == PLPGSQL_DTYPE_VAR);
+			var->dtype = PLPGSQL_DTYPE_PROMISE;
+			((PLpgSQL_var *) var)->promise = PLPGSQL_PROMISE_TG_EVENT;
 
 			/* Add the variable tg_tag */
 			var = plpgsql_build_variable("tg_tag", 0,
@@ -709,7 +731,9 @@ do_compile(FunctionCallInfo fcinfo,
 																-1,
 																function->fn_input_collation),
 										 true);
-			function->tg_tag_varno = var->dno;
+			Assert(var->dtype == PLPGSQL_DTYPE_VAR);
+			var->dtype = PLPGSQL_DTYPE_PROMISE;
+			((PLpgSQL_var *) var)->promise = PLPGSQL_PROMISE_TG_TAG;
 
 			break;
 
@@ -1787,7 +1811,7 @@ plpgsql_build_variable(const char *refname, int lineno, PLpgSQL_type *dtype,
 				var->refname = pstrdup(refname);
 				var->lineno = lineno;
 				var->datatype = dtype;
-				/* other fields might be filled by caller */
+				/* other fields are left as 0, might be changed by caller */
 
 				/* preset to NULL */
 				var->value = 0;
@@ -1807,7 +1831,8 @@ plpgsql_build_variable(const char *refname, int lineno, PLpgSQL_type *dtype,
 				/* Composite type -- build a record variable */
 				PLpgSQL_rec *rec;
 
-				rec = plpgsql_build_record(refname, lineno, dtype->typoid,
+				rec = plpgsql_build_record(refname, lineno,
+										   dtype, dtype->typoid,
 										   add2namespace);
 				result = (PLpgSQL_variable *) rec;
 				break;
@@ -1832,7 +1857,8 @@ plpgsql_build_variable(const char *refname, int lineno, PLpgSQL_type *dtype,
  * Build empty named record variable, and optionally add it to namespace
  */
 PLpgSQL_rec *
-plpgsql_build_record(const char *refname, int lineno, Oid rectypeid,
+plpgsql_build_record(const char *refname, int lineno,
+					 PLpgSQL_type *dtype, Oid rectypeid,
 					 bool add2namespace)
 {
 	PLpgSQL_rec *rec;
@@ -1841,6 +1867,8 @@ plpgsql_build_record(const char *refname, int lineno, Oid rectypeid,
 	rec->dtype = PLPGSQL_DTYPE_REC;
 	rec->refname = pstrdup(refname);
 	rec->lineno = lineno;
+	/* other fields are left as 0, might be changed by caller */
+	rec->datatype = dtype;
 	rec->rectypeid = rectypeid;
 	rec->firstfield = -1;
 	rec->erh = NULL;
@@ -1875,9 +1903,13 @@ build_row_from_vars(PLpgSQL_variable **vars, int numvars)
 		int32		typmod;
 		Oid			typcoll;
 
+		/* Member vars of a row should never be const */
+		Assert(!var->isconst);
+
 		switch (var->dtype)
 		{
 			case PLPGSQL_DTYPE_VAR:
+			case PLPGSQL_DTYPE_PROMISE:
 				typoid = ((PLpgSQL_var *) var)->datatype->typoid;
 				typmod = ((PLpgSQL_var *) var)->datatype->atttypmod;
 				typcoll = ((PLpgSQL_var *) var)->datatype->collation;
@@ -2183,12 +2215,30 @@ plpgsql_adddatum(PLpgSQL_datum *new)
 static void
 plpgsql_finish_datums(PLpgSQL_function *function)
 {
+	Size		copiable_size = 0;
 	int			i;
 
 	function->ndatums = plpgsql_nDatums;
 	function->datums = palloc(sizeof(PLpgSQL_datum *) * plpgsql_nDatums);
 	for (i = 0; i < plpgsql_nDatums; i++)
+	{
 		function->datums[i] = plpgsql_Datums[i];
+
+		/* This must agree with copy_plpgsql_datums on what is copiable */
+		switch (function->datums[i]->dtype)
+		{
+			case PLPGSQL_DTYPE_VAR:
+			case PLPGSQL_DTYPE_PROMISE:
+				copiable_size += MAXALIGN(sizeof(PLpgSQL_var));
+				break;
+			case PLPGSQL_DTYPE_REC:
+				copiable_size += MAXALIGN(sizeof(PLpgSQL_rec));
+				break;
+			default:
+				break;
+		}
+	}
+	function->copiable_size = copiable_size;
 }
 
 

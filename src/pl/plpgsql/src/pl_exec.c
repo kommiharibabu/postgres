@@ -235,7 +235,10 @@ static HTAB *shared_cast_hash = NULL;
 static void coerce_function_result_tuple(PLpgSQL_execstate *estate,
 							 TupleDesc tupdesc);
 static void plpgsql_exec_error_callback(void *arg);
-static PLpgSQL_datum *copy_plpgsql_datum(PLpgSQL_datum *datum);
+static void copy_plpgsql_datums(PLpgSQL_execstate *estate,
+					PLpgSQL_function *func);
+static void plpgsql_fulfill_promise(PLpgSQL_execstate *estate,
+						PLpgSQL_var *var);
 static MemoryContext get_stmt_mcontext(PLpgSQL_execstate *estate);
 static void push_stmt_mcontext(PLpgSQL_execstate *estate);
 static void pop_stmt_mcontext(PLpgSQL_execstate *estate);
@@ -458,8 +461,7 @@ plpgsql_exec_function(PLpgSQL_function *func, FunctionCallInfo fcinfo,
 	 * Make local execution copies of all the datums
 	 */
 	estate.err_text = gettext_noop("during initialization of execution state");
-	for (i = 0; i < estate.ndatums; i++)
-		estate.datums[i] = copy_plpgsql_datum(func->datums[i]);
+	copy_plpgsql_datums(&estate, func);
 
 	/*
 	 * Store the actual call argument values into the appropriate variables
@@ -537,7 +539,7 @@ plpgsql_exec_function(PLpgSQL_function *func, FunctionCallInfo fcinfo,
 					}
 					else
 					{
-						/* If arg is null, treat it as an empty row */
+						/* If arg is null, set variable to null */
 						exec_move_row(&estate, (PLpgSQL_variable *) rec,
 									  NULL, NULL);
 					}
@@ -547,6 +549,7 @@ plpgsql_exec_function(PLpgSQL_function *func, FunctionCallInfo fcinfo,
 				break;
 
 			default:
+				/* Anything else should not be an argument variable */
 				elog(ERROR, "unrecognized dtype: %d", func->datums[i]->dtype);
 		}
 	}
@@ -834,10 +837,8 @@ plpgsql_exec_trigger(PLpgSQL_function *func,
 {
 	PLpgSQL_execstate estate;
 	ErrorContextCallback plerrcontext;
-	int			i;
 	int			rc;
 	TupleDesc	tupdesc;
-	PLpgSQL_var *var;
 	PLpgSQL_rec *rec_new,
 			   *rec_old;
 	HeapTuple	rettup;
@@ -846,6 +847,7 @@ plpgsql_exec_trigger(PLpgSQL_function *func,
 	 * Setup the execution state
 	 */
 	plpgsql_estate_setup(&estate, func, NULL, NULL);
+	estate.trigdata = trigdata;
 
 	/*
 	 * Setup error traceback support for ereport()
@@ -859,8 +861,7 @@ plpgsql_exec_trigger(PLpgSQL_function *func,
 	 * Make local execution copies of all the datums
 	 */
 	estate.err_text = gettext_noop("during initialization of execution state");
-	for (i = 0; i < estate.ndatums; i++)
-		estate.datums[i] = copy_plpgsql_datum(func->datums[i]);
+	copy_plpgsql_datums(&estate, func);
 
 	/*
 	 * Put the OLD and NEW tuples into record variables
@@ -906,106 +907,6 @@ plpgsql_exec_trigger(PLpgSQL_function *func,
 	/* Make transition tables visible to this SPI connection */
 	rc = SPI_register_trigger_data(trigdata);
 	Assert(rc >= 0);
-
-	/*
-	 * Assign the special tg_ variables
-	 */
-
-	var = (PLpgSQL_var *) (estate.datums[func->tg_op_varno]);
-	if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
-		assign_text_var(&estate, var, "INSERT");
-	else if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
-		assign_text_var(&estate, var, "UPDATE");
-	else if (TRIGGER_FIRED_BY_DELETE(trigdata->tg_event))
-		assign_text_var(&estate, var, "DELETE");
-	else if (TRIGGER_FIRED_BY_TRUNCATE(trigdata->tg_event))
-		assign_text_var(&estate, var, "TRUNCATE");
-	else
-		elog(ERROR, "unrecognized trigger action: not INSERT, DELETE, UPDATE, or TRUNCATE");
-
-	var = (PLpgSQL_var *) (estate.datums[func->tg_name_varno]);
-	assign_simple_var(&estate, var,
-					  DirectFunctionCall1(namein,
-										  CStringGetDatum(trigdata->tg_trigger->tgname)),
-					  false, true);
-
-	var = (PLpgSQL_var *) (estate.datums[func->tg_when_varno]);
-	if (TRIGGER_FIRED_BEFORE(trigdata->tg_event))
-		assign_text_var(&estate, var, "BEFORE");
-	else if (TRIGGER_FIRED_AFTER(trigdata->tg_event))
-		assign_text_var(&estate, var, "AFTER");
-	else if (TRIGGER_FIRED_INSTEAD(trigdata->tg_event))
-		assign_text_var(&estate, var, "INSTEAD OF");
-	else
-		elog(ERROR, "unrecognized trigger execution time: not BEFORE, AFTER, or INSTEAD OF");
-
-	var = (PLpgSQL_var *) (estate.datums[func->tg_level_varno]);
-	if (TRIGGER_FIRED_FOR_ROW(trigdata->tg_event))
-		assign_text_var(&estate, var, "ROW");
-	else if (TRIGGER_FIRED_FOR_STATEMENT(trigdata->tg_event))
-		assign_text_var(&estate, var, "STATEMENT");
-	else
-		elog(ERROR, "unrecognized trigger event type: not ROW or STATEMENT");
-
-	var = (PLpgSQL_var *) (estate.datums[func->tg_relid_varno]);
-	assign_simple_var(&estate, var,
-					  ObjectIdGetDatum(trigdata->tg_relation->rd_id),
-					  false, false);
-
-	var = (PLpgSQL_var *) (estate.datums[func->tg_relname_varno]);
-	assign_simple_var(&estate, var,
-					  DirectFunctionCall1(namein,
-										  CStringGetDatum(RelationGetRelationName(trigdata->tg_relation))),
-					  false, true);
-
-	var = (PLpgSQL_var *) (estate.datums[func->tg_table_name_varno]);
-	assign_simple_var(&estate, var,
-					  DirectFunctionCall1(namein,
-										  CStringGetDatum(RelationGetRelationName(trigdata->tg_relation))),
-					  false, true);
-
-	var = (PLpgSQL_var *) (estate.datums[func->tg_table_schema_varno]);
-	assign_simple_var(&estate, var,
-					  DirectFunctionCall1(namein,
-										  CStringGetDatum(get_namespace_name(
-																			 RelationGetNamespace(
-																								  trigdata->tg_relation)))),
-					  false, true);
-
-	var = (PLpgSQL_var *) (estate.datums[func->tg_nargs_varno]);
-	assign_simple_var(&estate, var,
-					  Int16GetDatum(trigdata->tg_trigger->tgnargs),
-					  false, false);
-
-	var = (PLpgSQL_var *) (estate.datums[func->tg_argv_varno]);
-	if (trigdata->tg_trigger->tgnargs > 0)
-	{
-		/*
-		 * For historical reasons, tg_argv[] subscripts start at zero not one.
-		 * So we can't use construct_array().
-		 */
-		int			nelems = trigdata->tg_trigger->tgnargs;
-		Datum	   *elems;
-		int			dims[1];
-		int			lbs[1];
-
-		elems = palloc(sizeof(Datum) * nelems);
-		for (i = 0; i < nelems; i++)
-			elems[i] = CStringGetTextDatum(trigdata->tg_trigger->tgargs[i]);
-		dims[0] = nelems;
-		lbs[0] = 0;
-
-		assign_simple_var(&estate, var,
-						  PointerGetDatum(construct_md_array(elems, NULL,
-															 1, dims, lbs,
-															 TEXTOID,
-															 -1, false, 'i')),
-						  false, true);
-	}
-	else
-	{
-		assign_simple_var(&estate, var, (Datum) 0, true, false);
-	}
 
 	estate.err_text = gettext_noop("during function entry");
 
@@ -1153,14 +1054,13 @@ plpgsql_exec_event_trigger(PLpgSQL_function *func, EventTriggerData *trigdata)
 {
 	PLpgSQL_execstate estate;
 	ErrorContextCallback plerrcontext;
-	int			i;
 	int			rc;
-	PLpgSQL_var *var;
 
 	/*
 	 * Setup the execution state
 	 */
 	plpgsql_estate_setup(&estate, func, NULL, NULL);
+	estate.evtrigdata = trigdata;
 
 	/*
 	 * Setup error traceback support for ereport()
@@ -1174,17 +1074,7 @@ plpgsql_exec_event_trigger(PLpgSQL_function *func, EventTriggerData *trigdata)
 	 * Make local execution copies of all the datums
 	 */
 	estate.err_text = gettext_noop("during initialization of execution state");
-	for (i = 0; i < estate.ndatums; i++)
-		estate.datums[i] = copy_plpgsql_datum(func->datums[i]);
-
-	/*
-	 * Assign the special tg_ variables
-	 */
-	var = (PLpgSQL_var *) (estate.datums[func->tg_event_varno]);
-	assign_text_var(&estate, var, trigdata->event);
-
-	var = (PLpgSQL_var *) (estate.datums[func->tg_tag_varno]);
-	assign_text_var(&estate, var, trigdata->tag);
+	copy_plpgsql_datums(&estate, func);
 
 	/*
 	 * Let the instrumentation plugin peek at this function
@@ -1290,57 +1180,234 @@ plpgsql_exec_error_callback(void *arg)
  * Support function for initializing local execution variables
  * ----------
  */
-static PLpgSQL_datum *
-copy_plpgsql_datum(PLpgSQL_datum *datum)
+static void
+copy_plpgsql_datums(PLpgSQL_execstate *estate,
+					PLpgSQL_function *func)
 {
-	PLpgSQL_datum *result;
+	int			ndatums = estate->ndatums;
+	PLpgSQL_datum **indatums;
+	PLpgSQL_datum **outdatums;
+	char	   *workspace;
+	char	   *ws_next;
+	int			i;
 
-	switch (datum->dtype)
+	/* Allocate local datum-pointer array */
+	estate->datums = (PLpgSQL_datum **)
+		palloc(sizeof(PLpgSQL_datum *) * ndatums);
+
+	/*
+	 * To reduce palloc overhead, we make a single palloc request for all the
+	 * space needed for locally-instantiated datums.
+	 */
+	workspace = palloc(func->copiable_size);
+	ws_next = workspace;
+
+	/* Fill datum-pointer array, copying datums into workspace as needed */
+	indatums = func->datums;
+	outdatums = estate->datums;
+	for (i = 0; i < ndatums; i++)
 	{
-		case PLPGSQL_DTYPE_VAR:
+		PLpgSQL_datum *indatum = indatums[i];
+		PLpgSQL_datum *outdatum;
+
+		/* This must agree with plpgsql_finish_datums on what is copiable */
+		switch (indatum->dtype)
+		{
+			case PLPGSQL_DTYPE_VAR:
+			case PLPGSQL_DTYPE_PROMISE:
+				outdatum = (PLpgSQL_datum *) ws_next;
+				memcpy(outdatum, indatum, sizeof(PLpgSQL_var));
+				ws_next += MAXALIGN(sizeof(PLpgSQL_var));
+				break;
+
+			case PLPGSQL_DTYPE_REC:
+				outdatum = (PLpgSQL_datum *) ws_next;
+				memcpy(outdatum, indatum, sizeof(PLpgSQL_rec));
+				ws_next += MAXALIGN(sizeof(PLpgSQL_rec));
+				break;
+
+			case PLPGSQL_DTYPE_ROW:
+			case PLPGSQL_DTYPE_RECFIELD:
+			case PLPGSQL_DTYPE_ARRAYELEM:
+
+				/*
+				 * These datum records are read-only at runtime, so no need to
+				 * copy them (well, RECFIELD and ARRAYELEM contain cached
+				 * data, but we'd just as soon centralize the caching anyway).
+				 */
+				outdatum = indatum;
+				break;
+
+			default:
+				elog(ERROR, "unrecognized dtype: %d", indatum->dtype);
+				outdatum = NULL;	/* keep compiler quiet */
+				break;
+		}
+
+		outdatums[i] = outdatum;
+	}
+
+	Assert(ws_next == workspace + func->copiable_size);
+}
+
+/*
+ * If the variable has an armed "promise", compute the promised value
+ * and assign it to the variable.
+ * The assignment automatically disarms the promise.
+ */
+static void
+plpgsql_fulfill_promise(PLpgSQL_execstate *estate,
+						PLpgSQL_var *var)
+{
+	MemoryContext oldcontext;
+
+	if (var->promise == PLPGSQL_PROMISE_NONE)
+		return;					/* nothing to do */
+
+	/*
+	 * This will typically be invoked in a short-lived context such as the
+	 * mcontext.  We must create variable values in the estate's datum
+	 * context.  This quick-and-dirty solution risks leaking some additional
+	 * cruft there, but since any one promise is honored at most once per
+	 * function call, it's probably not worth being more careful.
+	 */
+	oldcontext = MemoryContextSwitchTo(estate->datum_context);
+
+	switch (var->promise)
+	{
+		case PLPGSQL_PROMISE_TG_NAME:
+			if (estate->trigdata == NULL)
+				elog(ERROR, "trigger promise is not in a trigger function");
+			assign_simple_var(estate, var,
+							  DirectFunctionCall1(namein,
+												  CStringGetDatum(estate->trigdata->tg_trigger->tgname)),
+							  false, true);
+			break;
+
+		case PLPGSQL_PROMISE_TG_WHEN:
+			if (estate->trigdata == NULL)
+				elog(ERROR, "trigger promise is not in a trigger function");
+			if (TRIGGER_FIRED_BEFORE(estate->trigdata->tg_event))
+				assign_text_var(estate, var, "BEFORE");
+			else if (TRIGGER_FIRED_AFTER(estate->trigdata->tg_event))
+				assign_text_var(estate, var, "AFTER");
+			else if (TRIGGER_FIRED_INSTEAD(estate->trigdata->tg_event))
+				assign_text_var(estate, var, "INSTEAD OF");
+			else
+				elog(ERROR, "unrecognized trigger execution time: not BEFORE, AFTER, or INSTEAD OF");
+			break;
+
+		case PLPGSQL_PROMISE_TG_LEVEL:
+			if (estate->trigdata == NULL)
+				elog(ERROR, "trigger promise is not in a trigger function");
+			if (TRIGGER_FIRED_FOR_ROW(estate->trigdata->tg_event))
+				assign_text_var(estate, var, "ROW");
+			else if (TRIGGER_FIRED_FOR_STATEMENT(estate->trigdata->tg_event))
+				assign_text_var(estate, var, "STATEMENT");
+			else
+				elog(ERROR, "unrecognized trigger event type: not ROW or STATEMENT");
+			break;
+
+		case PLPGSQL_PROMISE_TG_OP:
+			if (estate->trigdata == NULL)
+				elog(ERROR, "trigger promise is not in a trigger function");
+			if (TRIGGER_FIRED_BY_INSERT(estate->trigdata->tg_event))
+				assign_text_var(estate, var, "INSERT");
+			else if (TRIGGER_FIRED_BY_UPDATE(estate->trigdata->tg_event))
+				assign_text_var(estate, var, "UPDATE");
+			else if (TRIGGER_FIRED_BY_DELETE(estate->trigdata->tg_event))
+				assign_text_var(estate, var, "DELETE");
+			else if (TRIGGER_FIRED_BY_TRUNCATE(estate->trigdata->tg_event))
+				assign_text_var(estate, var, "TRUNCATE");
+			else
+				elog(ERROR, "unrecognized trigger action: not INSERT, DELETE, UPDATE, or TRUNCATE");
+			break;
+
+		case PLPGSQL_PROMISE_TG_RELID:
+			if (estate->trigdata == NULL)
+				elog(ERROR, "trigger promise is not in a trigger function");
+			assign_simple_var(estate, var,
+							  ObjectIdGetDatum(estate->trigdata->tg_relation->rd_id),
+							  false, false);
+			break;
+
+		case PLPGSQL_PROMISE_TG_TABLE_NAME:
+			if (estate->trigdata == NULL)
+				elog(ERROR, "trigger promise is not in a trigger function");
+			assign_simple_var(estate, var,
+							  DirectFunctionCall1(namein,
+												  CStringGetDatum(RelationGetRelationName(estate->trigdata->tg_relation))),
+							  false, true);
+			break;
+
+		case PLPGSQL_PROMISE_TG_TABLE_SCHEMA:
+			if (estate->trigdata == NULL)
+				elog(ERROR, "trigger promise is not in a trigger function");
+			assign_simple_var(estate, var,
+							  DirectFunctionCall1(namein,
+												  CStringGetDatum(get_namespace_name(RelationGetNamespace(estate->trigdata->tg_relation)))),
+							  false, true);
+			break;
+
+		case PLPGSQL_PROMISE_TG_NARGS:
+			if (estate->trigdata == NULL)
+				elog(ERROR, "trigger promise is not in a trigger function");
+			assign_simple_var(estate, var,
+							  Int16GetDatum(estate->trigdata->tg_trigger->tgnargs),
+							  false, false);
+			break;
+
+		case PLPGSQL_PROMISE_TG_ARGV:
+			if (estate->trigdata == NULL)
+				elog(ERROR, "trigger promise is not in a trigger function");
+			if (estate->trigdata->tg_trigger->tgnargs > 0)
 			{
-				PLpgSQL_var *new = palloc(sizeof(PLpgSQL_var));
+				/*
+				 * For historical reasons, tg_argv[] subscripts start at zero
+				 * not one.  So we can't use construct_array().
+				 */
+				int			nelems = estate->trigdata->tg_trigger->tgnargs;
+				Datum	   *elems;
+				int			dims[1];
+				int			lbs[1];
+				int			i;
 
-				memcpy(new, datum, sizeof(PLpgSQL_var));
-				/* should be preset to null/non-freeable */
-				Assert(new->isnull);
-				Assert(!new->freeval);
+				elems = palloc(sizeof(Datum) * nelems);
+				for (i = 0; i < nelems; i++)
+					elems[i] = CStringGetTextDatum(estate->trigdata->tg_trigger->tgargs[i]);
+				dims[0] = nelems;
+				lbs[0] = 0;
 
-				result = (PLpgSQL_datum *) new;
+				assign_simple_var(estate, var,
+								  PointerGetDatum(construct_md_array(elems, NULL,
+																	 1, dims, lbs,
+																	 TEXTOID,
+																	 -1, false, 'i')),
+								  false, true);
+			}
+			else
+			{
+				assign_simple_var(estate, var, (Datum) 0, true, false);
 			}
 			break;
 
-		case PLPGSQL_DTYPE_REC:
-			{
-				PLpgSQL_rec *new = palloc(sizeof(PLpgSQL_rec));
-
-				memcpy(new, datum, sizeof(PLpgSQL_rec));
-				/* should be preset to empty */
-				Assert(new->erh == NULL);
-
-				result = (PLpgSQL_datum *) new;
-			}
+		case PLPGSQL_PROMISE_TG_EVENT:
+			if (estate->evtrigdata == NULL)
+				elog(ERROR, "event trigger promise is not in an event trigger function");
+			assign_text_var(estate, var, estate->evtrigdata->event);
 			break;
 
-		case PLPGSQL_DTYPE_ROW:
-		case PLPGSQL_DTYPE_RECFIELD:
-		case PLPGSQL_DTYPE_ARRAYELEM:
-
-			/*
-			 * These datum records are read-only at runtime, so no need to
-			 * copy them (well, RECFIELD and ARRAYELEM contain cached data,
-			 * but we'd just as soon centralize the caching anyway)
-			 */
-			result = datum;
+		case PLPGSQL_PROMISE_TG_TAG:
+			if (estate->evtrigdata == NULL)
+				elog(ERROR, "event trigger promise is not in an event trigger function");
+			assign_text_var(estate, var, estate->evtrigdata->tag);
 			break;
 
 		default:
-			elog(ERROR, "unrecognized dtype: %d", datum->dtype);
-			result = NULL;		/* keep compiler quiet */
-			break;
+			elog(ERROR, "unrecognized promise type: %d", var->promise);
 	}
 
-	return result;
+	MemoryContextSwitchTo(oldcontext);
 }
 
 /*
@@ -1451,6 +1518,10 @@ exec_stmt_block(PLpgSQL_execstate *estate, PLpgSQL_stmt_block *block)
 
 		/*
 		 * The set of dtypes handled here must match plpgsql_add_initdatums().
+		 *
+		 * Note that we currently don't support promise datums within blocks,
+		 * only at a function's outermost scope, so we needn't handle those
+		 * here.
 		 */
 		switch (datum->dtype)
 		{
@@ -1468,11 +1539,9 @@ exec_stmt_block(PLpgSQL_execstate *estate, PLpgSQL_stmt_block *block)
 					{
 						/*
 						 * If needed, give the datatype a chance to reject
-						 * NULLs, by assigning a NULL to the variable. We
+						 * NULLs, by assigning a NULL to the variable.  We
 						 * claim the value is of type UNKNOWN, not the var's
-						 * datatype, else coercion will be skipped. (Do this
-						 * before the notnull check to be consistent with
-						 * exec_assign_value.)
+						 * datatype, else coercion will be skipped.
 						 */
 						if (var->datatype->typtype == TYPTYPE_DOMAIN)
 							exec_assign_value(estate,
@@ -1482,11 +1551,8 @@ exec_stmt_block(PLpgSQL_execstate *estate, PLpgSQL_stmt_block *block)
 											  UNKNOWNOID,
 											  -1);
 
-						if (var->notnull)
-							ereport(ERROR,
-									(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
-									 errmsg("variable \"%s\" declared NOT NULL cannot default to NULL",
-											var->refname)));
+						/* parser should have rejected NOT NULL */
+						Assert(!var->notnull);
 					}
 					else
 					{
@@ -1500,9 +1566,28 @@ exec_stmt_block(PLpgSQL_execstate *estate, PLpgSQL_stmt_block *block)
 				{
 					PLpgSQL_rec *rec = (PLpgSQL_rec *) datum;
 
-					if (rec->erh)
-						DeleteExpandedObject(ExpandedRecordGetDatum(rec->erh));
-					rec->erh = NULL;
+					/*
+					 * Deletion of any existing object will be handled during
+					 * the assignments below, and in some cases it's more
+					 * efficient for us not to get rid of it beforehand.
+					 */
+					if (rec->default_val == NULL)
+					{
+						/*
+						 * If needed, give the datatype a chance to reject
+						 * NULLs, by assigning a NULL to the variable.
+						 */
+						exec_move_row(estate, (PLpgSQL_variable *) rec,
+									  NULL, NULL);
+
+						/* parser should have rejected NOT NULL */
+						Assert(!rec->notnull);
+					}
+					else
+					{
+						exec_assign_expr(estate, (PLpgSQL_datum *) rec,
+										 rec->default_val);
+					}
 				}
 				break;
 
@@ -2765,6 +2850,12 @@ exec_stmt_return(PLpgSQL_execstate *estate, PLpgSQL_stmt_return *stmt)
 
 		switch (retvar->dtype)
 		{
+			case PLPGSQL_DTYPE_PROMISE:
+				/* fulfill promise if needed, then handle like regular var */
+				plpgsql_fulfill_promise(estate, (PLpgSQL_var *) retvar);
+
+				/* FALL THRU */
+
 			case PLPGSQL_DTYPE_VAR:
 				{
 					PLpgSQL_var *var = (PLpgSQL_var *) retvar;
@@ -2904,6 +2995,12 @@ exec_stmt_return_next(PLpgSQL_execstate *estate,
 
 		switch (retvar->dtype)
 		{
+			case PLPGSQL_DTYPE_PROMISE:
+				/* fulfill promise if needed, then handle like regular var */
+				plpgsql_fulfill_promise(estate, (PLpgSQL_var *) retvar);
+
+				/* FALL THRU */
+
 			case PLPGSQL_DTYPE_VAR:
 				{
 					PLpgSQL_var *var = (PLpgSQL_var *) retvar;
@@ -3474,6 +3571,8 @@ plpgsql_estate_setup(PLpgSQL_execstate *estate,
 	func->cur_estate = estate;
 
 	estate->func = func;
+	estate->trigdata = NULL;
+	estate->evtrigdata = NULL;
 
 	estate->retval = (Datum) 0;
 	estate->retisnull = true;
@@ -3504,8 +3603,8 @@ plpgsql_estate_setup(PLpgSQL_execstate *estate,
 
 	estate->found_varno = func->found_varno;
 	estate->ndatums = func->ndatums;
-	estate->datums = palloc(sizeof(PLpgSQL_datum *) * estate->ndatums);
-	/* caller is expected to fill the datums array */
+	estate->datums = NULL;
+	/* the datums array will be filled by copy_plpgsql_datums() */
 	estate->datum_context = CurrentMemoryContext;
 
 	/* initialize our ParamListInfo with appropriate hook functions */
@@ -4529,6 +4628,7 @@ exec_assign_value(PLpgSQL_execstate *estate,
 	switch (target->dtype)
 	{
 		case PLPGSQL_DTYPE_VAR:
+		case PLPGSQL_DTYPE_PROMISE:
 			{
 				/*
 				 * Target is a variable
@@ -4591,10 +4691,16 @@ exec_assign_value(PLpgSQL_execstate *estate,
 				 * cannot reliably be made any earlier; we have to be looking
 				 * at the object's standard R/W pointer to be sure pointer
 				 * equality is meaningful.
+				 *
+				 * Also, if it's a promise variable, we should disarm the
+				 * promise in any case --- otherwise, assigning null to an
+				 * armed promise variable would fail to disarm the promise.
 				 */
 				if (var->value != newvalue || var->isnull || isNull)
 					assign_simple_var(estate, var, newvalue, isNull,
 									  (!var->datatype->typbyval && !isNull));
+				else
+					var->promise = PLPGSQL_PROMISE_NONE;
 				break;
 			}
 
@@ -4633,7 +4739,13 @@ exec_assign_value(PLpgSQL_execstate *estate,
 
 				if (isNull)
 				{
-					/* If source is null, just assign nulls to the record */
+					if (rec->notnull)
+						ereport(ERROR,
+								(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+								 errmsg("null value cannot be assigned to variable \"%s\" declared NOT NULL",
+										rec->refname)));
+
+					/* Set variable to a simple NULL */
 					exec_move_row(estate, (PLpgSQL_variable *) rec,
 								  NULL, NULL);
 				}
@@ -4938,6 +5050,12 @@ exec_eval_datum(PLpgSQL_execstate *estate,
 
 	switch (datum->dtype)
 	{
+		case PLPGSQL_DTYPE_PROMISE:
+			/* fulfill promise if needed, then handle like regular var */
+			plpgsql_fulfill_promise(estate, (PLpgSQL_var *) datum);
+
+			/* FALL THRU */
+
 		case PLPGSQL_DTYPE_VAR:
 			{
 				PLpgSQL_var *var = (PLpgSQL_var *) datum;
@@ -5080,6 +5198,7 @@ plpgsql_exec_get_datum_type(PLpgSQL_execstate *estate,
 	switch (datum->dtype)
 	{
 		case PLPGSQL_DTYPE_VAR:
+		case PLPGSQL_DTYPE_PROMISE:
 			{
 				PLpgSQL_var *var = (PLpgSQL_var *) datum;
 
@@ -5163,6 +5282,7 @@ plpgsql_exec_get_datum_type_info(PLpgSQL_execstate *estate,
 	switch (datum->dtype)
 	{
 		case PLPGSQL_DTYPE_VAR:
+		case PLPGSQL_DTYPE_PROMISE:
 			{
 				PLpgSQL_var *var = (PLpgSQL_var *) datum;
 
@@ -5861,6 +5981,7 @@ plpgsql_param_fetch(ParamListInfo params,
 		switch (datum->dtype)
 		{
 			case PLPGSQL_DTYPE_VAR:
+			case PLPGSQL_DTYPE_PROMISE:
 				/* always safe */
 				break;
 
@@ -5976,8 +6097,8 @@ plpgsql_param_compile(ParamListInfo params, Param *param,
 	 * Select appropriate eval function.  It seems worth special-casing
 	 * DTYPE_VAR and DTYPE_RECFIELD for performance.  Also, we can determine
 	 * in advance whether MakeExpandedObjectReadOnly() will be required.
-	 * Currently, only VAR and REC datums could contain read/write expanded
-	 * objects.
+	 * Currently, only VAR/PROMISE and REC datums could contain read/write
+	 * expanded objects.
 	 */
 	if (datum->dtype == PLPGSQL_DTYPE_VAR)
 	{
@@ -5989,6 +6110,14 @@ plpgsql_param_compile(ParamListInfo params, Param *param,
 	}
 	else if (datum->dtype == PLPGSQL_DTYPE_RECFIELD)
 		scratch.d.cparam.paramfunc = plpgsql_param_eval_recfield;
+	else if (datum->dtype == PLPGSQL_DTYPE_PROMISE)
+	{
+		if (dno != expr->rwparam &&
+			((PLpgSQL_var *) datum)->datatype->typlen == -1)
+			scratch.d.cparam.paramfunc = plpgsql_param_eval_generic_ro;
+		else
+			scratch.d.cparam.paramfunc = plpgsql_param_eval_generic;
+	}
 	else if (datum->dtype == PLPGSQL_DTYPE_REC &&
 			 dno != expr->rwparam)
 		scratch.d.cparam.paramfunc = plpgsql_param_eval_generic_ro;
@@ -6266,9 +6395,27 @@ exec_move_row(PLpgSQL_execstate *estate,
 		 */
 		if (tupdesc == NULL)
 		{
-			if (rec->erh)
-				DeleteExpandedObject(ExpandedRecordGetDatum(rec->erh));
-			rec->erh = NULL;
+			if (rec->datatype &&
+				rec->datatype->typtype == TYPTYPE_DOMAIN)
+			{
+				/*
+				 * If it's a composite domain, NULL might not be a legal
+				 * value, so we instead need to make an empty expanded record
+				 * and ensure that domain type checking gets done.  If there
+				 * is already an expanded record, piggyback on its lookups.
+				 */
+				newerh = make_expanded_record_for_rec(estate, rec,
+													  NULL, rec->erh);
+				expanded_record_set_tuple(newerh, NULL, false);
+				assign_record_var(estate, rec, newerh);
+			}
+			else
+			{
+				/* Just clear it to NULL */
+				if (rec->erh)
+					DeleteExpandedObject(ExpandedRecordGetDatum(rec->erh));
+				rec->erh = NULL;
+			}
 			return;
 		}
 
@@ -7667,7 +7814,8 @@ static void
 assign_simple_var(PLpgSQL_execstate *estate, PLpgSQL_var *var,
 				  Datum newvalue, bool isnull, bool freeable)
 {
-	Assert(var->dtype == PLPGSQL_DTYPE_VAR);
+	Assert(var->dtype == PLPGSQL_DTYPE_VAR ||
+		   var->dtype == PLPGSQL_DTYPE_PROMISE);
 	/* Free the old value if needed */
 	if (var->freeval)
 	{
@@ -7682,6 +7830,13 @@ assign_simple_var(PLpgSQL_execstate *estate, PLpgSQL_var *var,
 	var->value = newvalue;
 	var->isnull = isnull;
 	var->freeval = freeable;
+
+	/*
+	 * If it's a promise variable, then either we just assigned the promised
+	 * value, or the user explicitly assigned an overriding value.  Either
+	 * way, cancel the promise.
+	 */
+	var->promise = PLPGSQL_PROMISE_NONE;
 }
 
 /*
