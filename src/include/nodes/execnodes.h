@@ -363,6 +363,20 @@ typedef struct JunkFilter
 } JunkFilter;
 
 /*
+ * OnConflictSetState
+ *
+ * Executor state of an ON CONFLICT DO UPDATE operation.
+ */
+typedef struct OnConflictSetState
+{
+	NodeTag		type;
+
+	ProjectionInfo *oc_ProjInfo;	/* for ON CONFLICT DO UPDATE SET */
+	TupleDesc	oc_ProjTupdesc; /* TupleDesc for the above projection */
+	ExprState  *oc_WhereClause; /* state for the WHERE clause */
+} OnConflictSetState;
+
+/*
  * ResultRelInfo
  *
  * Whenever we update an existing relation, we have to update indexes on the
@@ -424,11 +438,11 @@ typedef struct ResultRelInfo
 	/* for computing a RETURNING list */
 	ProjectionInfo *ri_projectReturning;
 
-	/* for computing ON CONFLICT DO UPDATE SET */
-	ProjectionInfo *ri_onConflictSetProj;
+	/* list of arbiter indexes to use to check conflicts */
+	List	   *ri_onConflictArbiterIndexes;
 
-	/* list of ON CONFLICT DO UPDATE exprs (qual) */
-	ExprState  *ri_onConflictSetWhere;
+	/* ON CONFLICT evaluation state */
+	OnConflictSetState *ri_onConflict;
 
 	/* partition check expression */
 	List	   *ri_PartitionCheck;
@@ -906,6 +920,7 @@ typedef struct PlanState
 	ExprState  *qual;			/* boolean qual condition */
 	struct PlanState *lefttree; /* input plan tree(s) */
 	struct PlanState *righttree;
+
 	List	   *initPlan;		/* Init SubPlanState nodes (un-correlated expr
 								 * subselects) */
 	List	   *subPlan;		/* SubPlanState nodes in my expressions */
@@ -921,6 +936,13 @@ typedef struct PlanState
 	TupleTableSlot *ps_ResultTupleSlot; /* slot for my result tuples */
 	ExprContext *ps_ExprContext;	/* node's expression-evaluation context */
 	ProjectionInfo *ps_ProjInfo;	/* info for doing tuple projection */
+
+	/*
+	 * Scanslot's descriptor if known. This is a bit of a hack, but otherwise
+	 * it's hard for expression compilation to optimize based on the
+	 * descriptor, without encoding knowledge about all executor nodes.
+	 */
+	TupleDesc	scandesc;
 } PlanState;
 
 /* ----------------
