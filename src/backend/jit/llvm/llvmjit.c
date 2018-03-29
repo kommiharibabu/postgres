@@ -76,6 +76,7 @@ LLVMValueRef AttributeTemplate;
 LLVMValueRef FuncStrlen;
 LLVMValueRef FuncVarsizeAny;
 LLVMValueRef FuncSlotGetsomeattrs;
+LLVMValueRef FuncSlotGetmissingattrs;
 LLVMValueRef FuncHeapGetsysattr;
 LLVMValueRef FuncMakeExpandedObjectReadOnlyInternal;
 LLVMValueRef FuncExecEvalArrayRefSubscript;
@@ -467,6 +468,10 @@ llvm_optimize_module(LLVMJitContext *context, LLVMModuleRef module)
 	/* always use always-inliner pass */
 	if (!(context->base.flags & PGJIT_OPT3))
 		LLVMAddAlwaysInlinerPass(llvm_mpm);
+	/* if doing inlining, but no expensive optimization, add inlining pass */
+	if (context->base.flags & PGJIT_INLINE
+		&& !(context->base.flags & PGJIT_OPT3))
+		LLVMAddFunctionInliningPass(llvm_mpm);
 	LLVMRunPassManager(llvm_mpm, context->module);
 	LLVMDisposePassManager(llvm_mpm);
 
@@ -489,6 +494,16 @@ llvm_compile_module(LLVMJitContext *context)
 		compile_orc = llvm_opt3_orc;
 	else
 		compile_orc = llvm_opt0_orc;
+
+	/* perform inlining */
+	if (context->base.flags & PGJIT_INLINE)
+	{
+		INSTR_TIME_SET_CURRENT(starttime);
+		llvm_inline(context->module);
+		INSTR_TIME_SET_CURRENT(endtime);
+		INSTR_TIME_ACCUM_DIFF(context->base.inlining_counter,
+							  endtime, starttime);
+	}
 
 	if (jit_dump_bitcode)
 	{
@@ -577,7 +592,8 @@ llvm_compile_module(LLVMJitContext *context)
 	MemoryContextSwitchTo(oldcontext);
 
 	ereport(DEBUG1,
-			(errmsg("time to opt: %.3fs, emit: %.3fs",
+			(errmsg("time to inline: %.3fs, opt: %.3fs, emit: %.3fs",
+					INSTR_TIME_GET_DOUBLE(context->base.inlining_counter),
 					INSTR_TIME_GET_DOUBLE(context->base.optimization_counter),
 					INSTR_TIME_GET_DOUBLE(context->base.emission_counter)),
 			 errhidestmt(true),
@@ -798,6 +814,7 @@ llvm_create_types(void)
 	FuncStrlen = LLVMGetNamedFunction(mod, "strlen");
 	FuncVarsizeAny = LLVMGetNamedFunction(mod, "varsize_any");
 	FuncSlotGetsomeattrs = LLVMGetNamedFunction(mod, "slot_getsomeattrs");
+	FuncSlotGetmissingattrs = LLVMGetNamedFunction(mod, "slot_getmissingattrs");
 	FuncHeapGetsysattr = LLVMGetNamedFunction(mod, "heap_getsysattr");
 	FuncMakeExpandedObjectReadOnlyInternal = LLVMGetNamedFunction(mod, "MakeExpandedObjectReadOnlyInternal");
 	FuncExecEvalArrayRefSubscript = LLVMGetNamedFunction(mod, "ExecEvalArrayRefSubscript");

@@ -78,6 +78,7 @@ extern LLVMValueRef AttributeTemplate;
 extern LLVMValueRef FuncStrlen;
 extern LLVMValueRef FuncVarsizeAny;
 extern LLVMValueRef FuncSlotGetsomeattrs;
+extern LLVMValueRef FuncSlotGetmissingattrs;
 extern LLVMValueRef FuncHeapGetsysattr;
 extern LLVMValueRef FuncMakeExpandedObjectReadOnlyInternal;
 extern LLVMValueRef FuncExecEvalArrayRefSubscript;
@@ -102,6 +103,7 @@ extern LLVMValueRef llvm_function_reference(LLVMJitContext *context,
 						LLVMModuleRef mod,
 						FunctionCallInfo fcinfo);
 
+extern void llvm_inline(LLVMModuleRef mod);
 
 /*
  ****************************************************************************
