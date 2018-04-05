@@ -5,7 +5,7 @@ use Config;
 use File::Basename qw(basename dirname);
 use PostgresNode;
 use TestLib;
-use Test::More tests => 93;
+use Test::More tests => 104;
 
 program_help_ok('pg_basebackup');
 program_version_ok('pg_basebackup');
@@ -16,7 +16,7 @@ my $tempdir = TestLib::tempdir;
 my $node = get_new_node('main');
 
 # Initialize node without replication settings
-$node->init;
+$node->init(extra => [ '--data-checksums' ]);
 $node->start;
 my $pgdata = $node->data_dir;
 
@@ -402,3 +402,74 @@ like(
 	slurp_file("$tempdir/backupxs_sl_R/recovery.conf"),
 	qr/^primary_slot_name = 'slot1'\n/m,
 	'recovery.conf sets primary_slot_name');
+
+my $checksum = $node->safe_psql('postgres', 'SHOW data_checksums;');
+is($checksum, 'on', 'checksums are enabled');
+
+# create tables to corrupt and get their relfilenodes
+my $file_corrupt1 = $node->safe_psql('postgres',
+        q{SELECT a INTO corrupt1 FROM generate_series(1,10000) AS a; ALTER TABLE corrupt1 SET (autovacuum_enabled=false); SELECT pg_relation_filepath('corrupt1')}
+);
+my $file_corrupt2 = $node->safe_psql('postgres',
+        q{SELECT b INTO corrupt2 FROM generate_series(1,2) AS b; ALTER TABLE corrupt2 SET (autovacuum_enabled=false); SELECT pg_relation_filepath('corrupt2')}
+);
+
+# set page header and block sizes
+my $pageheader_size = 24;
+my $block_size = $node->safe_psql('postgres', 'SHOW block_size;');
+
+# induce corruption
+system_or_bail 'pg_ctl', '-D', $pgdata, 'stop';
+open $file, '+<', "$pgdata/$file_corrupt1";
+seek($file, $pageheader_size, 0);
+syswrite($file, '\0\0\0\0\0\0\0\0\0');
+close $file;
+system_or_bail 'pg_ctl', '-D', $pgdata, 'start';
+
+$node->command_checks_all([ 'pg_basebackup', '-D', "$tempdir/backup_corrupt"],
+	1,
+	[qr{^$}],
+	[qr/^WARNING.*checksum verification failed/s],
+	'pg_basebackup reports checksum mismatch'
+);
+
+# induce further corruption in 5 more blocks
+system_or_bail 'pg_ctl', '-D', $pgdata, 'stop';
+open $file, '+<', "$pgdata/$file_corrupt1";
+for my $i ( 1..5 ) {
+  my $offset = $pageheader_size + $i * $block_size;
+  seek($file, $offset, 0);
+  syswrite($file, '\0\0\0\0\0\0\0\0\0');
+}
+close $file;
+system_or_bail 'pg_ctl', '-D', $pgdata, 'start';
+
+$node->command_checks_all([ 'pg_basebackup', '-D', "$tempdir/backup_corrupt2"],
+        1,
+        [qr{^$}],
+        [qr/^WARNING.*further.*failures.*will.not.be.reported/s],
+        'pg_basebackup does not report more than 5 checksum mismatches'
+);
+
+# induce corruption in a second file
+system_or_bail 'pg_ctl', '-D', $pgdata, 'stop';
+open $file, '+<', "$pgdata/$file_corrupt2";
+seek($file, 4000, 0);
+syswrite($file, '\0\0\0\0\0\0\0\0\0');
+close $file;
+system_or_bail 'pg_ctl', '-D', $pgdata, 'start';
+
+$node->command_checks_all([ 'pg_basebackup', '-D', "$tempdir/backup_corrupt3"],
+        1,
+        [qr{^$}],
+        [qr/^WARNING.*7 total checksum verification failures/s],
+        'pg_basebackup correctly report the total number of checksum mismatches'
+);
+
+# do not verify checksums, should return ok
+$node->command_ok(
+	[   'pg_basebackup', '-D', "$tempdir/backup_corrupt4", '-k' ],
+	'pg_basebackup with -k does not report checksum mismatch');
+
+$node->safe_psql('postgres', "DROP TABLE corrupt1;");
+$node->safe_psql('postgres', "DROP TABLE corrupt2;");

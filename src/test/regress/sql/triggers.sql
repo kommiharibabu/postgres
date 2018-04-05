@@ -1578,6 +1578,21 @@ drop table parted_trigger;
 
 drop function trigger_notice_ab();
 
+-- Make sure we don't end up with unnecessary copies of triggers, when
+-- cloning them.
+create table trg_clone (a int) partition by range (a);
+create table trg_clone1 partition of trg_clone for values from (0) to (1000);
+alter table trg_clone add constraint uniq unique (a) deferrable;
+create table trg_clone2 partition of trg_clone for values from (1000) to (2000);
+create table trg_clone3 partition of trg_clone for values from (2000) to (3000)
+  partition by range (a);
+create table trg_clone_3_3 partition of trg_clone3 for values from (2000) to (2100);
+select tgrelid::regclass, count(*) from pg_trigger
+  where tgrelid::regclass in ('trg_clone', 'trg_clone1', 'trg_clone2',
+	'trg_clone3', 'trg_clone_3_3')
+  group by tgrelid::regclass order by tgrelid::regclass;
+drop table trg_clone;
+
 --
 -- Test the interaction between transition tables and both kinds of
 -- inheritance.  We'll dump the contents of the transition tables in a
@@ -2109,6 +2124,53 @@ insert into self_ref values (1, null), (2, 1), (3, 2), (4, 3);
 delete from self_ref where a = 1;
 
 drop table self_ref;
+
+--
+-- test transition tables with MERGE
+--
+create table merge_target_table (a int primary key, b text);
+create trigger merge_target_table_insert_trig
+  after insert on merge_target_table referencing new table as new_table
+  for each statement execute procedure dump_insert();
+create trigger merge_target_table_update_trig
+  after update on merge_target_table referencing old table as old_table new table as new_table
+  for each statement execute procedure dump_update();
+create trigger merge_target_table_delete_trig
+  after delete on merge_target_table referencing old table as old_table
+  for each statement execute procedure dump_delete();
+
+create table merge_source_table (a int, b text);
+insert into merge_source_table
+  values (1, 'initial1'), (2, 'initial2'),
+		 (3, 'initial3'), (4, 'initial4');
+
+merge into merge_target_table t
+using merge_source_table s
+on t.a = s.a
+when not matched then
+  insert values (a, b);
+
+merge into merge_target_table t
+using merge_source_table s
+on t.a = s.a
+when matched and s.a <= 2 then
+	update set b = t.b || ' updated by merge'
+when matched and s.a > 2 then
+	delete
+when not matched then
+  insert values (a, b);
+
+merge into merge_target_table t
+using merge_source_table s
+on t.a = s.a
+when matched and s.a <= 2 then
+	update set b = t.b || ' updated again by merge'
+when matched and s.a > 2 then
+	delete
+when not matched then
+  insert values (a, b);
+
+drop table merge_source_table, merge_target_table;
 
 -- cleanup
 drop function dump_insert();
