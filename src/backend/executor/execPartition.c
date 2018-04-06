@@ -313,6 +313,8 @@ ExecFindPartition(ResultRelInfo *resultRelInfo, PartitionDispatch *pd,
 /*
  * Given OID of the partition leaf, return the index of the leaf in the
  * partition hierarchy.
+ *
+ * XXX This is an O(N) operation and further optimization would be beneficial
  */
 int
 ExecFindPartitionByOid(PartitionTupleRouting *proute, Oid partoid)
@@ -325,7 +327,10 @@ ExecFindPartitionByOid(PartitionTupleRouting *proute, Oid partoid)
 			break;
 	}
 
-	Assert(i < proute->num_partitions);
+	if (i >= proute->num_partitions)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("no partition found for OID %u", partoid)));
 	return i;
 }
 
