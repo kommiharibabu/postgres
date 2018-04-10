@@ -17,7 +17,6 @@
 #include <time.h>
 
 #include "access/xlog_internal.h"	/* for pg_start/stop_backup */
-#include "catalog/catalog.h"
 #include "catalog/pg_type.h"
 #include "common/file_perm.h"
 #include "lib/stringinfo.h"
@@ -1384,7 +1383,7 @@ sendFile(const char *readfilename, const char *tarfilename, struct stat *statbuf
 
 	_tarWriteHeader(tarfilename, NULL, statbuf, false);
 
-	if (!noverify_checksums && DataChecksumsNeedVerify())
+	if (!noverify_checksums && DataChecksumsEnabled())
 	{
 		char	   *filename;
 
