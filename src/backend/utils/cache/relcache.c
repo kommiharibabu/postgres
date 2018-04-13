@@ -1034,7 +1034,7 @@ RelationBuildPartitionKey(Relation relation)
 							procnum,
 							format_type_be(opclassform->opcintype))));
 
-		fmgr_info(funcid, &key->partsupfunc[i]);
+		fmgr_info_cxt(funcid, &key->partsupfunc[i], partkeycxt);
 
 		/* Collation */
 		key->partcollation[i] = collation->values[i];
@@ -1637,10 +1637,10 @@ RelationInitIndexAccessInfo(Relation relation)
 	}
 
 	relation->rd_indcollation = (Oid *)
-		MemoryContextAllocZero(indexcxt, indnatts * sizeof(Oid));
+		MemoryContextAllocZero(indexcxt, indnkeyatts * sizeof(Oid));
 
 	relation->rd_indoption = (int16 *)
-		MemoryContextAllocZero(indexcxt, indnatts * sizeof(int16));
+		MemoryContextAllocZero(indexcxt, indnkeyatts * sizeof(int16));
 
 	/*
 	 * indcollation cannot be referenced directly through the C struct,
@@ -1653,7 +1653,7 @@ RelationInitIndexAccessInfo(Relation relation)
 							   &isnull);
 	Assert(!isnull);
 	indcoll = (oidvector *) DatumGetPointer(indcollDatum);
-	memcpy(relation->rd_indcollation, indcoll->values, indnatts * sizeof(Oid));
+	memcpy(relation->rd_indcollation, indcoll->values, indnkeyatts * sizeof(Oid));
 
 	/*
 	 * indclass cannot be referenced directly through the C struct, because it
@@ -1685,7 +1685,7 @@ RelationInitIndexAccessInfo(Relation relation)
 								 &isnull);
 	Assert(!isnull);
 	indoption = (int2vector *) DatumGetPointer(indoptionDatum);
-	memcpy(relation->rd_indoption, indoption->values, indnatts * sizeof(int16));
+	memcpy(relation->rd_indoption, indoption->values, indnkeyatts * sizeof(int16));
 
 	/*
 	 * expressions, predicate, exclusion caches will be filled later
@@ -5065,7 +5065,7 @@ restart:
 		/* Collect simple attribute references */
 		for (i = 0; i < indexInfo->ii_NumIndexAttrs; i++)
 		{
-			int			attrnum = indexInfo->ii_KeyAttrNumbers[i];
+			int			attrnum = indexInfo->ii_IndexAttrNumbers[i];
 
 			/*
 			 * Since we have covering indexes with non-key columns, we must
