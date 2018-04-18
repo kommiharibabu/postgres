@@ -23,6 +23,7 @@
 #include "bootstrap/bootstrap.h"
 #include "catalog/index.h"
 #include "catalog/pg_collation.h"
+#include "catalog/pg_control.h"
 #include "catalog/pg_type.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
@@ -36,6 +37,7 @@
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
 #include "storage/condition_variable.h"
+#include "storage/encryption.h"
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
@@ -48,7 +50,8 @@
 #include "utils/tqual.h"
 
 uint32		bootstrap_data_checksum_version = 0;	/* No checksum */
-
+bool		bootstrap_data_encrypted = false;
+char       *bootstrap_encryption_sample = NULL;
 
 #define ALLOC(t, c) \
 	((t *) MemoryContextAllocZero(TopMemoryContext, (unsigned)(c) * sizeof(t)))
@@ -369,6 +372,17 @@ AuxiliaryProcessMain(int argc, char *argv[])
 	/* Initialize MaxBackends (if under postmaster, was done already) */
 	if (!IsUnderPostmaster)
 		InitializeMaxBackends();
+
+	if (!IsUnderPostmaster)
+		setup_encryption();
+
+	if (encryption_enabled)
+	{
+		bootstrap_data_encrypted = true;
+		bootstrap_encryption_sample = palloc0(ENCRYPTION_SAMPLE_SIZE);
+		sample_encryption(bootstrap_encryption_sample);
+	}
+
 
 	BaseInit();
 

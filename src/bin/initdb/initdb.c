@@ -144,7 +144,8 @@ static bool data_checksums = false;
 static char *xlog_dir = NULL;
 static char *str_wal_segment_size_mb = NULL;
 static int	wal_segment_size_mb;
-
+static char *data_encryption_module = NULL;
+static char *data_encryption_key = NULL;
 
 /* internal vars */
 static const char *progname;
@@ -273,6 +274,7 @@ static bool check_locale_encoding(const char *locale, int encoding);
 static void setlocales(void);
 static void usage(const char *progname);
 void		setup_pgdata(void);
+void		setup_encryption(void);
 void		setup_bin_paths(const char *argv0);
 void		setup_data_file_paths(void);
 void		setup_locale_encoding(void);
@@ -1105,6 +1107,13 @@ setup_config(void)
 		snprintf(repltok, sizeof(repltok), "shared_buffers = %dkB",
 				 n_buffers * (BLCKSZ / 1024));
 	conflines = replace_token(conflines, "#shared_buffers = 32MB", repltok);
+
+	if (data_encryption_module != NULL)
+	{
+		snprintf(repltok, sizeof(repltok), "encryption_library = '%s'",
+						 data_encryption_module);
+		conflines = replace_token(conflines, "#encryption_library = ''", repltok);
+	}
 
 #ifdef HAVE_UNIX_SOCKETS
 	snprintf(repltok, sizeof(repltok), "#unix_socket_directories = '%s'",
@@ -2409,6 +2418,7 @@ usage(const char *progname)
 	printf(_("\nLess commonly used options:\n"));
 	printf(_("  -d, --debug               generate lots of debugging output\n"));
 	printf(_("  -k, --data-checksums      use data page checksums\n"));
+	printf(_("  -K, --data-encryption=NAME     use data encryption method\n"));
 	printf(_("  -L DIRECTORY              where to find the input files\n"));
 	printf(_("  -n, --no-clean            do not clean up after errors\n"));
 	printf(_("  -N, --no-sync             do not wait for changes to be written safely to disk\n"));
@@ -2515,6 +2525,20 @@ setup_pgdata(void)
 	putenv(pgdata_set_env);
 }
 
+void
+setup_encryption(void)
+{
+	char *key = getenv("PGENCRYPTIONKEY");
+	if (key != NULL && strlen(key) != 0)
+		data_encryption_key = pg_strdup(key);
+
+	if (data_encryption_key != NULL)
+	{
+		char *pgencryptionkey_set_env;
+		pgencryptionkey_set_env = psprintf("PGENCRYPTIONKEY=%s", data_encryption_key);
+		putenv(pgencryptionkey_set_env);
+	}
+}
 
 void
 setup_bin_paths(const char *argv0)
@@ -3070,7 +3094,6 @@ initialize_data_directory(void)
 	check_ok();
 }
 
-
 int
 main(int argc, char *argv[])
 {
@@ -3105,6 +3128,7 @@ main(int argc, char *argv[])
 		{"wal-segsize", required_argument, NULL, 12},
 		{"data-checksums", no_argument, NULL, 'k'},
 		{"allow-group-access", no_argument, NULL, 'g'},
+		{"data-encryption", required_argument, NULL, 'K'},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -3146,7 +3170,7 @@ main(int argc, char *argv[])
 
 	/* process command-line options */
 
-	while ((c = getopt_long(argc, argv, "dD:E:kL:nNU:WA:sST:X:g", long_options, &option_index)) != -1)
+	while ((c = getopt_long(argc, argv, "dD:E:kK:L:nNU:WA:sST:X:g", long_options, &option_index)) != -1)
 	{
 		switch (c)
 		{
@@ -3197,6 +3221,10 @@ main(int argc, char *argv[])
 				break;
 			case 'k':
 				data_checksums = true;
+				break;
+			case 'K':
+				if (strlen(optarg) > 0)
+					data_encryption_module = pg_strdup(optarg);
 				break;
 			case 'L':
 				share_path = pg_strdup(optarg);
@@ -3338,6 +3366,7 @@ main(int argc, char *argv[])
 
 	setup_bin_paths(argv[0]);
 
+
 	effective_user = get_id();
 	if (!username)
 		username = effective_user;
@@ -3370,6 +3399,13 @@ main(int argc, char *argv[])
 
 	if (pwprompt || pwfilename)
 		get_su_pwd();
+
+	setup_encryption();
+
+	if (data_encryption_module != NULL)
+		printf(_("Using %s for data encryption.\n"), data_encryption_module);
+	else
+		printf(_("Data encryption is disabled.\n"));
 
 	printf("\n");
 

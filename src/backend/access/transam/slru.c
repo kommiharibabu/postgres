@@ -55,6 +55,7 @@
 #include "access/transam.h"
 #include "access/xlog.h"
 #include "pgstat.h"
+#include "storage/encryption.h"
 #include "storage/fd.h"
 #include "storage/shmem.h"
 #include "miscadmin.h"
@@ -122,6 +123,8 @@ typedef enum
 
 static SlruErrorCause slru_errcause;
 static int	slru_errno;
+static char slru_encryption_buf[BLCKSZ];
+static char slru_encryption_tweak[TWEAK_SIZE];
 
 
 static void SimpleLruZeroLSNs(SlruCtl ctl, int slotno);
@@ -136,6 +139,7 @@ static int	SlruSelectLRUPage(SlruCtl ctl, int pageno);
 static bool SlruScanDirCbDeleteCutoff(SlruCtl ctl, char *filename,
 						  int segpage, void *data);
 static void SlruInternalDeleteSegment(SlruCtl ctl, char *filename);
+static void SlruEncryptionTweak(char *tweak, int pageno);
 
 /*
  * Initialization of shared memory
@@ -644,6 +648,7 @@ SlruPhysicalReadPage(SlruCtl ctl, int pageno, int slotno)
 	int			offset = rpageno * BLCKSZ;
 	char		path[MAXPGPATH];
 	int			fd;
+	char		*rbuf;
 
 	SlruFileName(ctl, path, segno);
 
@@ -679,9 +684,14 @@ SlruPhysicalReadPage(SlruCtl ctl, int pageno, int slotno)
 		return false;
 	}
 
+	if (encryption_enabled)
+		rbuf = slru_encryption_buf;
+	else
+		rbuf = shared->page_buffer[slotno];
+
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_SLRU_READ);
-	if (read(fd, shared->page_buffer[slotno], BLCKSZ) != BLCKSZ)
+	if (read(fd, rbuf, BLCKSZ) != BLCKSZ)
 	{
 		pgstat_report_wait_end();
 		slru_errcause = SLRU_READ_FAILED;
@@ -690,6 +700,14 @@ SlruPhysicalReadPage(SlruCtl ctl, int pageno, int slotno)
 		return false;
 	}
 	pgstat_report_wait_end();
+
+
+	if (encryption_enabled)
+	{
+		SlruEncryptionTweak(slru_encryption_tweak, pageno);
+		decrypt_block(slru_encryption_buf, shared->page_buffer[slotno],
+				BLCKSZ, slru_encryption_tweak);
+	}
 
 	if (CloseTransientFile(fd))
 	{
@@ -724,6 +742,7 @@ SlruPhysicalWritePage(SlruCtl ctl, int pageno, int slotno, SlruFlush fdata)
 	int			offset = rpageno * BLCKSZ;
 	char		path[MAXPGPATH];
 	int			fd = -1;
+	char		*wbuf;
 
 	/*
 	 * Honor the write-WAL-before-data rule, if appropriate, so that we do not
@@ -840,9 +859,17 @@ SlruPhysicalWritePage(SlruCtl ctl, int pageno, int slotno, SlruFlush fdata)
 		return false;
 	}
 
+	wbuf = shared->page_buffer[slotno];
+	if (encryption_enabled)
+	{
+		SlruEncryptionTweak(slru_encryption_tweak, pageno);
+		encrypt_block(wbuf, slru_encryption_buf, BLCKSZ, slru_encryption_tweak);
+		wbuf = slru_encryption_buf;
+	}
+
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_SLRU_WRITE);
-	if (write(fd, shared->page_buffer[slotno], BLCKSZ) != BLCKSZ)
+	if (write(fd, wbuf, BLCKSZ) != BLCKSZ)
 	{
 		pgstat_report_wait_end();
 		/* if write didn't set errno, assume problem is no disk space */
@@ -1404,4 +1431,15 @@ SlruScanDirectory(SlruCtl ctl, SlruScanCallback callback, void *data)
 	FreeDir(cldir);
 
 	return retval;
+}
+
+/*
+ * SLRU data encryption is tweaked by page number.
+ */
+static void
+SlruEncryptionTweak(char *tweak, int pageno)
+{
+	/* TODO: would be nice to incorporate SLRU type in tweak */
+	memcpy(tweak, &pageno, sizeof(pageno));
+	memset(tweak + sizeof(pageno), 0, TWEAK_SIZE - sizeof(pageno));
 }

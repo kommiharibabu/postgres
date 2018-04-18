@@ -116,6 +116,7 @@
 #include "postmaster/syslogger.h"
 #include "replication/logicallauncher.h"
 #include "replication/walsender.h"
+#include "storage/encryption.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/pg_shmem.h"
@@ -914,6 +915,8 @@ PostmasterMain(int argc, char *argv[])
 		write_stderr("%s: invalid datetoken tables, please fix\n", progname);
 		ExitPostmaster(1);
 	}
+
+	setup_encryption();
 
 	/*
 	 * Now that we are done processing the postmaster arguments, reset

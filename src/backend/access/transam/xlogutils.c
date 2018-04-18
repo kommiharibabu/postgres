@@ -25,6 +25,7 @@
 #include "access/xlogutils.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "storage/encryption.h"
 #include "storage/smgr.h"
 #include "utils/guc.h"
 #include "utils/hsearch.h"
@@ -656,9 +657,10 @@ static void
 XLogRead(char *buf, int segsize, TimeLineID tli, XLogRecPtr startptr,
 		 Size count)
 {
-	char	   *p;
+	char	   *p, *decrypt_p;
 	XLogRecPtr	recptr;
 	Size		nbytes;
+	uint32		decryptOff;
 
 	/* state maintained across calls */
 	static int	sendFile = -1;
@@ -668,9 +670,14 @@ XLogRead(char *buf, int segsize, TimeLineID tli, XLogRecPtr startptr,
 
 	Assert(segsize == wal_segment_size);
 
-	p = buf;
+	/* We only support block aligned reads to support encryption */
+	Assert(startptr % XLOG_BLCKSZ == 0);
+	Assert(count % XLOG_BLCKSZ == 0);
+
+	decrypt_p = p = buf;
 	recptr = startptr;
 	nbytes = count;
+	decryptOff = startptr % segsize;
 
 	while (nbytes > 0)
 	{
@@ -758,6 +765,20 @@ XLogRead(char *buf, int segsize, TimeLineID tli, XLogRecPtr startptr,
 		sendOff += readbytes;
 		nbytes -= readbytes;
 		p += readbytes;
+
+		/* Decrypt completed blocks */
+		if (encryption_enabled)
+		{
+			while (decrypt_p + XLOG_BLCKSZ <= p)
+			{
+				char tweak[TWEAK_SIZE];
+				XLogEncryptionTweak(tweak, tli, sendSegNo, decryptOff);
+				decrypt_block(decrypt_p, decrypt_p, XLOG_BLCKSZ, tweak);
+
+				decrypt_p += XLOG_BLCKSZ;
+				decryptOff += XLOG_BLCKSZ;
+			}
+		}
 	}
 }
 
@@ -1027,4 +1048,16 @@ read_local_xlog_page(XLogReaderState *state, XLogRecPtr targetPagePtr,
 
 	/* number of valid bytes in the buffer */
 	return count;
+}
+
+/*
+ * Xlog is encrypted page at a time. Each xlog page gets a unique tweak via
+ * timeline, segment and offset.
+ */
+void
+XLogEncryptionTweak(char *tweak, TimeLineID timeline, XLogSegNo segment, uint32 offset)
+{
+	memcpy(tweak, &segment, sizeof(XLogSegNo));
+	memcpy(tweak  + sizeof(XLogSegNo), &offset, sizeof(offset));
+	memcpy(tweak + sizeof(XLogSegNo) + sizeof(uint32), &timeline, sizeof(timeline));
 }

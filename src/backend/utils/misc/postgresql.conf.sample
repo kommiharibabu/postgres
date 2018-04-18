@@ -107,6 +107,7 @@
 #ssl_passphrase_command = ''
 #ssl_passphrase_command_supports_reload = off
 
+#encryption_library = ''
 
 #------------------------------------------------------------------------------
 # RESOURCE USAGE (except WAL)
@@ -172,7 +173,6 @@
 #old_snapshot_threshold = -1		# 1min-60d; -1 disables; 0 is immediate
 					# (change requires restart)
 #backend_flush_after = 0		# measured in pages, 0 disables
-
 
 #------------------------------------------------------------------------------
 # WRITE-AHEAD LOG
