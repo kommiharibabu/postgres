@@ -33,7 +33,9 @@
 
 #include <ctype.h>
 
+#include "common/sha2.h"
 #include "parser/scansup.h"
+#include "storage/encryption.h"
 #include "utils/backend_random.h"
 #include "utils/builtins.h"
 #include "utils/uuid.h"
@@ -41,6 +43,7 @@
 #include "px.h"
 #include "px-crypt.h"
 #include "pgcrypto.h"
+#include "xts.h"
 
 PG_MODULE_MAGIC;
 
@@ -48,6 +51,23 @@ PG_MODULE_MAGIC;
 
 typedef int (*PFN) (const char *name, void **res);
 static void *find_provider(text *name, PFN pf, const char *desc, int silent);
+static bool pgcrypto_encryption_setup();
+static void pgcrypto_encrypt_block(const char *input,
+		char *output, Size size, const char *tweak);
+static void pgcrypto_decrypt_block(const char *input,
+		char *output, Size size, const char *tweak);
+void _PG_init(void);
+
+/*
+ * Encryption and decryption keys for full database encryption support.
+ */
+typedef struct {
+	xts_encrypt_ctx enc_ctx[1];
+	xts_decrypt_ctx dec_ctx[1];
+} db_encryption_ctx;
+
+/* Full database encryption key, initialized by pgcrypto_encryption_setup. */
+static db_encryption_ctx db_key;
 
 /* SQL function: hash(bytea, text) returns bytea */
 PG_FUNCTION_INFO_V1(pg_digest);
@@ -494,4 +514,73 @@ find_provider(text *name,
 	pfree(buf);
 
 	return err ? NULL : res;
+}
+
+/*
+ * Pgcrypto module does AES-128-XTS encryption.
+ */
+static bool
+pgcrypto_encryption_setup()
+{
+	uint8 key[32];
+	char *passphrase = getenv("PGENCRYPTIONKEY");
+
+	/* Empty or missing passphrase means that encryption is not configured */
+	if (passphrase == NULL || passphrase[0] == '\0')
+	{
+		ereport(LOG,
+				(errmsg("encryption key not provided"),
+				errdetail("The database cluster was initialized with encryption"
+						  " but the server was started without an encryption key."),
+						 errhint("Set the key using PGENCRYPTIONKEY environment variable.")));
+		return false;
+	}
+
+	/* TODO: replace with PBKDF2 or scrypt */
+	{
+		pg_sha256_ctx sha_ctx;
+		pg_sha256_init(&sha_ctx);
+		pg_sha256_update(&sha_ctx, (uint8*) passphrase, strlen(passphrase));
+		pg_sha256_final(&sha_ctx, key);
+	}
+
+	if (xts_encrypt_key(key, 32, db_key.enc_ctx) != EXIT_SUCCESS ||
+		xts_decrypt_key(key, 32, db_key.dec_ctx) != EXIT_SUCCESS)
+	{
+		elog(ERROR, "Encryption key setup failed.");
+		return false;
+	}
+
+	return true;
+}
+
+static void
+pgcrypto_encrypt_block(const char *input, char *output, Size size,
+		const char *tweak)
+{
+	if (input != output)
+		memcpy(output, input, size);
+
+	xts_encrypt_block((uint8*) output, (const uint8*) tweak, size, db_key.enc_ctx);
+}
+
+static void
+pgcrypto_decrypt_block(const char *input, char *output, Size size,
+		const char *tweak)
+{
+	if (input != output)
+		memcpy(output, input, size);
+
+	xts_decrypt_block((uint8*) output, (const uint8*) tweak, size, db_key.dec_ctx);
+}
+
+void
+_PG_init(void)
+{
+	EncryptionRoutines routines;
+	routines.SetupEncryption = &pgcrypto_encryption_setup;
+	routines.EncryptBlock = &pgcrypto_encrypt_block;
+	routines.DecryptBlock = &pgcrypto_decrypt_block;
+
+	register_encryption_module("pgcrypto", &routines);
 }
