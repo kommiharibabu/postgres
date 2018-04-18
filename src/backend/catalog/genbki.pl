@@ -351,7 +351,7 @@ EOM
 
 			# Replace OID synonyms with OIDs per the appropriate lookup rule.
 			#
-			# If the column type is oidvector or oid[], we have to replace
+			# If the column type is oidvector or _oid, we have to replace
 			# each element of the array as per the lookup rule.
 			if ($column->{lookup})
 			{
@@ -369,7 +369,7 @@ EOM
 											  \%bki_values, @lookupnames);
 					$bki_values{$attname} = join(' ', @lookupoids);
 				}
-				elsif ($atttype eq 'oid[]')
+				elsif ($atttype eq '_oid')
 				{
 					if ($bki_values{$attname} ne '_null_')
 					{
@@ -598,10 +598,6 @@ sub morph_row_for_pgattr
 
 	$row->{attname} = $attname;
 
-	# Adjust type name for arrays: foo[] becomes _foo, so we can look it up in
-	# pg_type
-	$atttype = '_' . $1 if $atttype =~ /(.+)\[\]$/;
-
 	# Copy the type data from pg_type, and add some type-dependent items
 	my $type = $types{$atttype};
 
@@ -645,9 +641,7 @@ sub morph_row_for_pgattr
 	Catalog::AddDefaultValues($row, $pgattr_schema, 'pg_attribute');
 }
 
-# Write an entry to postgres.bki. Adding quotes here allows us to keep
-# most double quotes out of the catalog data files for readability. See
-# bootscanner.l for what tokens need quoting.
+# Write an entry to postgres.bki.
 sub print_bki_insert
 {
 	my $row    = shift;
@@ -666,26 +660,19 @@ sub print_bki_insert
 		# since that represents a NUL char in C code.
 		$bki_value = '' if $bki_value eq '\0';
 
+		# Handle single quotes by doubling them, and double quotes by
+		# converting them to octal escapes, because that's what the
+		# bootstrap scanner requires.  We do not process backslashes
+		# specially; this allows escape-string-style backslash escapes
+		# to be used in catalog data.
+		$bki_value =~ s/'/''/g;
+		$bki_value =~ s/"/\\042/g;
+
+		# Quote value if needed.  We need not quote values that satisfy
+		# the "id" pattern in bootscanner.l, currently "[-A-Za-z0-9_]+".
 		$bki_value = sprintf(qq'"%s"', $bki_value)
-		  if  $bki_value ne '_null_'
-		  and $bki_value !~ /^"[^"]+"$/
-		  and ( length($bki_value) == 0       # Empty string
-				or $bki_value =~ /\s/         # Contains whitespace
-
-				# To preserve historical formatting, operator names are
-				# always quoted. Likewise for values of multi-element types,
-				# even if they only contain a single element.
-				or $attname eq 'oprname'
-				or $atttype eq 'oidvector'
-				or $atttype eq 'int2vector'
-				or $atttype =~ /\[\]$/
-
-				# Quote strings that have non-word characters. We make
-				# exceptions for values that are octals or negative numbers,
-				# for the same historical reason as above.
-				or (    $bki_value =~ /\W/
-					and $bki_value !~ /^\\\d{3}$/
-					and $bki_value !~ /^-\d*$/));
+		  if length($bki_value) == 0
+			 or $bki_value =~ /[^-A-Za-z0-9_]/;
 
 		push @bki_values, $bki_value;
 	}
