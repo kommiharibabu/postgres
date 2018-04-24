@@ -1747,6 +1747,29 @@ explain (analyze, costs off, summary off, timing off) execute ab_q3 (2, 2);
          Filter: ((b >= $1) AND (b <= $2) AND (a < $0))
 (10 rows)
 
+-- Test a backwards Append scan
+create table list_part (a int) partition by list (a);
+create table list_part1 partition of list_part for values in (1);
+create table list_part2 partition of list_part for values in (2);
+create table list_part3 partition of list_part for values in (3);
+create table list_part4 partition of list_part for values in (4);
+insert into list_part select generate_series(1,4);
+begin;
+-- Don't select an actual value out of the table as the order of the Append's
+-- subnodes may not be stable.
+declare cur SCROLL CURSOR for select 1 from list_part where a > (select 1) and a < (select 4);
+-- move beyond the final row
+move 3 from cur;
+-- Ensure we get two rows.
+fetch backward all from cur;
+ ?column? 
+----------
+        1
+        1
+(2 rows)
+
+commit;
+drop table list_part;
 -- Parallel append
 -- Suppress the number of loops each parallel node runs for.  This is because
 -- more than one worker may run the same parallel node if timing conditions
@@ -2599,3 +2622,305 @@ select * from boolp where a = (select value from boolvalues where not value);
 
 drop table boolp;
 reset enable_indexonlyscan;
+--
+-- check that pruning works properly when the partition key is of a
+-- pseudotype
+--
+-- array type list partition key
+create table pp_arrpart (a int[]) partition by list (a);
+create table pp_arrpart1 partition of pp_arrpart for values in ('{1}');
+create table pp_arrpart2 partition of pp_arrpart for values in ('{2, 3}', '{4, 5}');
+explain (costs off) select * from pp_arrpart where a = '{1}';
+               QUERY PLAN               
+----------------------------------------
+ Append
+   ->  Seq Scan on pp_arrpart1
+         Filter: (a = '{1}'::integer[])
+(3 rows)
+
+explain (costs off) select * from pp_arrpart where a = '{1, 2}';
+        QUERY PLAN        
+--------------------------
+ Result
+   One-Time Filter: false
+(2 rows)
+
+explain (costs off) select * from pp_arrpart where a in ('{4, 5}', '{1}');
+                              QUERY PLAN                              
+----------------------------------------------------------------------
+ Append
+   ->  Seq Scan on pp_arrpart1
+         Filter: ((a = '{4,5}'::integer[]) OR (a = '{1}'::integer[]))
+   ->  Seq Scan on pp_arrpart2
+         Filter: ((a = '{4,5}'::integer[]) OR (a = '{1}'::integer[]))
+(5 rows)
+
+drop table pp_arrpart;
+-- array type hash partition key
+create table pph_arrpart (a int[]) partition by hash (a);
+create table pph_arrpart1 partition of pph_arrpart for values with (modulus 2, remainder 0);
+create table pph_arrpart2 partition of pph_arrpart for values with (modulus 2, remainder 1);
+insert into pph_arrpart values ('{1}'), ('{1, 2}'), ('{4, 5}');
+select tableoid::regclass, * from pph_arrpart order by 1;
+   tableoid   |   a   
+--------------+-------
+ pph_arrpart1 | {1,2}
+ pph_arrpart1 | {4,5}
+ pph_arrpart2 | {1}
+(3 rows)
+
+explain (costs off) select * from pph_arrpart where a = '{1}';
+               QUERY PLAN               
+----------------------------------------
+ Append
+   ->  Seq Scan on pph_arrpart2
+         Filter: (a = '{1}'::integer[])
+(3 rows)
+
+explain (costs off) select * from pph_arrpart where a = '{1, 2}';
+                QUERY PLAN                
+------------------------------------------
+ Append
+   ->  Seq Scan on pph_arrpart1
+         Filter: (a = '{1,2}'::integer[])
+(3 rows)
+
+explain (costs off) select * from pph_arrpart where a in ('{4, 5}', '{1}');
+                              QUERY PLAN                              
+----------------------------------------------------------------------
+ Append
+   ->  Seq Scan on pph_arrpart1
+         Filter: ((a = '{4,5}'::integer[]) OR (a = '{1}'::integer[]))
+   ->  Seq Scan on pph_arrpart2
+         Filter: ((a = '{4,5}'::integer[]) OR (a = '{1}'::integer[]))
+(5 rows)
+
+drop table pph_arrpart;
+-- enum type list partition key
+create type pp_colors as enum ('green', 'blue', 'black');
+create table pp_enumpart (a pp_colors) partition by list (a);
+create table pp_enumpart_green partition of pp_enumpart for values in ('green');
+create table pp_enumpart_blue partition of pp_enumpart for values in ('blue');
+explain (costs off) select * from pp_enumpart where a = 'blue';
+               QUERY PLAN                
+-----------------------------------------
+ Append
+   ->  Seq Scan on pp_enumpart_blue
+         Filter: (a = 'blue'::pp_colors)
+(3 rows)
+
+explain (costs off) select * from pp_enumpart where a = 'black';
+        QUERY PLAN        
+--------------------------
+ Result
+   One-Time Filter: false
+(2 rows)
+
+drop table pp_enumpart;
+drop type pp_colors;
+-- record type as partition key
+create type pp_rectype as (a int, b int);
+create table pp_recpart (a pp_rectype) partition by list (a);
+create table pp_recpart_11 partition of pp_recpart for values in ('(1,1)');
+create table pp_recpart_23 partition of pp_recpart for values in ('(2,3)');
+explain (costs off) select * from pp_recpart where a = '(1,1)'::pp_rectype;
+                QUERY PLAN                 
+-------------------------------------------
+ Append
+   ->  Seq Scan on pp_recpart_11
+         Filter: (a = '(1,1)'::pp_rectype)
+(3 rows)
+
+explain (costs off) select * from pp_recpart where a = '(1,2)'::pp_rectype;
+        QUERY PLAN        
+--------------------------
+ Result
+   One-Time Filter: false
+(2 rows)
+
+drop table pp_recpart;
+drop type pp_rectype;
+-- range type partition key
+create table pp_intrangepart (a int4range) partition by list (a);
+create table pp_intrangepart12 partition of pp_intrangepart for values in ('[1,2]');
+create table pp_intrangepart2inf partition of pp_intrangepart for values in ('[2,)');
+explain (costs off) select * from pp_intrangepart where a = '[1,2]'::int4range;
+                QUERY PLAN                
+------------------------------------------
+ Append
+   ->  Seq Scan on pp_intrangepart12
+         Filter: (a = '[1,3)'::int4range)
+(3 rows)
+
+explain (costs off) select * from pp_intrangepart where a = '(1,2)'::int4range;
+        QUERY PLAN        
+--------------------------
+ Result
+   One-Time Filter: false
+(2 rows)
+
+drop table pp_intrangepart;
+--
+-- Ensure the enable_partition_prune GUC properly disables partition pruning.
+--
+create table pp_lp (a int, value int) partition by list (a);
+create table pp_lp1 partition of pp_lp for values in(1);
+create table pp_lp2 partition of pp_lp for values in(2);
+explain (costs off) select * from pp_lp where a = 1;
+        QUERY PLAN        
+--------------------------
+ Append
+   ->  Seq Scan on pp_lp1
+         Filter: (a = 1)
+(3 rows)
+
+explain (costs off) update pp_lp set value = 10 where a = 1;
+        QUERY PLAN        
+--------------------------
+ Update on pp_lp
+   Update on pp_lp1
+   ->  Seq Scan on pp_lp1
+         Filter: (a = 1)
+(4 rows)
+
+explain (costs off) delete from pp_lp where a = 1;
+        QUERY PLAN        
+--------------------------
+ Delete on pp_lp
+   Delete on pp_lp1
+   ->  Seq Scan on pp_lp1
+         Filter: (a = 1)
+(4 rows)
+
+set enable_partition_pruning = off;
+set constraint_exclusion = 'partition'; -- this should not affect the result.
+explain (costs off) select * from pp_lp where a = 1;
+        QUERY PLAN        
+--------------------------
+ Append
+   ->  Seq Scan on pp_lp1
+         Filter: (a = 1)
+   ->  Seq Scan on pp_lp2
+         Filter: (a = 1)
+(5 rows)
+
+explain (costs off) update pp_lp set value = 10 where a = 1;
+        QUERY PLAN        
+--------------------------
+ Update on pp_lp
+   Update on pp_lp1
+   Update on pp_lp2
+   ->  Seq Scan on pp_lp1
+         Filter: (a = 1)
+   ->  Seq Scan on pp_lp2
+         Filter: (a = 1)
+(7 rows)
+
+explain (costs off) delete from pp_lp where a = 1;
+        QUERY PLAN        
+--------------------------
+ Delete on pp_lp
+   Delete on pp_lp1
+   Delete on pp_lp2
+   ->  Seq Scan on pp_lp1
+         Filter: (a = 1)
+   ->  Seq Scan on pp_lp2
+         Filter: (a = 1)
+(7 rows)
+
+set constraint_exclusion = 'off'; -- this should not affect the result.
+explain (costs off) select * from pp_lp where a = 1;
+        QUERY PLAN        
+--------------------------
+ Append
+   ->  Seq Scan on pp_lp1
+         Filter: (a = 1)
+   ->  Seq Scan on pp_lp2
+         Filter: (a = 1)
+(5 rows)
+
+explain (costs off) update pp_lp set value = 10 where a = 1;
+        QUERY PLAN        
+--------------------------
+ Update on pp_lp
+   Update on pp_lp1
+   Update on pp_lp2
+   ->  Seq Scan on pp_lp1
+         Filter: (a = 1)
+   ->  Seq Scan on pp_lp2
+         Filter: (a = 1)
+(7 rows)
+
+explain (costs off) delete from pp_lp where a = 1;
+        QUERY PLAN        
+--------------------------
+ Delete on pp_lp
+   Delete on pp_lp1
+   Delete on pp_lp2
+   ->  Seq Scan on pp_lp1
+         Filter: (a = 1)
+   ->  Seq Scan on pp_lp2
+         Filter: (a = 1)
+(7 rows)
+
+drop table pp_lp;
+-- Ensure enable_partition_prune does not affect non-partitioned tables.
+create table inh_lp (a int, value int);
+create table inh_lp1 (a int, value int, check(a = 1)) inherits (inh_lp);
+NOTICE:  merging column "a" with inherited definition
+NOTICE:  merging column "value" with inherited definition
+create table inh_lp2 (a int, value int, check(a = 2)) inherits (inh_lp);
+NOTICE:  merging column "a" with inherited definition
+NOTICE:  merging column "value" with inherited definition
+set constraint_exclusion = 'partition';
+-- inh_lp2 should be removed in the following 3 cases.
+explain (costs off) select * from inh_lp where a = 1;
+        QUERY PLAN         
+---------------------------
+ Append
+   ->  Seq Scan on inh_lp
+         Filter: (a = 1)
+   ->  Seq Scan on inh_lp1
+         Filter: (a = 1)
+(5 rows)
+
+explain (costs off) update inh_lp set value = 10 where a = 1;
+        QUERY PLAN         
+---------------------------
+ Update on inh_lp
+   Update on inh_lp
+   Update on inh_lp1
+   ->  Seq Scan on inh_lp
+         Filter: (a = 1)
+   ->  Seq Scan on inh_lp1
+         Filter: (a = 1)
+(7 rows)
+
+explain (costs off) delete from inh_lp where a = 1;
+        QUERY PLAN         
+---------------------------
+ Delete on inh_lp
+   Delete on inh_lp
+   Delete on inh_lp1
+   ->  Seq Scan on inh_lp
+         Filter: (a = 1)
+   ->  Seq Scan on inh_lp1
+         Filter: (a = 1)
+(7 rows)
+
+-- Ensure we don't exclude normal relations when we only expect to exclude
+-- inheritance children
+explain (costs off) update inh_lp1 set value = 10 where a = 2;
+        QUERY PLAN         
+---------------------------
+ Update on inh_lp1
+   ->  Seq Scan on inh_lp1
+         Filter: (a = 2)
+(3 rows)
+
+\set VERBOSITY terse	\\ -- suppress cascade details
+drop table inh_lp cascade;
+NOTICE:  drop cascades to 2 other objects
+\set VERBOSITY default
+reset enable_partition_pruning;
+reset constraint_exclusion;

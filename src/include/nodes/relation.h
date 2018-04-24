@@ -82,6 +82,17 @@ typedef enum UpperRelationKind
 	/* NB: UPPERREL_FINAL must be last enum entry; it's used to size arrays */
 } UpperRelationKind;
 
+/*
+ * This enum identifies which type of relation is being planned through the
+ * inheritance planner.  INHKIND_NONE indicates the inheritance planner
+ * was not used.
+ */
+typedef enum InheritanceKind
+{
+	INHKIND_NONE,
+	INHKIND_INHERITED,
+	INHKIND_PARTITIONED
+} InheritanceKind;
 
 /*----------
  * PlannerGlobal
@@ -298,8 +309,9 @@ typedef struct PlannerInfo
 	Index		qual_security_level;	/* minimum security_level for quals */
 	/* Note: qual_security_level is zero if there are no securityQuals */
 
-	bool		hasInheritedTarget; /* true if parse->resultRelation is an
-									 * inheritance child rel */
+	InheritanceKind inhTargetKind; /* indicates if the target relation is an
+									* inheritance child or partition or a
+									* partitioned table */
 	bool		hasJoinRTEs;	/* true if any RTEs are RTE_JOIN kind */
 	bool		hasLateralRTEs; /* true if any RTEs are marked LATERAL */
 	bool		hasDeletedRTEs; /* true if any RTE was deleted from jointree */
@@ -1789,7 +1801,8 @@ typedef struct LimitPath
  * if we decide that it can be pushed down into the nullable side of the join.
  * In that case it acts as a plain filter qual for wherever it gets evaluated.
  * (In short, is_pushed_down is only false for non-degenerate outer join
- * conditions.  Possibly we should rename it to reflect that meaning?)
+ * conditions.  Possibly we should rename it to reflect that meaning?  But
+ * see also the comments for RINFO_IS_PUSHED_DOWN, below.)
  *
  * RestrictInfo nodes also contain an outerjoin_delayed flag, which is true
  * if the clause's applicability must be delayed due to any outer joins
@@ -1930,6 +1943,20 @@ typedef struct RestrictInfo
 	Selectivity left_mcvfreq;	/* left side's most common val's freq */
 	Selectivity right_mcvfreq;	/* right side's most common val's freq */
 } RestrictInfo;
+
+/*
+ * This macro embodies the correct way to test whether a RestrictInfo is
+ * "pushed down" to a given outer join, that is, should be treated as a filter
+ * clause rather than a join clause at that outer join.  This is certainly so
+ * if is_pushed_down is true; but examining that is not sufficient anymore,
+ * because outer-join clauses will get pushed down to lower outer joins when
+ * we generate a path for the lower outer join that is parameterized by the
+ * LHS of the upper one.  We can detect such a clause by noting that its
+ * required_relids exceed the scope of the join.
+ */
+#define RINFO_IS_PUSHED_DOWN(rinfo, joinrelids) \
+	((rinfo)->is_pushed_down || \
+	 !bms_is_subset((rinfo)->required_relids, joinrelids))
 
 /*
  * Since mergejoinscansel() is a relatively expensive function, and would

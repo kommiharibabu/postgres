@@ -359,6 +359,31 @@ execute ab_q3 (1, 8);
 
 explain (analyze, costs off, summary off, timing off) execute ab_q3 (2, 2);
 
+-- Test a backwards Append scan
+create table list_part (a int) partition by list (a);
+create table list_part1 partition of list_part for values in (1);
+create table list_part2 partition of list_part for values in (2);
+create table list_part3 partition of list_part for values in (3);
+create table list_part4 partition of list_part for values in (4);
+
+insert into list_part select generate_series(1,4);
+
+begin;
+
+-- Don't select an actual value out of the table as the order of the Append's
+-- subnodes may not be stable.
+declare cur SCROLL CURSOR for select 1 from list_part where a > (select 1) and a < (select 4);
+
+-- move beyond the final row
+move 3 from cur;
+
+-- Ensure we get two rows.
+fetch backward all from cur;
+
+commit;
+
+drop table list_part;
+
 -- Parallel append
 
 -- Suppress the number of loops each parallel node runs for.  This is because
@@ -645,3 +670,108 @@ select * from boolp where a = (select value from boolvalues where not value);
 drop table boolp;
 
 reset enable_indexonlyscan;
+
+--
+-- check that pruning works properly when the partition key is of a
+-- pseudotype
+--
+
+-- array type list partition key
+create table pp_arrpart (a int[]) partition by list (a);
+create table pp_arrpart1 partition of pp_arrpart for values in ('{1}');
+create table pp_arrpart2 partition of pp_arrpart for values in ('{2, 3}', '{4, 5}');
+explain (costs off) select * from pp_arrpart where a = '{1}';
+explain (costs off) select * from pp_arrpart where a = '{1, 2}';
+explain (costs off) select * from pp_arrpart where a in ('{4, 5}', '{1}');
+drop table pp_arrpart;
+
+-- array type hash partition key
+create table pph_arrpart (a int[]) partition by hash (a);
+create table pph_arrpart1 partition of pph_arrpart for values with (modulus 2, remainder 0);
+create table pph_arrpart2 partition of pph_arrpart for values with (modulus 2, remainder 1);
+insert into pph_arrpart values ('{1}'), ('{1, 2}'), ('{4, 5}');
+select tableoid::regclass, * from pph_arrpart order by 1;
+explain (costs off) select * from pph_arrpart where a = '{1}';
+explain (costs off) select * from pph_arrpart where a = '{1, 2}';
+explain (costs off) select * from pph_arrpart where a in ('{4, 5}', '{1}');
+drop table pph_arrpart;
+
+-- enum type list partition key
+create type pp_colors as enum ('green', 'blue', 'black');
+create table pp_enumpart (a pp_colors) partition by list (a);
+create table pp_enumpart_green partition of pp_enumpart for values in ('green');
+create table pp_enumpart_blue partition of pp_enumpart for values in ('blue');
+explain (costs off) select * from pp_enumpart where a = 'blue';
+explain (costs off) select * from pp_enumpart where a = 'black';
+drop table pp_enumpart;
+drop type pp_colors;
+
+-- record type as partition key
+create type pp_rectype as (a int, b int);
+create table pp_recpart (a pp_rectype) partition by list (a);
+create table pp_recpart_11 partition of pp_recpart for values in ('(1,1)');
+create table pp_recpart_23 partition of pp_recpart for values in ('(2,3)');
+explain (costs off) select * from pp_recpart where a = '(1,1)'::pp_rectype;
+explain (costs off) select * from pp_recpart where a = '(1,2)'::pp_rectype;
+drop table pp_recpart;
+drop type pp_rectype;
+
+-- range type partition key
+create table pp_intrangepart (a int4range) partition by list (a);
+create table pp_intrangepart12 partition of pp_intrangepart for values in ('[1,2]');
+create table pp_intrangepart2inf partition of pp_intrangepart for values in ('[2,)');
+explain (costs off) select * from pp_intrangepart where a = '[1,2]'::int4range;
+explain (costs off) select * from pp_intrangepart where a = '(1,2)'::int4range;
+drop table pp_intrangepart;
+
+--
+-- Ensure the enable_partition_prune GUC properly disables partition pruning.
+--
+
+create table pp_lp (a int, value int) partition by list (a);
+create table pp_lp1 partition of pp_lp for values in(1);
+create table pp_lp2 partition of pp_lp for values in(2);
+
+explain (costs off) select * from pp_lp where a = 1;
+explain (costs off) update pp_lp set value = 10 where a = 1;
+explain (costs off) delete from pp_lp where a = 1;
+
+set enable_partition_pruning = off;
+
+set constraint_exclusion = 'partition'; -- this should not affect the result.
+
+explain (costs off) select * from pp_lp where a = 1;
+explain (costs off) update pp_lp set value = 10 where a = 1;
+explain (costs off) delete from pp_lp where a = 1;
+
+set constraint_exclusion = 'off'; -- this should not affect the result.
+
+explain (costs off) select * from pp_lp where a = 1;
+explain (costs off) update pp_lp set value = 10 where a = 1;
+explain (costs off) delete from pp_lp where a = 1;
+
+drop table pp_lp;
+
+-- Ensure enable_partition_prune does not affect non-partitioned tables.
+
+create table inh_lp (a int, value int);
+create table inh_lp1 (a int, value int, check(a = 1)) inherits (inh_lp);
+create table inh_lp2 (a int, value int, check(a = 2)) inherits (inh_lp);
+
+set constraint_exclusion = 'partition';
+
+-- inh_lp2 should be removed in the following 3 cases.
+explain (costs off) select * from inh_lp where a = 1;
+explain (costs off) update inh_lp set value = 10 where a = 1;
+explain (costs off) delete from inh_lp where a = 1;
+
+-- Ensure we don't exclude normal relations when we only expect to exclude
+-- inheritance children
+explain (costs off) update inh_lp1 set value = 10 where a = 2;
+
+\set VERBOSITY terse	\\ -- suppress cascade details
+drop table inh_lp cascade;
+\set VERBOSITY default
+
+reset enable_partition_pruning;
+reset constraint_exclusion;
