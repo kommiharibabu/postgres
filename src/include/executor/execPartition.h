@@ -90,6 +90,10 @@ typedef struct PartitionDispatchData *PartitionDispatch;
  *								given leaf partition's rowtype after that
  *								partition is chosen for insertion by
  *								tuple-routing.
+ * root_tuple_slot				TupleTableSlot to be used to transiently hold
+ *								copy of a tuple that's being moved across
+ *								partitions in the root partitioned table's
+ *								rowtype
  *-----------------------
  */
 typedef struct PartitionTupleRouting
@@ -186,9 +190,9 @@ extern int ExecFindPartition(ResultRelInfo *resultRelInfo,
 				  TupleTableSlot *slot,
 				  EState *estate);
 extern ResultRelInfo *ExecInitPartitionInfo(ModifyTableState *mtstate,
-					ResultRelInfo *resultRelInfo,
-					PartitionTupleRouting *proute,
-					EState *estate, int partidx);
+					  ResultRelInfo *resultRelInfo,
+					  PartitionTupleRouting *proute,
+					  EState *estate, int partidx);
 extern void ExecInitRoutingInfo(ModifyTableState *mtstate,
 					EState *estate,
 					PartitionTupleRouting *proute,
@@ -204,7 +208,7 @@ extern HeapTuple ConvertPartitionTupleSlot(TupleConversionMap *map,
 extern void ExecCleanupTupleRouting(ModifyTableState *mtstate,
 						PartitionTupleRouting *proute);
 extern PartitionPruneState *ExecSetupPartitionPruneState(PlanState *planstate,
-						  List *partitionpruneinfo);
+							 List *partitionpruneinfo);
 extern Bitmapset *ExecFindMatchingSubPlans(PartitionPruneState *prunestate);
 extern Bitmapset *ExecFindInitialMatchingSubPlans(PartitionPruneState *prunestate,
 								int nsubnodes);

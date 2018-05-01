@@ -86,8 +86,6 @@ my $INTERNALlanguageId =
   Catalog::FindDefinedSymbolFromData($catalog_data{pg_language},
 	'INTERNALlanguageId');
 
-print "Generating fmgrtab.c, fmgroids.h, and fmgrprotos.h...\n";
-
 # Collect certain fields from pg_proc.dat.
 my @fmgr = ();
 
@@ -120,7 +118,7 @@ open my $tfh, '>', $tabfile . $tmpext
   or die "Could not open $tabfile$tmpext: $!";
 
 print $ofh
-qq|/*-------------------------------------------------------------------------
+  qq|/*-------------------------------------------------------------------------
  *
  * fmgroids.h
  *    Macros that define the OIDs of built-in functions.
@@ -157,7 +155,7 @@ qq|/*-------------------------------------------------------------------------
 |;
 
 print $pfh
-qq|/*-------------------------------------------------------------------------
+  qq|/*-------------------------------------------------------------------------
  *
  * fmgrprotos.h
  *    Prototypes for built-in functions.
@@ -183,7 +181,7 @@ qq|/*-------------------------------------------------------------------------
 |;
 
 print $tfh
-qq|/*-------------------------------------------------------------------------
+  qq|/*-------------------------------------------------------------------------
  *
  * fmgrtab.c
  *    The function manager's table of internal functions.
@@ -230,7 +228,7 @@ my $fmgr_count = 0;
 foreach my $s (sort { $a->{oid} <=> $b->{oid} } @fmgr)
 {
 	print $tfh
-"  { $s->{oid}, \"$s->{prosrc}\", $s->{nargs}, $bmap{$s->{strict}}, $bmap{$s->{retset}}, $s->{prosrc} }";
+	  "  { $s->{oid}, \"$s->{prosrc}\", $s->{nargs}, $bmap{$s->{strict}}, $bmap{$s->{retset}}, $s->{prosrc} }";
 
 	$fmgr_builtin_oid_index[ $s->{oid} ] = $fmgr_count++;
 

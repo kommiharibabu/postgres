@@ -91,10 +91,10 @@ sub configure_test_server_for_ssl
 	if (defined($password))
 	{
 		$node->psql('postgres',
-"SET password_encryption='$password_enc'; ALTER USER ssltestuser PASSWORD '$password';"
+			"SET password_encryption='$password_enc'; ALTER USER ssltestuser PASSWORD '$password';"
 		);
 		$node->psql('postgres',
-"SET password_encryption='$password_enc'; ALTER USER anotheruser PASSWORD '$password';"
+			"SET password_encryption='$password_enc'; ALTER USER anotheruser PASSWORD '$password';"
 		);
 	}
 
@@ -115,7 +115,7 @@ sub configure_test_server_for_ssl
 	open my $sslconf, '>', "$pgdata/sslconfig.conf";
 	close $sslconf;
 
-# Copy all server certificates and keys, and client root cert, to the data dir
+	# Copy all server certificates and keys, and client root cert, to the data dir
 	copy_files("ssl/server-*.crt", $pgdata);
 	copy_files("ssl/server-*.key", $pgdata);
 	chmod(0600, glob "$pgdata/server-*.key") or die $!;
@@ -155,20 +155,20 @@ sub configure_hba_for_ssl
 	my ($node, $serverhost, $authmethod) = @_;
 	my $pgdata = $node->data_dir;
 
-  # Only accept SSL connections from localhost. Our tests don't depend on this
-  # but seems best to keep it as narrow as possible for security reasons.
-  #
-  # When connecting to certdb, also check the client certificate.
+	# Only accept SSL connections from localhost. Our tests don't depend on this
+	# but seems best to keep it as narrow as possible for security reasons.
+	#
+	# When connecting to certdb, also check the client certificate.
 	open my $hba, '>', "$pgdata/pg_hba.conf";
 	print $hba
-"# TYPE  DATABASE        USER            ADDRESS                 METHOD\n";
+	  "# TYPE  DATABASE        USER            ADDRESS                 METHOD\n";
 	print $hba
-"hostssl trustdb         all             $serverhost/32            $authmethod\n";
+	  "hostssl trustdb         all             $serverhost/32            $authmethod\n";
 	print $hba
-"hostssl trustdb         all             ::1/128                 $authmethod\n";
+	  "hostssl trustdb         all             ::1/128                 $authmethod\n";
 	print $hba
-"hostssl certdb          all             $serverhost/32            cert\n";
+	  "hostssl certdb          all             $serverhost/32            cert\n";
 	print $hba
-"hostssl certdb          all             ::1/128                 cert\n";
+	  "hostssl certdb          all             ::1/128                 cert\n";
 	close $hba;
 }

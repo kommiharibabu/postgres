@@ -2123,7 +2123,7 @@ CommitTransaction(void)
 	AtEOXact_on_commit_actions(true);
 	AtEOXact_Namespace(true, is_parallel_worker);
 	AtEOXact_SMgr();
-	AtEOXact_Files();
+	AtEOXact_Files(true);
 	AtEOXact_ComboCid();
 	AtEOXact_HashTables(true);
 	AtEOXact_PgStat(true);
@@ -2401,7 +2401,7 @@ PrepareTransaction(void)
 	AtEOXact_on_commit_actions(true);
 	AtEOXact_Namespace(true, false);
 	AtEOXact_SMgr();
-	AtEOXact_Files();
+	AtEOXact_Files(true);
 	AtEOXact_ComboCid();
 	AtEOXact_HashTables(true);
 	/* don't call AtEOXact_PgStat here; we fixed pgstat state above */
@@ -2603,7 +2603,7 @@ AbortTransaction(void)
 		AtEOXact_on_commit_actions(false);
 		AtEOXact_Namespace(false, is_parallel_worker);
 		AtEOXact_SMgr();
-		AtEOXact_Files();
+		AtEOXact_Files(false);
 		AtEOXact_ComboCid();
 		AtEOXact_HashTables(false);
 		AtEOXact_PgStat(false);
@@ -3267,8 +3267,8 @@ bool
 IsInTransactionBlock(bool isTopLevel)
 {
 	/*
-	 * Return true on same conditions that would make PreventInTransactionBlock
-	 * error out
+	 * Return true on same conditions that would make
+	 * PreventInTransactionBlock error out
 	 */
 	if (IsTransactionBlock())
 		return true;
@@ -5448,9 +5448,9 @@ XactLogAbortRecord(TimestampTz abort_time,
 	}
 
 	/* dump transaction origin information only for abort prepared */
-	if ( (replorigin_session_origin != InvalidRepOriginId) &&
-			TransactionIdIsValid(twophase_xid) &&
-			XLogLogicalInfoActive())
+	if ((replorigin_session_origin != InvalidRepOriginId) &&
+		TransactionIdIsValid(twophase_xid) &&
+		XLogLogicalInfoActive())
 	{
 		xl_xinfo.xinfo |= XACT_XINFO_HAS_ORIGIN;
 

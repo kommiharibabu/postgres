@@ -213,7 +213,7 @@ SKIP:
 	# Move pg_replslot out of $pgdata and create a symlink to it.
 	$node->stop;
 
-  # Set umask so test directories and files are created with group permissions
+	# Set umask so test directories and files are created with group permissions
 	umask(0027);
 
 	# Enable group permissions on PGDATA
@@ -245,7 +245,7 @@ SKIP:
 	is(scalar(@tblspc_tars), 1, 'one tablespace tar was created');
 	rmtree("$tempdir/tarbackup2");
 
- # Create an unlogged table to test that forks other than init are not copied.
+	# Create an unlogged table to test that forks other than init are not copied.
 	$node->safe_psql('postgres',
 		'CREATE UNLOGGED TABLE tblspc1_unlogged (id int) TABLESPACE tblspc1;'
 	);
@@ -258,8 +258,8 @@ SKIP:
 		'unlogged init fork in tablespace');
 	ok(-f "$pgdata/$tblspc1UnloggedPath", 'unlogged main fork in tablespace');
 
-  # Create files that look like temporary relations to ensure they are ignored
-  # in a tablespace.
+	# Create files that look like temporary relations to ensure they are ignored
+	# in a tablespace.
 	my @tempRelationFiles = qw(t888_888 t888888_888888_vm.1);
 	my $tblSpc1Id         = basename(
 		dirname(
@@ -420,13 +420,15 @@ rmtree("$tempdir/backupxs_slot");
 
 is( $node->safe_psql(
 		'postgres',
-q{SELECT slot_name FROM pg_replication_slots WHERE slot_name = 'slot0'}),
+		q{SELECT slot_name FROM pg_replication_slots WHERE slot_name = 'slot0'}
+	),
 	'slot0',
 	'replication slot was created');
 isnt(
 	$node->safe_psql(
 		'postgres',
-q{SELECT restart_lsn FROM pg_replication_slots WHERE slot_name = 'slot0'}),
+		q{SELECT restart_lsn FROM pg_replication_slots WHERE slot_name = 'slot0'}
+	),
 	'',
 	'restart LSN of new slot is not null');
 
@@ -468,10 +470,10 @@ rmtree("$tempdir/backupxs_sl_R");
 
 # create tables to corrupt and get their relfilenodes
 my $file_corrupt1 = $node->safe_psql('postgres',
-q{SELECT a INTO corrupt1 FROM generate_series(1,10000) AS a; ALTER TABLE corrupt1 SET (autovacuum_enabled=false); SELECT pg_relation_filepath('corrupt1')}
+	q{SELECT a INTO corrupt1 FROM generate_series(1,10000) AS a; ALTER TABLE corrupt1 SET (autovacuum_enabled=false); SELECT pg_relation_filepath('corrupt1')}
 );
 my $file_corrupt2 = $node->safe_psql('postgres',
-q{SELECT b INTO corrupt2 FROM generate_series(1,2) AS b; ALTER TABLE corrupt2 SET (autovacuum_enabled=false); SELECT pg_relation_filepath('corrupt2')}
+	q{SELECT b INTO corrupt2 FROM generate_series(1,2) AS b; ALTER TABLE corrupt2 SET (autovacuum_enabled=false); SELECT pg_relation_filepath('corrupt2')}
 );
 
 # set page header and block sizes

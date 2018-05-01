@@ -54,7 +54,7 @@ sub CreateSolution
 		return new VS2015Solution(@_);
 	}
 
-# visual 2017 hasn't changed the nmake version to 15, so adjust the check to support it.
+	# visual 2017 hasn't changed the nmake version to 15, so adjust the check to support it.
 	elsif (($visualStudioVersion ge '14.10')
 		or ($visualStudioVersion eq '15.00'))
 	{
@@ -101,7 +101,7 @@ sub CreateProject
 		return new VC2015Project(@_);
 	}
 
-# visual 2017 hasn't changed the nmake version to 15, so adjust the check to support it.
+	# visual 2017 hasn't changed the nmake version to 15, so adjust the check to support it.
 	elsif (($visualStudioVersion ge '14.10')
 		or ($visualStudioVersion eq '15.00'))
 	{
@@ -123,31 +123,31 @@ sub DetermineVisualStudioVersion
 	my $output = `nmake /? 2>&1`;
 	$? >> 8 == 0
 	  or croak
-"Unable to determine Visual Studio version: The nmake command wasn't found.";
+	  "Unable to determine Visual Studio version: The nmake command wasn't found.";
 	if ($output =~ /(\d+)\.(\d+)\.\d+(\.\d+)?$/m)
 	{
 		return _GetVisualStudioVersion($1, $2);
 	}
 
 	croak
-"Unable to determine Visual Studio version: The nmake version could not be determined.";
+	  "Unable to determine Visual Studio version: The nmake version could not be determined.";
 }
 
 sub _GetVisualStudioVersion
 {
 	my ($major, $minor) = @_;
 
-# visual 2017 hasn't changed the nmake version to 15, so still using the older version for comparison.
+	# visual 2017 hasn't changed the nmake version to 15, so still using the older version for comparison.
 	if ($major > 14)
 	{
 		carp
-"The determined version of Visual Studio is newer than the latest supported version. Returning the latest supported version instead.";
+		  "The determined version of Visual Studio is newer than the latest supported version. Returning the latest supported version instead.";
 		return '14.00';
 	}
 	elsif ($major < 6)
 	{
 		croak
-"Unable to determine Visual Studio version: Visual Studio versions before 6.0 aren't supported.";
+		  "Unable to determine Visual Studio version: Visual Studio versions before 6.0 aren't supported.";
 	}
 	return "$major.$minor";
 }

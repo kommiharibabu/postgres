@@ -292,6 +292,21 @@ sub AddDefaultValues
 	my ($row, $schema, $catname) = @_;
 	my @missing_fields;
 
+	# Compute special-case column values.
+	# Note: If you add new cases here, you must also teach
+	# strip_default_values() in include/catalog/reformat_dat_file.pl
+	# to delete them.
+	if ($catname eq 'pg_proc')
+	{
+		# pg_proc.pronargs can be derived from proargtypes.
+		if (defined $row->{proargtypes})
+		{
+			my @proargtypes = split /\s+/, $row->{proargtypes};
+			$row->{pronargs} = scalar(@proargtypes);
+		}
+	}
+
+	# Now fill in defaults, and note any columns that remain undefined.
 	foreach my $column (@$schema)
 	{
 		my $attname = $column->{name};
@@ -305,14 +320,6 @@ sub AddDefaultValues
 		{
 			$row->{$attname} = $column->{default};
 		}
-		elsif ($catname eq 'pg_proc'
-			&& $attname eq 'pronargs'
-			&& defined($row->{proargtypes}))
-		{
-			# pg_proc.pronargs can be derived from proargtypes.
-			my @proargtypes = split /\s+/, $row->{proargtypes};
-			$row->{$attname} = scalar(@proargtypes);
-		}
 		else
 		{
 			# Failed to find a value.
@@ -320,6 +327,7 @@ sub AddDefaultValues
 		}
 	}
 
+	# Failure to provide all columns is a hard error.
 	if (@missing_fields)
 	{
 		die sprintf "missing values for field(s) %s in %s.dat line %s\n",
@@ -386,6 +394,8 @@ sub FindDefinedSymbolFromData
 
 # Extract an array of all the OIDs assigned in the specified catalog headers
 # and their associated data files (if any).
+# Caution: genbki.pl contains equivalent logic; change it too if you need to
+# touch this.
 sub FindAllOidsFromHeaders
 {
 	my @input_files = @_;
