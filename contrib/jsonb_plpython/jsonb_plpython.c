@@ -5,6 +5,7 @@
 #include "plpy_typeio.h"
 #include "utils/jsonb.h"
 #include "utils/fmgrprotos.h"
+#include "utils/numeric.h"
 
 PG_MODULE_MAGIC;
 
@@ -325,8 +326,13 @@ PLyNumber_ToJsonbValue(PyObject *obj, JsonbValue *jbvNum)
 
 	PG_TRY();
 	{
-		num = DatumGetNumeric(DirectFunctionCall3(numeric_in,
-												  CStringGetDatum(str), 0, -1));
+		Datum		numd;
+
+		numd = DirectFunctionCall3(numeric_in,
+								   CStringGetDatum(str),
+								   ObjectIdGetDatum(InvalidOid),
+								   Int32GetDatum(-1));
+		num = DatumGetNumeric(numd);
 	}
 	PG_CATCH();
 	{
@@ -337,6 +343,16 @@ PLyNumber_ToJsonbValue(PyObject *obj, JsonbValue *jbvNum)
 	PG_END_TRY();
 
 	pfree(str);
+
+	/*
+	 * jsonb doesn't allow NaN (per JSON specification), so we have to prevent
+	 * it here explicitly.  (Infinity is also not allowed in jsonb, but
+	 * numeric_in above already catches that.)
+	 */
+	if (numeric_is_nan(num))
+		ereport(ERROR,
+				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+				 (errmsg("cannot convert NaN to jsonb"))));
 
 	jbvNum->type = jbvNumeric;
 	jbvNum->val.numeric = num;
