@@ -155,7 +155,8 @@ sub new
 		_host    => $pghost,
 		_basedir => "$TestLib::tmp_check/t_${testname}_${name}_data",
 		_name    => $name,
-		_logfile => "$TestLib::log_path/${testname}_${name}.log" };
+		_logfile => "$TestLib::log_path/${testname}_${name}.log"
+	};
 
 	bless $self, $class;
 	mkdir $self->{_basedir}
@@ -442,7 +443,6 @@ sub init
 	print $conf "restart_after_crash = off\n";
 	print $conf "log_line_prefix = '%m [%p] %q%a '\n";
 	print $conf "log_statement = all\n";
-	print $conf "log_min_messages = debug1\n";
 	print $conf "log_replication_commands = on\n";
 	print $conf "wal_retrieve_retry_interval = '500ms'\n";
 	print $conf "port = $port\n";

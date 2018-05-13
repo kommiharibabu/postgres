@@ -95,10 +95,12 @@ sub ParseHeader
 		elsif (/^DECLARE_(UNIQUE_)?INDEX\(\s*(\w+),\s*(\d+),\s*(.+)\)/)
 		{
 			push @{ $catalog{indexing} },
-			  { is_unique => $1 ? 1 : 0,
+			  {
+				is_unique => $1 ? 1 : 0,
 				index_name => $2,
 				index_oid  => $3,
-				index_decl => $4 };
+				index_decl => $4
+			  };
 		}
 		elsif (/^CATALOG\((\w+),(\d+),(\w+)\)/)
 		{
@@ -250,7 +252,10 @@ sub ParseData
 
 			if ($lcnt == $rcnt)
 			{
-				eval '$hash_ref = ' . $_;
+				# We're treating the input line as a piece of Perl, so we
+				# need to use string eval here. Tell perlcritic we know what
+				# we're doing.
+				eval '$hash_ref = ' . $_;   ## no critic (ProhibitStringyEval)
 				if (!ref $hash_ref)
 				{
 					die "$input_file: error parsing line $.:\n$_\n";
