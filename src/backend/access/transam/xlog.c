@@ -4486,6 +4486,7 @@ ReadControlFile(void)
 	pg_crc32c	crc;
 	int			fd;
 	static char wal_segsz_str[20];
+	int			r;
 
 	/*
 	 * Read data...
@@ -4499,10 +4500,17 @@ ReadControlFile(void)
 						XLOG_CONTROL_FILE)));
 
 	pgstat_report_wait_start(WAIT_EVENT_CONTROL_FILE_READ);
-	if (read(fd, ControlFile, sizeof(ControlFileData)) != sizeof(ControlFileData))
-		ereport(PANIC,
-				(errcode_for_file_access(),
-				 errmsg("could not read from control file: %m")));
+	r = read(fd, ControlFile, sizeof(ControlFileData));
+	if (r != sizeof(ControlFileData))
+	{
+		if (r < 0)
+			ereport(PANIC,
+					(errcode_for_file_access(),
+					 errmsg("could not read from control file: %m")));
+		else
+			ereport(PANIC,
+					 (errmsg("could not read from control file: read %d bytes, expected %d", r, (int) sizeof(ControlFileData))));
+	}
 	pgstat_report_wait_end();
 
 	close(fd);
@@ -4652,8 +4660,10 @@ ReadControlFile(void)
 
 	if (!IsValidWalSegSize(wal_segment_size))
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						errmsg("WAL segment size must be a power of two between 1MB and 1GB, but the control file specifies %d bytes",
-							   wal_segment_size)));
+						errmsg_plural("WAL segment size must be a power of two between 1 MB and 1 GB, but the control file specifies %d byte",
+									  "WAL segment size must be a power of two between 1 MB and 1 GB, but the control file specifies %d bytes",
+									  wal_segment_size,
+									  wal_segment_size)));
 
 	snprintf(wal_segsz_str, sizeof(wal_segsz_str), "%d", wal_segment_size);
 	SetConfigOption("wal_segment_size", wal_segsz_str, PGC_INTERNAL,
