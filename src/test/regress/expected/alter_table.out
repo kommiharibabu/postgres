@@ -1844,7 +1844,7 @@ select * from foo;
 (1 row)
 
 drop domain mytype cascade;
-NOTICE:  drop cascades to table foo column f2
+NOTICE:  drop cascades to column f2 of table foo
 select * from foo;
  f1 | f3 
 ----+----
@@ -2680,11 +2680,11 @@ drop cascades to operator family alter2.ctype_hash_ops for access method hash
 drop cascades to type alter2.ctype
 drop cascades to function alter2.same(alter2.ctype,alter2.ctype)
 drop cascades to operator alter2.=(alter2.ctype,alter2.ctype)
-drop cascades to conversion ascii_to_utf8
-drop cascades to text search parser prs
-drop cascades to text search configuration cfg
-drop cascades to text search template tmpl
-drop cascades to text search dictionary dict
+drop cascades to conversion alter2.ascii_to_utf8
+drop cascades to text search parser alter2.prs
+drop cascades to text search configuration alter2.cfg
+drop cascades to text search template alter2.tmpl
+drop cascades to text search dictionary alter2.dict
 --
 -- composite types
 --
@@ -2870,8 +2870,8 @@ DROP TABLE test_tbl2_subclass;
 CREATE TYPE test_typex AS (a int, b text);
 CREATE TABLE test_tblx (x int, y test_typex check ((y).a > 0));
 ALTER TYPE test_typex DROP ATTRIBUTE a; -- fails
-ERROR:  cannot drop composite type test_typex column a because other objects depend on it
-DETAIL:  constraint test_tblx_y_check on table test_tblx depends on composite type test_typex column a
+ERROR:  cannot drop column a of composite type test_typex because other objects depend on it
+DETAIL:  constraint test_tblx_y_check on table test_tblx depends on column a of composite type test_typex
 HINT:  Use DROP ... CASCADE to drop the dependent objects too.
 ALTER TYPE test_typex DROP ATTRIBUTE a CASCADE;
 NOTICE:  drop cascades to constraint test_tblx_y_check on table test_tblx

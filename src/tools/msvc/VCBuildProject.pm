@@ -11,6 +11,8 @@ use strict;
 use warnings;
 use base qw(Project);
 
+no warnings qw(redefine); ## no critic
+
 sub _new
 {
 	my $classname = shift;
@@ -56,6 +58,7 @@ EOF
  </Configurations>
 EOF
 	$self->WriteReferences($f);
+	return;
 }
 
 sub WriteFiles
@@ -152,6 +155,7 @@ EOF
 	print $f <<EOF;
  </Files>
 EOF
+	return;
 }
 
 sub Footer
@@ -162,6 +166,7 @@ sub Footer
  <Globals/>
 </VisualStudioProject>
 EOF
+	return;
 }
 
 sub WriteConfiguration
@@ -227,6 +232,7 @@ EOF
 	print $f <<EOF;
   </Configuration>
 EOF
+	return;
 }
 
 sub WriteReferences
@@ -239,6 +245,7 @@ sub WriteReferences
 		  "  <ProjectReference ReferencedProjectIdentifier=\"$ref->{guid}\" Name=\"$ref->{name}\" />\n";
 	}
 	print $f " </References>\n";
+	return;
 }
 
 sub GenerateCustomTool
@@ -263,6 +270,8 @@ use strict;
 use warnings;
 use base qw(VCBuildProject);
 
+no warnings qw(redefine); ## no critic
+
 sub new
 {
 	my $classname = shift;
@@ -283,6 +292,8 @@ package VC2008Project;
 use strict;
 use warnings;
 use base qw(VCBuildProject);
+
+no warnings qw(redefine); ## no critic
 
 sub new
 {

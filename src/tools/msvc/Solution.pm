@@ -10,6 +10,8 @@ use strict;
 use warnings;
 use VSObjectFactory;
 
+no warnings qw(redefine); ## no critic
+
 sub _new
 {
 	my $classname = shift;
@@ -75,6 +77,7 @@ sub DeterminePlatform
 	$? >> 8 == 0 or die "cl command not found";
 	$self->{platform} = ($output =~ /^\/favor:<.+AMD64/m) ? 'x64' : 'Win32';
 	print "Detected hardware platform: $self->{platform}\n";
+	return;
 }
 
 # Return 1 if $oldfile is newer than $newfile, or if $newfile doesn't exist.
@@ -112,6 +115,7 @@ sub copyFile
 	}
 	close($i);
 	close($o);
+	return;
 }
 
 sub GenerateFiles
@@ -533,6 +537,7 @@ EOF
 <!ENTITY majorversion "$self->{majorver}">
 EOF
 	close($o);
+	return;
 }
 
 sub GenerateDefFile
@@ -555,6 +560,7 @@ sub GenerateDefFile
 		close($of);
 		close($if);
 	}
+	return;
 }
 
 sub AddProject
@@ -727,6 +733,7 @@ EOF
 EndGlobal
 EOF
 	close($sln);
+	return;
 }
 
 sub GetFakeConfigure
@@ -763,6 +770,8 @@ use strict;
 use warnings;
 use base qw(Solution);
 
+no warnings qw(redefine); ## no critic
+
 sub new
 {
 	my $classname = shift;
@@ -785,6 +794,8 @@ package VS2008Solution;
 use strict;
 use warnings;
 use base qw(Solution);
+
+no warnings qw(redefine); ## no critic
 
 sub new
 {
@@ -810,6 +821,8 @@ use strict;
 use warnings;
 use base qw(Solution);
 
+no warnings qw(redefine); ## no critic
+
 sub new
 {
 	my $classname = shift;
@@ -834,6 +847,8 @@ use strict;
 use warnings;
 use base qw(Solution);
 
+no warnings qw(redefine); ## no critic
+
 sub new
 {
 	my $classname = shift;
@@ -857,6 +872,8 @@ use Carp;
 use strict;
 use warnings;
 use base qw(Solution);
+
+no warnings qw(redefine); ## no critic
 
 sub new
 {
@@ -884,6 +901,8 @@ use strict;
 use warnings;
 use base qw(Solution);
 
+no warnings qw(redefine); ## no critic
+
 sub new
 {
 	my $classname = shift;
@@ -909,6 +928,8 @@ use Carp;
 use strict;
 use warnings;
 use base qw(Solution);
+
+no warnings qw(redefine); ## no critic
 
 sub new
 {

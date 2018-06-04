@@ -11,6 +11,8 @@ use strict;
 use warnings;
 use base qw(Project);
 
+no warnings qw(redefine); ## no critic
+
 sub _new
 {
 	my $classname = shift;
@@ -80,6 +82,7 @@ EOF
 			strpool => 'true',
 			runtime => 'MultiThreadedDLL'
 		});
+	return;
 }
 
 sub AddDefine
@@ -87,6 +90,7 @@ sub AddDefine
 	my ($self, $def) = @_;
 
 	$self->{defines} .= $def . ';';
+	return;
 }
 
 sub WriteReferences
@@ -112,6 +116,7 @@ EOF
   </ItemGroup>
 EOF
 	}
+	return;
 }
 
 sub WriteFiles
@@ -223,6 +228,7 @@ EOF
   </ItemGroup>
 EOF
 	}
+	return;
 }
 
 sub WriteConfigurationHeader
@@ -234,6 +240,7 @@ sub WriteConfigurationHeader
       <Platform>$self->{platform}</Platform>
     </ProjectConfiguration>
 EOF
+	return;
 }
 
 sub WriteConfigurationPropertyGroup
@@ -252,6 +259,7 @@ sub WriteConfigurationPropertyGroup
     <WholeProgramOptimization>$p->{wholeopt}</WholeProgramOptimization>
   </PropertyGroup>
 EOF
+	return;
 }
 
 sub WritePropertySheetsPropertyGroup
@@ -262,6 +270,7 @@ sub WritePropertySheetsPropertyGroup
     <Import Project="\$(UserRootDir)\\Microsoft.Cpp.\$(Platform).user.props" Condition="exists('\$(UserRootDir)\\Microsoft.Cpp.\$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
 EOF
+	return;
 }
 
 sub WriteAdditionalProperties
@@ -272,6 +281,7 @@ sub WriteAdditionalProperties
     <IntDir Condition="'\$(Configuration)|\$(Platform)'=='$cfgname|$self->{platform}'">.\\$cfgname\\$self->{name}\\</IntDir>
     <LinkIncremental Condition="'\$(Configuration)|\$(Platform)'=='$cfgname|$self->{platform}'">false</LinkIncremental>
 EOF
+	return;
 }
 
 sub WriteItemDefinitionGroup
@@ -364,6 +374,7 @@ EOF
 	print $f <<EOF;
   </ItemDefinitionGroup>
 EOF
+	return;
 }
 
 sub Footer
@@ -377,6 +388,7 @@ sub Footer
   </ImportGroup>
 </Project>
 EOF
+	return;
 }
 
 package VC2010Project;
@@ -388,6 +400,8 @@ package VC2010Project;
 use strict;
 use warnings;
 use base qw(MSBuildProject);
+
+no warnings qw(redefine); ## no critic
 
 sub new
 {
@@ -409,6 +423,8 @@ package VC2012Project;
 use strict;
 use warnings;
 use base qw(MSBuildProject);
+
+no warnings qw(redefine); ## no critic
 
 sub new
 {
@@ -441,6 +457,7 @@ sub WriteConfigurationPropertyGroup
     <PlatformToolset>$self->{PlatformToolset}</PlatformToolset>
   </PropertyGroup>
 EOF
+	return;
 }
 
 package VC2013Project;
@@ -452,6 +469,8 @@ package VC2013Project;
 use strict;
 use warnings;
 use base qw(VC2012Project);
+
+no warnings qw(redefine); ## no critic
 
 sub new
 {
@@ -476,6 +495,8 @@ use strict;
 use warnings;
 use base qw(VC2012Project);
 
+no warnings qw(redefine); ## no critic
+
 sub new
 {
 	my $classname = shift;
@@ -498,6 +519,8 @@ package VC2017Project;
 use strict;
 use warnings;
 use base qw(VC2012Project);
+
+no warnings qw(redefine); ## no critic
 
 sub new
 {
