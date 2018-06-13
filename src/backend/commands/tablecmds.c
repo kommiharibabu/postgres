@@ -855,7 +855,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 		 */
 		if (OidIsValid(defaultPartOid))
 		{
-			check_default_allows_bound(parent, defaultRel, bound);
+			check_default_partition_contents(parent, defaultRel, bound);
 			/* Keep the lock until commit. */
 			heap_close(defaultRel, NoLock);
 		}
@@ -11922,11 +11922,11 @@ ATExecDropInherit(Relation rel, RangeVar *parent, LOCKMODE lockmode)
 	/* Off to RemoveInheritance() where most of the work happens */
 	RemoveInheritance(rel, parent_rel);
 
-	/* keep our lock on the parent relation until commit */
-	heap_close(parent_rel, NoLock);
-
 	ObjectAddressSet(address, RelationRelationId,
 					 RelationGetRelid(parent_rel));
+
+	/* keep our lock on the parent relation until commit */
+	heap_close(parent_rel, NoLock);
 
 	return address;
 }
