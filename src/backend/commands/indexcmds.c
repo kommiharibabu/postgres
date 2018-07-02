@@ -1002,7 +1002,7 @@ DefineIndex(Oid relationId,
 					 */
 					foreach(lc, childStmt->indexParams)
 					{
-						IndexElem *ielem = lfirst(lc);
+						IndexElem  *ielem = lfirst(lc);
 
 						/*
 						 * If the index parameter is an expression, we must
@@ -1033,7 +1033,7 @@ DefineIndex(Oid relationId,
 								indexRelationId,	/* this is our child */
 								createdConstraintId,
 								is_alter_table, check_rights, check_not_in_use,
-								false, quiet);
+								skip_build, quiet);
 				}
 
 				pfree(attmap);
