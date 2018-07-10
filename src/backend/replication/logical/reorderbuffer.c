@@ -1474,6 +1474,8 @@ ReorderBufferCommit(ReorderBuffer *rb, TransactionId xid,
 					 * use as a normal record. It'll be cleaned up at the end
 					 * of INSERT processing.
 					 */
+					if (specinsert == NULL)
+						elog(ERROR, "invalid ordering of speculative insertion changes");
 					Assert(specinsert->data.tp.oldtuple == NULL);
 					change = specinsert;
 					change->action = REORDER_BUFFER_CHANGE_INSERT;
@@ -2780,7 +2782,7 @@ ReorderBufferSerializedPath(char *path, ReplicationSlot *slot, TransactionId xid
 {
 	XLogRecPtr	recptr;
 
-	XLogSegNoOffsetToRecPtr(segno, 0, recptr, wal_segment_size);
+	XLogSegNoOffsetToRecPtr(segno, 0, wal_segment_size, recptr);
 
 	snprintf(path, MAXPGPATH, "pg_replslot/%s/xid-%u-lsn-%X-%X.snap",
 			 NameStr(MyReplicationSlot->data.name),
