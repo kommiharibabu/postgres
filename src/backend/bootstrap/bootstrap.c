@@ -24,6 +24,7 @@
 #include "catalog/index.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_type.h"
+#include "common/link-canary.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -265,7 +266,7 @@ AuxiliaryProcessMain(int argc, char *argv[])
 					if (!IsValidWalSegSize(WalSegSz))
 						ereport(ERROR,
 								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-								 errmsg("-X requires a power of 2 value between 1MB and 1GB")));
+								 errmsg("-X requires a power of two value between 1 MB and 1 GB")));
 					SetConfigOption("wal_segment_size", optarg, PGC_INTERNAL,
 									PGC_S_OVERRIDE);
 				}
@@ -349,13 +350,15 @@ AuxiliaryProcessMain(int argc, char *argv[])
 			proc_exit(1);
 	}
 
-	/* Validate we have been given a reasonable-looking DataDir */
-	Assert(DataDir);
-	ValidatePgVersion(DataDir);
-
-	/* Change into DataDir (if under postmaster, should be done already) */
+	/*
+	 * Validate we have been given a reasonable-looking DataDir and change
+	 * into it (if under postmaster, should be done already).
+	 */
 	if (!IsUnderPostmaster)
+	{
+		checkDataDir();
 		ChangeToDataDir();
+	}
 
 	/* If standalone, create lockfile for data directory */
 	if (!IsUnderPostmaster)
@@ -400,6 +403,13 @@ AuxiliaryProcessMain(int argc, char *argv[])
 
 		/* finish setting up bufmgr.c */
 		InitBufferPoolBackend();
+
+		/*
+		 * Auxiliary processes don't run transactions, but they may need a
+		 * resource owner anyway to manage buffer pins acquired outside
+		 * transactions (and, perhaps, other things in future).
+		 */
+		CreateAuxProcessResourceOwner();
 
 		/* Initialize backend status information */
 		pgstat_initialize();
@@ -492,6 +502,13 @@ BootstrapModeMain(void)
 
 	Assert(!IsUnderPostmaster);
 	Assert(IsBootstrapProcessingMode());
+
+	/*
+	 * To ensure that src/common/link-canary.c is linked into the backend, we
+	 * must call it from somewhere.  Here is as good as anywhere.
+	 */
+	if (pg_link_canary_is_frontend())
+		elog(ERROR, "backend is incorrectly linked to frontend functions");
 
 	/*
 	 * Do backend-like initialization for bootstrap mode
@@ -616,7 +633,7 @@ boot_openrel(char *relname)
 		 relname, (int) ATTRIBUTE_FIXED_PART_SIZE);
 
 	boot_reldesc = heap_openrv(makeRangeVar(NULL, relname, -1), NoLock);
-	numattr = boot_reldesc->rd_rel->relnatts;
+	numattr = RelationGetNumberOfAttributes(boot_reldesc);
 	for (i = 0; i < numattr; i++)
 	{
 		if (attrtypes[i] == NULL)
@@ -1033,36 +1050,6 @@ AllocateAttribute(void)
 	return (Form_pg_attribute)
 		MemoryContextAllocZero(TopMemoryContext, ATTRIBUTE_FIXED_PART_SIZE);
 }
-
-/*
- *		MapArrayTypeName
- *
- * Given a type name, produce the corresponding array type name by prepending
- * '_' and truncating as needed to fit in NAMEDATALEN-1 bytes.  This is only
- * used in bootstrap mode, so we can get away with assuming that the input is
- * ASCII and we don't need multibyte-aware truncation.
- *
- * The given string normally ends with '[]' or '[digits]'; we discard that.
- *
- * The result is a palloc'd string.
- */
-char *
-MapArrayTypeName(const char *s)
-{
-	int			i,
-				j;
-	char		newStr[NAMEDATALEN];
-
-	newStr[0] = '_';
-	j = 1;
-	for (i = 0; i < NAMEDATALEN - 2 && s[i] != '['; i++, j++)
-		newStr[j] = s[i];
-
-	newStr[j] = '\0';
-
-	return pstrdup(newStr);
-}
-
 
 /*
  *	index_register() -- record an index that has been set up for building

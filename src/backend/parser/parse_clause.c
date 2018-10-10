@@ -26,7 +26,7 @@
 #include "catalog/pg_am.h"
 #include "catalog/pg_amproc.h"
 #include "catalog/pg_collation.h"
-#include "catalog/pg_constraint_fn.h"
+#include "catalog/pg_constraint.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
@@ -76,6 +76,9 @@ static RangeTblEntry *transformRangeTableFunc(ParseState *pstate,
 						RangeTableFunc *t);
 static TableSampleClause *transformRangeTableSample(ParseState *pstate,
 						  RangeTableSample *rts);
+static Node *transformFromClauseItem(ParseState *pstate, Node *n,
+						RangeTblEntry **top_rte, int *top_rti,
+						List **namespace);
 static Node *buildMergedJoinVar(ParseState *pstate, JoinType jointype,
 				   Var *l_colvar, Var *r_colvar);
 static ParseNamespaceItem *makeNamespaceItem(RangeTblEntry *rte,
@@ -136,7 +139,6 @@ transformFromClause(ParseState *pstate, List *frmList)
 		n = transformFromClauseItem(pstate, n,
 									&rte,
 									&rtindex,
-									NULL, NULL,
 									&namespace);
 
 		checkNameSpaceConflicts(pstate, pstate->p_namespace, namespace);
@@ -215,6 +217,7 @@ setTargetTable(ParseState *pstate, RangeVar *relation,
 	 * Now build an RTE.
 	 */
 	rte = addRangeTableEntryForRelation(pstate, pstate->p_target_relation,
+										RowExclusiveLock,
 										relation->alias, inh, false);
 	pstate->p_target_rangetblentry = rte;
 
@@ -777,7 +780,7 @@ transformRangeTableFunc(ParseState *pstate, RangeTableFunc *rtf)
 	/* undef ordinality column number */
 	tf->ordinalitycol = -1;
 
-
+	/* Process column specs */
 	names = palloc(sizeof(char *) * list_length(rtf->columns));
 
 	colno = 0;
@@ -898,15 +901,15 @@ transformRangeTableFunc(ParseState *pstate, RangeTableFunc *rtf)
 			{
 				foreach(lc2, ns_names)
 				{
-					char	   *name = strVal(lfirst(lc2));
+					Value	   *ns_node = (Value *) lfirst(lc2);
 
-					if (name == NULL)
+					if (ns_node == NULL)
 						continue;
-					if (strcmp(name, r->name) == 0)
+					if (strcmp(strVal(ns_node), r->name) == 0)
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
 								 errmsg("namespace name \"%s\" is not unique",
-										name),
+										r->name),
 								 parser_errposition(pstate, r->location)));
 				}
 			}
@@ -920,8 +923,9 @@ transformRangeTableFunc(ParseState *pstate, RangeTableFunc *rtf)
 				default_ns_seen = true;
 			}
 
-			/* Note the string may be NULL */
-			ns_names = lappend(ns_names, makeString(r->name));
+			/* We represent DEFAULT by a null pointer */
+			ns_names = lappend(ns_names,
+							   r->name ? makeString(r->name) : NULL);
 		}
 
 		tf->ns_uris = ns_uris;
@@ -1094,21 +1098,14 @@ getRTEForSpecialRelationTypes(ParseState *pstate, RangeVar *rv)
  *
  * *top_rti: receives the rangetable index of top_rte.  (Ditto.)
  *
- * *right_rte: receives the RTE corresponding to the right side of the
- * jointree. Only MERGE really needs to know about this and only MERGE passes a
- * non-NULL pointer.
- *
- * *right_rti: receives the rangetable index of the right_rte.
- *
  * *namespace: receives a List of ParseNamespaceItems for the RTEs exposed
  * as table/column names by this item.  (The lateral_only flags in these items
  * are indeterminate and should be explicitly set by the caller before use.)
  */
-Node *
+static Node *
 transformFromClauseItem(ParseState *pstate, Node *n,
 						RangeTblEntry **top_rte, int *top_rti,
-						RangeTblEntry **right_rte, int *right_rti,
-						List **fnamespace)
+						List **namespace)
 {
 	if (IsA(n, RangeVar))
 	{
@@ -1130,7 +1127,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		Assert(rte == rt_fetch(rtindex, pstate->p_rtable));
 		*top_rte = rte;
 		*top_rti = rtindex;
-		*fnamespace = list_make1(makeDefaultNSItem(rte));
+		*namespace = list_make1(makeDefaultNSItem(rte));
 		rtr = makeNode(RangeTblRef);
 		rtr->rtindex = rtindex;
 		return (Node *) rtr;
@@ -1148,7 +1145,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		Assert(rte == rt_fetch(rtindex, pstate->p_rtable));
 		*top_rte = rte;
 		*top_rti = rtindex;
-		*fnamespace = list_make1(makeDefaultNSItem(rte));
+		*namespace = list_make1(makeDefaultNSItem(rte));
 		rtr = makeNode(RangeTblRef);
 		rtr->rtindex = rtindex;
 		return (Node *) rtr;
@@ -1166,7 +1163,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		Assert(rte == rt_fetch(rtindex, pstate->p_rtable));
 		*top_rte = rte;
 		*top_rti = rtindex;
-		*fnamespace = list_make1(makeDefaultNSItem(rte));
+		*namespace = list_make1(makeDefaultNSItem(rte));
 		rtr = makeNode(RangeTblRef);
 		rtr->rtindex = rtindex;
 		return (Node *) rtr;
@@ -1184,7 +1181,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		Assert(rte == rt_fetch(rtindex, pstate->p_rtable));
 		*top_rte = rte;
 		*top_rti = rtindex;
-		*fnamespace = list_make1(makeDefaultNSItem(rte));
+		*namespace = list_make1(makeDefaultNSItem(rte));
 		rtr = makeNode(RangeTblRef);
 		rtr->rtindex = rtindex;
 		return (Node *) rtr;
@@ -1199,7 +1196,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 
 		/* Recursively transform the contained relation */
 		rel = transformFromClauseItem(pstate, rts->relation,
-									  top_rte, top_rti, NULL, NULL, fnamespace);
+									  top_rte, top_rti, namespace);
 		/* Currently, grammar could only return a RangeVar as contained rel */
 		rtr = castNode(RangeTblRef, rel);
 		rte = rt_fetch(rtr->rtindex, pstate->p_rtable);
@@ -1227,7 +1224,6 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		List	   *l_namespace,
 				   *r_namespace,
 				   *my_namespace,
-				   *save_namespace,
 				   *l_colnames,
 				   *r_colnames,
 				   *res_colnames,
@@ -1246,7 +1242,6 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		j->larg = transformFromClauseItem(pstate, j->larg,
 										  &l_rte,
 										  &l_rtindex,
-										  NULL, NULL,
 										  &l_namespace);
 
 		/*
@@ -1270,33 +1265,11 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		sv_namespace_length = list_length(pstate->p_namespace);
 		pstate->p_namespace = list_concat(pstate->p_namespace, l_namespace);
 
-		/*
-		 * If we are running MERGE, don't make the other RTEs visible while
-		 * parsing the source relation. It mustn't see them.
-		 *
-		 * Currently, only MERGE passes non-NULL value for right_rte, so we
-		 * can safely deduce if we're running MERGE or not by just looking at
-		 * the right_rte. If that ever changes, we should look at other means
-		 * to find that.
-		 */
-		if (right_rte)
-		{
-			save_namespace = pstate->p_namespace;
-			pstate->p_namespace = NIL;
-		}
-
 		/* And now we can process the RHS */
 		j->rarg = transformFromClauseItem(pstate, j->rarg,
 										  &r_rte,
 										  &r_rtindex,
-										  NULL, NULL,
 										  &r_namespace);
-
-		/*
-		 * And now restore the namespace again so that join-quals can see it.
-		 */
-		if (right_rte)
-			pstate->p_namespace = save_namespace;
 
 		/* Remove the left-side RTEs from the namespace list again */
 		pstate->p_namespace = list_truncate(pstate->p_namespace,
@@ -1323,12 +1296,6 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 				  &l_colnames, &l_colvars);
 		expandRTE(r_rte, r_rtindex, 0, -1, false,
 				  &r_colnames, &r_colvars);
-
-		if (right_rte)
-			*right_rte = r_rte;
-
-		if (right_rti)
-			*right_rti = r_rtindex;
 
 		/*
 		 * Natural join does not explicitly specify columns; must generate
@@ -1558,7 +1525,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		 * The join RTE itself is always made visible for unqualified column
 		 * names.  It's visible as a relation name only if it has an alias.
 		 */
-		*fnamespace = lappend(my_namespace,
+		*namespace = lappend(my_namespace,
 							 makeNamespaceItem(rte,
 											   (j->alias != NULL),
 											   true,
@@ -2828,6 +2795,16 @@ transformWindowDefinitions(ParseState *pstate,
 			wc->inRangeColl = exprCollation(sortkey);
 			wc->inRangeAsc = (rangestrategy == BTLessStrategyNumber);
 			wc->inRangeNullsFirst = sortcl->nulls_first;
+		}
+
+		/* Per spec, GROUPS mode requires an ORDER BY clause */
+		if (wc->frameOptions & FRAMEOPTION_GROUPS)
+		{
+			if (wc->orderClause == NIL)
+				ereport(ERROR,
+						(errcode(ERRCODE_WINDOWING_ERROR),
+						 errmsg("GROUPS mode requires an ORDER BY clause"),
+						 parser_errposition(pstate, windef->location)));
 		}
 
 		/* Process frame offset expressions */

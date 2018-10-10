@@ -282,6 +282,13 @@ SELECT * FROM places ORDER BY location <-> point '(101,456)' LIMIT 10;
   </para>
 
   <para>
+   Like GiST, SP-GiST supports <quote>nearest-neighbor</quote> searches.
+   For SP-GiST operator classes that support distance ordering, the 
+   corresponding operator is specified in the <quote>Ordering Operators</quote>
+   column in <xref linkend="spgist-builtin-opclasses-table"/>.
+  </para>
+
+  <para>
    <indexterm>
     <primary>index</primary>
     <secondary>GIN</secondary>
@@ -638,7 +645,8 @@ CREATE INDEX test3_desc_index ON test3 (id DESC NULLS LAST);
    Indexes can also be used to enforce uniqueness of a column's value,
    or the uniqueness of the combined values of more than one column.
 <synopsis>
-CREATE UNIQUE INDEX <replaceable>name</replaceable> ON <replaceable>table</replaceable> (<replaceable>column</replaceable> <optional>, ...</optional>);
+CREATE UNIQUE INDEX <replaceable>name</replaceable> ON <replaceable>table</replaceable> (<replaceable>column</replaceable> <optional>, ...</optional>)
+<optional> INCLUDE (<replaceable>column</replaceable> <optional>, ...</optional>) </optional>;
 </synopsis>
    Currently, only B-tree indexes can be declared unique.
   </para>
@@ -647,7 +655,9 @@ CREATE UNIQUE INDEX <replaceable>name</replaceable> ON <replaceable>table</repla
    When an index is declared unique, multiple table rows with equal
    indexed values are not allowed.  Null values are not considered
    equal.  A multicolumn unique index will only reject cases where all
-   indexed columns are equal in multiple rows.
+   indexed columns are equal.  Columns listed in
+   the <literal>INCLUDE</literal> clause, if any, aren't considered when
+   determining whether index entries are equal.
   </para>
 
   <para>

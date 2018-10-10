@@ -66,7 +66,7 @@
       <para>
        <emphasis>Numeric with Unit:</emphasis>
        Some numeric parameters have an implicit unit, because they describe
-       quantities of memory or time. The unit might be kilobytes, blocks
+       quantities of memory or time. The unit might be bytes, kilobytes, blocks
        (typically eight kilobytes), milliseconds, seconds, or minutes.
        An unadorned numeric value for one of these settings will use the
        setting's default unit, which can be learned from
@@ -81,7 +81,8 @@
        <itemizedlist>
         <listitem>
          <para>
-          Valid memory units are <literal>kB</literal> (kilobytes),
+          Valid memory units are <literal>B</literal> (bytes),
+          <literal>kB</literal> (kilobytes),
           <literal>MB</literal> (megabytes), <literal>GB</literal>
           (gigabytes), and <literal>TB</literal> (terabytes).
           The multiplier for memory units is 1024, not 1000.
@@ -1662,9 +1663,9 @@ include_dir 'conf.d'
         should use.  Possible values are <literal>posix</literal> (for POSIX shared
         memory allocated using <literal>shm_open</literal>), <literal>sysv</literal>
         (for System V shared memory allocated via <literal>shmget</literal>),
-        <literal>windows</literal> (for Windows shared memory), <literal>mmap</literal>
-        (to simulate shared memory using memory-mapped files stored in the
-        data directory), and <literal>none</literal> (to disable this feature).
+        <literal>windows</literal> (for Windows shared memory),
+        and <literal>mmap</literal> (to simulate shared memory using
+        memory-mapped files stored in the data directory).
         Not all values are supported on all platforms; the first supported
         option is the default for that platform.  The use of the
         <literal>mmap</literal> option, which is not the default on any platform,
@@ -1880,31 +1881,6 @@ include_dir 'conf.d'
        <varname>vacuum_cost_delay</varname> * 4.
       </para>
      </note>
-    </sect2>
-
-    <sect2 id="runtime-config-index-vacuum">
-     <title>Index Vacuum</title>
-     <variablelist>
-     <varlistentry id="guc-vacuum-cleanup-index-scale-factor" xreflabel="vacuum_cleanup_index_scale_factor">
-      <term><varname>vacuum_cleanup_index_scale_factor</varname> (<type>floating point</type>)
-      <indexterm>
-       <primary><varname>vacuum_cleanup_index_scale_factor</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        When no tuples were deleted from the heap, B-tree indexes might still
-        be scanned during <command>VACUUM</command> cleanup stage by two
-        reasons.  The first reason is that B-tree index contains deleted pages
-        which can be recycled during cleanup.  The second reason is that B-tree
-        index statistics is stalled.  The criterion of stalled index statistics
-        is number of inserted tuples since previous statistics collection
-        is greater than <varname>vacuum_cleanup_index_scale_factor</varname>
-        fraction of total number of heap tuples.
-       </para>
-      </listitem>
-     </varlistentry>
-     </variablelist>
     </sect2>
 
     <sect2 id="runtime-config-resource-background-writer">
@@ -2173,7 +2149,7 @@ include_dir 'conf.d'
          pool of processes established by <xref
          linkend="guc-max-worker-processes"/>, limited by <xref
          linkend="guc-max-parallel-workers"/>.  Note that the requested
-         number of workers may not actually be available at runtime.
+         number of workers may not actually be available at run time.
          If this occurs, the utility operation will run with fewer
          workers than expected.  The default value is 2.  Setting this
          value to 0 disables the use of parallel workers by utility
@@ -3033,17 +3009,17 @@ include_dir 'conf.d'
      These settings control the behavior of the built-in
      <firstterm>streaming replication</firstterm> feature (see
      <xref linkend="streaming-replication"/>).  Servers will be either a
-     Master or a Standby server.  Masters can send data, while Standby(s)
+     master or a standby server.  Masters can send data, while standbys
      are always receivers of replicated data.  When cascading replication
-     (see <xref linkend="cascading-replication"/>) is used, Standby server(s)
+     (see <xref linkend="cascading-replication"/>) is used, standby servers
      can also be senders, as well as receivers.
-     Parameters are mainly for Sending and Standby servers, though some
-     parameters have meaning only on the Master server.  Settings may vary
+     Parameters are mainly for sending and standby servers, though some
+     parameters have meaning only on the master server.  Settings may vary
      across the cluster without problems if that is required.
     </para>
 
     <sect2 id="runtime-config-replication-sender">
-     <title>Sending Server(s)</title>
+     <title>Sending Servers</title>
 
      <para>
       These parameters can be set on any server that is
@@ -3152,10 +3128,14 @@ include_dir 'conf.d'
         Terminate replication connections that are inactive longer
         than the specified number of milliseconds. This is useful for
         the sending server to detect a standby crash or network outage.
-        A value of zero disables the timeout mechanism.  This parameter
-        can only be set in
-        the <filename>postgresql.conf</filename> file or on the server command line.
-        The default value is 60 seconds.
+        A value of zero disables the timeout mechanism. The default value
+        is 60 seconds. With a cluster distributed across multiple geographic
+        locations, using different values per location brings more flexibility
+        in the cluster management. A smaller value is useful for faster
+        failure detection with a standby having a low-latency network
+        connection, and a larger value helps in judging better the health
+        of a standby if located on a remote location, with a high-latency
+        network connection.
        </para>
       </listitem>
      </varlistentry>
@@ -3212,9 +3192,9 @@ include_dir 'conf.d'
         The synchronous standbys will be those whose names appear
         in this list, and
         that are both currently connected and streaming data in real-time
-        (as shown by a state of <literal>streaming</literal> in the
-        <link linkend="pg-stat-replication-view">
-        <literal>pg_stat_replication</literal></link> view).
+        (as shown by a state of <literal>streaming</literal> in the <link
+        linkend="pg-stat-replication-view"><literal>pg_stat_replication</literal></link>
+        view).
         Specifying more than one synchronous standby can allow for very high
         availability and protection against data loss.
        </para>
@@ -3461,8 +3441,9 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
        Specifies the minimum frequency for the WAL receiver
        process on the standby to send information about replication progress
        to the primary or upstream standby, where it can be seen using the
-       <link linkend="pg-stat-replication-view">
-       <literal>pg_stat_replication</literal></link> view.  The standby will report
+       <link
+       linkend="pg-stat-replication-view"><literal>pg_stat_replication</literal></link>
+       view.  The standby will report
        the last write-ahead log location it has written, the last position it
        has flushed to disk, and the last position it has applied.
        This parameter's
@@ -3826,6 +3807,24 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-enable-partition-pruning" xreflabel="enable_partition_pruning">
+      <term><varname>enable_partition_pruning</varname> (<type>boolean</type>)
+       <indexterm>
+        <primary><varname>enable_partition_pruning</varname> configuration parameter</primary>
+       </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Enables or disables the query planner's ability to eliminate a
+        partitioned table's partitions from query plans.  This also controls
+        the planner's ability to generate query plans which allow the query
+        executor to remove (ignore) partitions during query execution.  The
+        default is <literal>on</literal>.
+        See <xref linkend="ddl-partition-pruning"/> for details.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-enable-partitionwise-join" xreflabel="enable_partitionwise_join">
       <term><varname>enable_partitionwise_join</varname> (<type>boolean</type>)
       <indexterm>
@@ -4161,7 +4160,6 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </listitem>
      </varlistentry>
 
-
      <varlistentry id="guc-jit-above-cost" xreflabel="jit_above_cost">
       <term><varname>jit_above_cost</varname> (<type>floating point</type>)
       <indexterm>
@@ -4170,29 +4168,12 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </term>
       <listitem>
        <para>
-        Sets the planner's cutoff above which JIT compilation is used as part
-        of query execution (see <xref linkend="jit"/>). Performing
-        <acronym>JIT</acronym> costs time but can accelerate query execution.
-
+        Sets the query cost above which JIT compilation is activated, if
+        enabled (see <xref linkend="jit"/>).
+        Performing <acronym>JIT</acronym> costs planning time but can
+        accelerate query execution.
+        Setting this to <literal>-1</literal> disables JIT compilation.
         The default is <literal>100000</literal>.
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="guc-jit-optimize-above-cost" xreflabel="jit_optimize_above_cost">
-      <term><varname>jit_optimize_above_cost</varname> (<type>floating point</type>)
-      <indexterm>
-       <primary><varname>jit_optimize_above_cost</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        Sets the planner's cutoff above which JIT compiled programs (see <xref
-        linkend="guc-jit-above-cost"/>) are optimized. Optimization initially
-        takes time, but can improve execution speed.  It is not meaningful to
-        set this to a lower value than <xref linkend="guc-jit-above-cost"/>.
-
-        The default is <literal>500000</literal>.
        </para>
       </listitem>
      </varlistentry>
@@ -4205,13 +4186,31 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </term>
       <listitem>
        <para>
-        Sets the planner's cutoff above which JIT compiled programs (see <xref
-        linkend="guc-jit-above-cost"/>) attempt to inline functions and
-        operators. Inlining initially takes time, but can improve execution
-        speed.  It is unlikely to be beneficial to set
-        <varname>jit_inline_above_cost</varname> below
-        <varname>jit_optimize_above_cost</varname>.
+        Sets the query cost above which JIT compilation attempts to inline
+        functions and operators.  Inlining adds planning time, but can
+        improve execution speed.  It is not meaningful to set this to less
+        than <varname>jit_above_cost</varname>.
+        Setting this to <literal>-1</literal> disables inlining.
+        The default is <literal>500000</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
 
+     <varlistentry id="guc-jit-optimize-above-cost" xreflabel="jit_optimize_above_cost">
+      <term><varname>jit_optimize_above_cost</varname> (<type>floating point</type>)
+      <indexterm>
+       <primary><varname>jit_optimize_above_cost</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Sets the query cost above which JIT compilation applies expensive
+        optimizations.  Such optimization adds planning time, but can improve
+        execution speed.  It is not meaningful to set this to less
+        than <varname>jit_above_cost</varname>, and it is unlikely to be
+        beneficial to set it to more
+        than <varname>jit_inline_above_cost</varname>.
+        Setting this to <literal>-1</literal> disables expensive optimizations.
         The default is <literal>500000</literal>.
        </para>
       </listitem>
@@ -4417,8 +4416,7 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         <literal>partition</literal> (examine constraints only for inheritance child
         tables and <literal>UNION ALL</literal> subqueries).
         <literal>partition</literal> is the default setting.
-        It is often used with inheritance and partitioned tables to
-        improve performance.
+        It is often used with inheritance tables to improve performance.
       </para>
 
        <para>
@@ -4441,11 +4439,11 @@ SELECT * FROM parent WHERE key = 2400;
 
        <para>
         Currently, constraint exclusion is enabled by default
-        only for cases that are often used to implement table partitioning.
-        Turning it on for all tables imposes extra planning overhead that is
-        quite noticeable on simple queries, and most often will yield no
-        benefit for simple queries.  If you have no partitioned tables
-        you might prefer to turn it off entirely.
+        only for cases that are often used to implement table partitioning via
+        inheritance tables.  Turning it on for all tables imposes extra
+        planning overhead that is quite noticeable on simple queries, and most
+        often will yield no benefit for simple queries.  If you have no
+        inheritance partitioned tables you might prefer to turn it off entirely.
        </para>
 
        <para>
@@ -4507,10 +4505,9 @@ SELECT * FROM parent WHERE key = 2400;
       </term>
       <listitem>
        <para>
-        Determines whether <acronym>JIT</acronym> may be used by
+        Determines whether <acronym>JIT</acronym> compilation may be used by
         <productname>PostgreSQL</productname>, if available (see <xref
         linkend="jit"/>).
-
         The default is <literal>on</literal>.
        </para>
       </listitem>
@@ -4619,6 +4616,36 @@ SELECT * FROM parent WHERE key = 2400;
         the <literal>Gather</literal> nodes added to plans by this setting are hidden
         in <literal>EXPLAIN</literal> output so that the output matches what
         would be obtained if this setting were turned <literal>off</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-plan-cache_mode" xreflabel="plan_cache_mode">
+      <term><varname>plan_cache_mode</varname> (<type>enum</type>)
+      <indexterm>
+       <primary><varname>plan_cache_mode</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Prepared statements (either explicitly prepared or implicitly
+        generated, for example in PL/pgSQL) can be executed using custom or
+        generic plans.  A custom plan is replanned for a new parameter value,
+        a generic plan is reused for repeated executions of the prepared
+        statement.  The choice between them is normally made automatically.
+        This setting overrides the default behavior and forces either a custom
+        or a generic plan.  This can be used to work around performance
+        problems in specific cases.  Note, however, that the plan cache
+        behavior is subject to change, so this setting, like all settings that
+        force the planner's hand, should be reevaluated regularly.
+       </para>
+
+       <para>
+        The allowed values are <literal>auto</literal>,
+        <literal>force_custom_plan</literal> and
+        <literal>force_generic_plan</literal>.  The default value is
+        <literal>auto</literal>.  The setting is applied when a cached plan is
+        to be executed, not when it is prepared.
        </para>
       </listitem>
      </varlistentry>
@@ -6966,6 +6993,46 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-vacuum-cleanup-index-scale-factor" xreflabel="vacuum_cleanup_index_scale_factor">
+      <term><varname>vacuum_cleanup_index_scale_factor</varname> (<type>floating point</type>)
+      <indexterm>
+       <primary><varname>vacuum_cleanup_index_scale_factor</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies the fraction of the total number of heap tuples counted in
+        the previous statistics collection that can be inserted without
+        incurring an index scan at the <command>VACUUM</command> cleanup stage.
+        This setting currently applies to B-tree indexes only.
+       </para>
+
+       <para>
+        If no tuples were deleted from the heap, B-tree indexes are still
+        scanned at the <command>VACUUM</command> cleanup stage when at least one
+        of the following conditions is met: the index statistics are stale, or
+        the index contains deleted pages that can be recycled during cleanup.
+        Index statistics are considered to be stale if the number of newly
+        inserted tuples exceeds the <varname>vacuum_cleanup_index_scale_factor</varname>
+        fraction of the total number of heap tuples detected by the previous
+        statistics collection. The total number of heap tuples is stored in
+        the index meta-page. Note that the meta-page does not include this data
+        until <command>VACUUM</command> finds no dead tuples, so B-tree index
+        scan at the cleanup stage can only be skipped if the second and
+        subsequent <command>VACUUM</command> cycles detect no dead tuples.
+       </para>
+
+       <para>
+        The value can range from <literal>0</literal> to
+        <literal>10000000000</literal>.
+        When <varname>vacuum_cleanup_index_scale_factor</varname> is set to
+        <literal>0</literal>, index scans are never skipped during
+        <command>VACUUM</command> cleanup. The default value is <literal>0.1</literal>.
+       </para>
+
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-bytea-output" xreflabel="bytea_output">
       <term><varname>bytea_output</varname> (<type>enum</type>)
       <indexterm>
@@ -7519,16 +7586,17 @@ SET XML OPTION { DOCUMENT | CONTENT };
       </term>
       <listitem>
        <para>
-        Determines which JIT provider (see <xref linkend="jit-extensibility"/>) is
-        used. The built-in default is <literal>llvmjit</literal>.
+        This variable is the name of the JIT provider library to be used
+        (see <xref linkend="jit-pluggable"/>).
+        The default is <literal>llvmjit</literal>.
+        This parameter can only be set at server start.
        </para>
+
        <para>
-        If set to a non-existent library <acronym>JIT</acronym> will not be
+        If set to a non-existent library, <acronym>JIT</acronym> will not be
         available, but no error will be raised. This allows JIT support to be
         installed separately from the main
         <productname>PostgreSQL</productname> package.
-
-        This parameter can only be set at server start.
        </para>
       </listitem>
      </varlistentry>
@@ -8144,6 +8212,23 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-data-directory-mode" xreflabel="data_directory_mode">
+      <term><varname>data_directory_mode</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>data_directory_mode</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        On Unix systems this parameter reports the permissions of the data
+        directory defined by (<xref linkend="guc-data-directory"/>) at startup.
+        (On Microsoft Windows this parameter will always display
+        <literal>0700</literal>). See
+        <xref linkend="app-initdb-allow-group-access"/> for more information.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-debug-assertions" xreflabel="debug_assertions">
       <term><varname>debug_assertions</varname> (<type>boolean</type>)
       <indexterm>
@@ -8317,6 +8402,22 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
        <para>
         Reports the version number of the server as an integer. It is determined
         by the value of <literal>PG_VERSION_NUM</literal> when building the server.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-ssl-library" xreflabel="ssl_library">
+      <term><varname>ssl_library</varname> (<type>string</type>)
+      <indexterm>
+       <primary><varname>ssl_library</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Reports the name of the SSL library that this PostgreSQL server was
+        built with (even if SSL is not currently configured or in use on this
+        instance), for example <literal>OpenSSL</literal>, or an empty string
+        if none.
        </para>
       </listitem>
      </varlistentry>
@@ -8790,9 +8891,8 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
        <para>
         If LLVM has the required functionality, register generated functions
         with <productname>GDB</productname>.  This makes debugging easier.
-
-        The default setting is <literal>off</literal>, and can only be set at
-        server start.
+        The default setting is <literal>off</literal>.
+        This parameter can only be set at server start.
        </para>
       </listitem>
      </varlistentry>
@@ -8806,11 +8906,10 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       <listitem>
        <para>
         Writes the generated <productname>LLVM</productname> IR out to the
-        filesystem, inside <xref linkend="guc-data-directory"/>. This is only
+        file system, inside <xref linkend="guc-data-directory"/>. This is only
         useful for working on the internals of the JIT implementation.
-
-        The default setting is <literal>off</literal>, and it can only be
-        changed by a superuser.
+        The default setting is <literal>off</literal>.
+        This parameter can only be changed by a superuser.
        </para>
       </listitem>
      </varlistentry>
@@ -8823,8 +8922,8 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </term>
       <listitem>
        <para>
-        Determines whether expressions are JIT compiled, subject to costing
-        decisions (see <xref linkend="jit-decision"/>).  The default is
+        Determines whether expressions are JIT compiled, when JIT compilation
+        is activated (see <xref linkend="jit-decision"/>).  The default is
         <literal>on</literal>.
        </para>
       </listitem>
@@ -8838,13 +8937,12 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </term>
       <listitem>
        <para>
-        If LLVM has the required functionality, emit required data to allow
+        If LLVM has the required functionality, emit the data needed to allow
         <productname>perf</productname> to profile functions generated by JIT.
         This writes out files to <filename>$HOME/.debug/jit/</filename>; the
         user is responsible for performing cleanup when desired.
-
-        The default setting is <literal>off</literal>, and can only be set at
-        server start.
+        The default setting is <literal>off</literal>.
+        This parameter can only be set at server start.
        </para>
       </listitem>
      </varlistentry>
@@ -8857,9 +8955,9 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </term>
       <listitem>
        <para>
-        Determines whether tuple deforming is JIT compiled, subject to costing
-        decisions (see <xref linkend="jit-decision"/>). The default is
-        <literal>on</literal>.
+        Determines whether tuple deforming is JIT compiled, when JIT
+        compilation is activated (see <xref linkend="jit-decision"/>).
+        The default is <literal>on</literal>.
        </para>
       </listitem>
      </varlistentry>

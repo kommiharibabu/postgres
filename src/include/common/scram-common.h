@@ -17,11 +17,7 @@
 
 /* Name of SCRAM mechanisms per IANA */
 #define SCRAM_SHA_256_NAME "SCRAM-SHA-256"
-#define SCRAM_SHA_256_PLUS_NAME "SCRAM-SHA-256-PLUS" /* with channel binding */
-
-/* Channel binding types */
-#define SCRAM_CHANNEL_BINDING_TLS_UNIQUE    "tls-unique"
-#define SCRAM_CHANNEL_BINDING_TLS_END_POINT	"tls-server-end-point"
+#define SCRAM_SHA_256_PLUS_NAME "SCRAM-SHA-256-PLUS"	/* with channel binding */
 
 /* Length of SCRAM keys (client and server) */
 #define SCRAM_KEY_LEN				PG_SHA256_DIGEST_LENGTH

@@ -25,14 +25,13 @@
 #include "lib/stringinfo.h"
 #include "pgtime.h"
 #include "storage/block.h"
-#include "storage/checksum.h"
 #include "storage/relfilenode.h"
 
 
 /*
  * Each page of XLOG file has a header like this:
  */
-#define XLOG_PAGE_MAGIC 0xD097	/* can be used as WAL version indicator */
+#define XLOG_PAGE_MAGIC 0xD098	/* can be used as WAL version indicator */
 
 typedef struct XLogPageHeaderData
 {
@@ -102,7 +101,7 @@ typedef XLogLongPageHeaderData *XLogLongPageHeader;
 #define XLogSegmentsPerXLogId(wal_segsz_bytes)	\
 	(UINT64CONST(0x100000000) / (wal_segsz_bytes))
 
-#define XLogSegNoOffsetToRecPtr(segno, offset, dest, wal_segsz_bytes) \
+#define XLogSegNoOffsetToRecPtr(segno, offset, wal_segsz_bytes, dest) \
 		(dest) = (segno) * (wal_segsz_bytes) + (offset)
 
 #define XLogSegmentOffset(xlogptr, wal_segsz_bytes)	\
@@ -240,12 +239,6 @@ typedef struct xl_restore_point
 	TimestampTz rp_time;
 	char		rp_name[MAXFNAMELEN];
 } xl_restore_point;
-
-/* Information logged when checksum level is changed */
-typedef struct xl_checksum_state
-{
-	ChecksumType new_checksumtype;
-}			xl_checksum_state;
 
 /* End of recovery mark, when we don't do an END_OF_RECOVERY checkpoint */
 typedef struct xl_end_of_recovery

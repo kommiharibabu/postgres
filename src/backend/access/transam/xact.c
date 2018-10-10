@@ -30,8 +30,8 @@
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "access/xlogutils.h"
-#include "catalog/catalog.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_enum.h"
 #include "catalog/storage.h"
 #include "commands/async.h"
 #include "commands/tablecmds.h"
@@ -200,27 +200,8 @@ typedef TransactionStateData *TransactionState;
  * transaction at all, or when in a top-level transaction.
  */
 static TransactionStateData TopTransactionStateData = {
-	0,							/* transaction id */
-	0,							/* subtransaction id */
-	NULL,						/* savepoint name */
-	0,							/* savepoint level */
-	TRANS_DEFAULT,				/* transaction state */
-	TBLOCK_DEFAULT,				/* transaction block state from the client
-								 * perspective */
-	0,							/* transaction nesting depth */
-	0,							/* GUC context nesting depth */
-	NULL,						/* cur transaction context */
-	NULL,						/* cur transaction resource owner */
-	NULL,						/* subcommitted child Xids */
-	0,							/* # of subcommitted child Xids */
-	0,							/* allocated size of childXids[] */
-	InvalidOid,					/* previous CurrentUserId setting */
-	0,							/* previous SecurityRestrictionContext */
-	false,						/* entry-time xact r/o state */
-	false,						/* startedInRecovery */
-	false,						/* didLogXid */
-	0,							/* parallelModeLevel */
-	NULL						/* link to parent state block */
+	.state = TRANS_DEFAULT,
+	.blockState = TBLOCK_DEFAULT,
 };
 
 /*
@@ -695,6 +676,22 @@ GetCurrentCommandId(bool used)
 }
 
 /*
+ *	SetParallelStartTimestamps
+ *
+ * In a parallel worker, we should inherit the parent transaction's
+ * timestamps rather than setting our own.  The parallel worker
+ * infrastructure must call this to provide those values before
+ * calling StartTransaction() or SetCurrentStatementStartTimestamp().
+ */
+void
+SetParallelStartTimestamps(TimestampTz xact_ts, TimestampTz stmt_ts)
+{
+	Assert(IsParallelWorker());
+	xactStartTimestamp = xact_ts;
+	stmtStartTimestamp = stmt_ts;
+}
+
+/*
  *	GetCurrentTransactionStartTimestamp
  */
 TimestampTz
@@ -728,11 +725,17 @@ GetCurrentTransactionStopTimestamp(void)
 
 /*
  *	SetCurrentStatementStartTimestamp
+ *
+ * In a parallel worker, this should already have been provided by a call
+ * to SetParallelStartTimestamps().
  */
 void
 SetCurrentStatementStartTimestamp(void)
 {
-	stmtStartTimestamp = GetCurrentTimestamp();
+	if (!IsParallelWorker())
+		stmtStartTimestamp = GetCurrentTimestamp();
+	else
+		Assert(stmtStartTimestamp != 0);
 }
 
 /*
@@ -1885,14 +1888,26 @@ StartTransaction(void)
 	TRACE_POSTGRESQL_TRANSACTION_START(vxid.localTransactionId);
 
 	/*
-	 * set transaction_timestamp() (a/k/a now()).  We want this to be the same
-	 * as the first command's statement_timestamp(), so don't do a fresh
-	 * GetCurrentTimestamp() call (which'd be expensive anyway).  Also, mark
-	 * xactStopTimestamp as unset.
+	 * set transaction_timestamp() (a/k/a now()).  Normally, we want this to
+	 * be the same as the first command's statement_timestamp(), so don't do a
+	 * fresh GetCurrentTimestamp() call (which'd be expensive anyway).  But
+	 * for transactions started inside procedures (i.e., nonatomic SPI
+	 * contexts), we do need to advance the timestamp.  Also, in a parallel
+	 * worker, the timestamp should already have been provided by a call to
+	 * SetParallelStartTimestamps().
 	 */
-	xactStartTimestamp = stmtStartTimestamp;
-	xactStopTimestamp = 0;
+	if (!IsParallelWorker())
+	{
+		if (!SPI_inside_nonatomic_context())
+			xactStartTimestamp = stmtStartTimestamp;
+		else
+			xactStartTimestamp = GetCurrentTimestamp();
+	}
+	else
+		Assert(xactStartTimestamp != 0);
 	pgstat_report_xact_timestamp(xactStartTimestamp);
+	/* Mark xactStopTimestamp as unset. */
+	xactStopTimestamp = 0;
 
 	/*
 	 * initialize current transaction state fields
@@ -2019,7 +2034,7 @@ CommitTransaction(void)
 	HOLD_INTERRUPTS();
 
 	/* Commit updates to the relation map --- do this as late as possible */
-	AtEOXact_RelationMap(true);
+	AtEOXact_RelationMap(true, is_parallel_worker);
 
 	/*
 	 * set the current transaction state information appropriately during
@@ -2121,10 +2136,11 @@ CommitTransaction(void)
 	AtCommit_Notify();
 	AtEOXact_GUC(true, 1);
 	AtEOXact_SPI(true);
+	AtEOXact_Enum();
 	AtEOXact_on_commit_actions(true);
 	AtEOXact_Namespace(true, is_parallel_worker);
 	AtEOXact_SMgr();
-	AtEOXact_Files();
+	AtEOXact_Files(true);
 	AtEOXact_ComboCid();
 	AtEOXact_HashTables(true);
 	AtEOXact_PgStat(true);
@@ -2399,10 +2415,11 @@ PrepareTransaction(void)
 	/* PREPARE acts the same as COMMIT as far as GUC is concerned */
 	AtEOXact_GUC(true, 1);
 	AtEOXact_SPI(true);
+	AtEOXact_Enum();
 	AtEOXact_on_commit_actions(true);
 	AtEOXact_Namespace(true, false);
 	AtEOXact_SMgr();
-	AtEOXact_Files();
+	AtEOXact_Files(true);
 	AtEOXact_ComboCid();
 	AtEOXact_HashTables(true);
 	/* don't call AtEOXact_PgStat here; we fixed pgstat state above */
@@ -2540,7 +2557,7 @@ AbortTransaction(void)
 	AtAbort_Portals();
 	AtEOXact_LargeObject(false);
 	AtAbort_Notify();
-	AtEOXact_RelationMap(false);
+	AtEOXact_RelationMap(false, is_parallel_worker);
 	AtAbort_Twophase();
 
 	/*
@@ -2601,10 +2618,11 @@ AbortTransaction(void)
 
 		AtEOXact_GUC(false, 1);
 		AtEOXact_SPI(false);
+		AtEOXact_Enum();
 		AtEOXact_on_commit_actions(false);
 		AtEOXact_Namespace(false, is_parallel_worker);
 		AtEOXact_SMgr();
-		AtEOXact_Files();
+		AtEOXact_Files(false);
 		AtEOXact_ComboCid();
 		AtEOXact_HashTables(false);
 		AtEOXact_PgStat(false);
@@ -3268,8 +3286,8 @@ bool
 IsInTransactionBlock(bool isTopLevel)
 {
 	/*
-	 * Return true on same conditions that would make PreventInTransactionBlock
-	 * error out
+	 * Return true on same conditions that would make
+	 * PreventInTransactionBlock error out
 	 */
 	if (IsTransactionBlock())
 		return true;
@@ -4638,6 +4656,7 @@ CommitSubTransaction(void)
 	AtEOSubXact_HashTables(true, s->nestingLevel);
 	AtEOSubXact_PgStat(true, s->nestingLevel);
 	AtSubCommit_Snapshot(s->nestingLevel);
+	AtEOSubXact_ApplyLauncher(true, s->nestingLevel);
 
 	/*
 	 * We need to restore the upper transaction's read-only state, in case the
@@ -4791,6 +4810,7 @@ AbortSubTransaction(void)
 		AtEOSubXact_HashTables(false, s->nestingLevel);
 		AtEOSubXact_PgStat(false, s->nestingLevel);
 		AtSubAbort_Snapshot(s->nestingLevel);
+		AtEOSubXact_ApplyLauncher(false, s->nestingLevel);
 	}
 
 	/*
@@ -5246,9 +5266,7 @@ XactLogCommitRecord(TimestampTz commit_time,
 	xl_xact_invals xl_invals;
 	xl_xact_twophase xl_twophase;
 	xl_xact_origin xl_origin;
-
 	uint8		info;
-	int			gidlen = 0;
 
 	Assert(CritSectionCount > 0);
 
@@ -5314,10 +5332,7 @@ XactLogCommitRecord(TimestampTz commit_time,
 		Assert(twophase_gid != NULL);
 
 		if (XLogLogicalInfoActive())
-		{
 			xl_xinfo.xinfo |= XACT_XINFO_HAS_GID;
-			gidlen = strlen(twophase_gid) + 1; /* include '\0' */
-		}
 	}
 
 	/* dump transaction origin information */
@@ -5371,12 +5386,7 @@ XactLogCommitRecord(TimestampTz commit_time,
 	{
 		XLogRegisterData((char *) (&xl_twophase), sizeof(xl_xact_twophase));
 		if (xl_xinfo.xinfo & XACT_XINFO_HAS_GID)
-		{
-			static const char zeroes[MAXIMUM_ALIGNOF] = { 0 };
-			XLogRegisterData((char*) twophase_gid, gidlen);
-			if (MAXALIGN(gidlen) != gidlen)
-				XLogRegisterData((char*) zeroes, MAXALIGN(gidlen) - gidlen);
-		}
+			XLogRegisterData((char *) twophase_gid, strlen(twophase_gid) + 1);
 	}
 
 	if (xl_xinfo.xinfo & XACT_XINFO_HAS_ORIGIN)
@@ -5410,7 +5420,6 @@ XactLogAbortRecord(TimestampTz abort_time,
 	xl_xact_origin xl_origin;
 
 	uint8		info;
-	int			gidlen = 0;
 
 	Assert(CritSectionCount > 0);
 
@@ -5449,10 +5458,7 @@ XactLogAbortRecord(TimestampTz abort_time,
 		Assert(twophase_gid != NULL);
 
 		if (XLogLogicalInfoActive())
-		{
 			xl_xinfo.xinfo |= XACT_XINFO_HAS_GID;
-			gidlen = strlen(twophase_gid) + 1; /* include '\0' */
-		}
 	}
 
 	if (TransactionIdIsValid(twophase_xid) && XLogLogicalInfoActive())
@@ -5463,9 +5469,9 @@ XactLogAbortRecord(TimestampTz abort_time,
 	}
 
 	/* dump transaction origin information only for abort prepared */
-	if ( (replorigin_session_origin != InvalidRepOriginId) &&
-			TransactionIdIsValid(twophase_xid) &&
-			XLogLogicalInfoActive())
+	if ((replorigin_session_origin != InvalidRepOriginId) &&
+		TransactionIdIsValid(twophase_xid) &&
+		XLogLogicalInfoActive())
 	{
 		xl_xinfo.xinfo |= XACT_XINFO_HAS_ORIGIN;
 
@@ -5488,7 +5494,6 @@ XactLogAbortRecord(TimestampTz abort_time,
 	if (xl_xinfo.xinfo & XACT_XINFO_HAS_DBINFO)
 		XLogRegisterData((char *) (&xl_dbinfo), sizeof(xl_dbinfo));
 
-
 	if (xl_xinfo.xinfo & XACT_XINFO_HAS_SUBXACTS)
 	{
 		XLogRegisterData((char *) (&xl_subxacts),
@@ -5509,12 +5514,7 @@ XactLogAbortRecord(TimestampTz abort_time,
 	{
 		XLogRegisterData((char *) (&xl_twophase), sizeof(xl_xact_twophase));
 		if (xl_xinfo.xinfo & XACT_XINFO_HAS_GID)
-		{
-			static const char zeroes[MAXIMUM_ALIGNOF] = { 0 };
-			XLogRegisterData((char*) twophase_gid, gidlen);
-			if (MAXALIGN(gidlen) != gidlen)
-				XLogRegisterData((char*) zeroes, MAXALIGN(gidlen) - gidlen);
-		}
+			XLogRegisterData((char *) twophase_gid, strlen(twophase_gid) + 1);
 	}
 
 	if (xl_xinfo.xinfo & XACT_XINFO_HAS_ORIGIN)
@@ -5537,7 +5537,6 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 				 RepOriginId origin_id)
 {
 	TransactionId max_xid;
-	int			i;
 	TimestampTz commit_time;
 
 	Assert(TransactionIdIsValid(xid));
@@ -5623,12 +5622,10 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 		/*
 		 * Release locks, if any. We do this for both two phase and normal one
 		 * phase transactions. In effect we are ignoring the prepare phase and
-		 * just going straight to lock release. At commit we release all locks
-		 * via their top-level xid only, so no need to provide subxact list,
-		 * which will save time when replaying commits.
+		 * just going straight to lock release.
 		 */
 		if (parsed->xinfo & XACT_XINFO_HAS_AE_LOCKS)
-			StandbyReleaseLockTree(xid, 0, NULL);
+			StandbyReleaseLockTree(xid, parsed->nsubxacts, parsed->subxacts);
 	}
 
 	if (parsed->xinfo & XACT_XINFO_HAS_ORIGIN)
@@ -5658,16 +5655,8 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 		 */
 		XLogFlush(lsn);
 
-		for (i = 0; i < parsed->nrels; i++)
-		{
-			SMgrRelation srel = smgropen(parsed->xnodes[i], InvalidBackendId);
-			ForkNumber	fork;
-
-			for (fork = 0; fork <= MAX_FORKNUM; fork++)
-				XLogDropRelation(parsed->xnodes[i], fork);
-			smgrdounlink(srel, true);
-			smgrclose(srel);
-		}
+		/* Make sure files supposed to be dropped are dropped */
+		DropRelationFiles(parsed->xnodes, parsed->nrels, true);
 	}
 
 	/*
@@ -5706,7 +5695,6 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 static void
 xact_redo_abort(xl_xact_parsed_abort *parsed, TransactionId xid)
 {
-	int			i;
 	TransactionId max_xid;
 
 	Assert(TransactionIdIsValid(xid));
@@ -5771,16 +5759,7 @@ xact_redo_abort(xl_xact_parsed_abort *parsed, TransactionId xid)
 	}
 
 	/* Make sure files supposed to be dropped are dropped */
-	for (i = 0; i < parsed->nrels; i++)
-	{
-		SMgrRelation srel = smgropen(parsed->xnodes[i], InvalidBackendId);
-		ForkNumber	fork;
-
-		for (fork = 0; fork <= MAX_FORKNUM; fork++)
-			XLogDropRelation(parsed->xnodes[i], fork);
-		smgrdounlink(srel, true);
-		smgrclose(srel);
-	}
+	DropRelationFiles(parsed->xnodes, parsed->nrels, true);
 }
 
 void

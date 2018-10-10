@@ -17,7 +17,6 @@
 
 #include <ctype.h>
 #include <math.h>
-#include <float.h>
 #include <limits.h>
 #include <sys/time.h>
 
@@ -34,6 +33,7 @@
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/datetime.h"
+#include "utils/float.h"
 
 /*
  * gcc's -ffast-math switch breaks routines that expect exact results from
@@ -481,8 +481,8 @@ parse_sane_timezone(struct pg_tm *tm, text *zone)
 	if (isdigit((unsigned char) *tzname))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("invalid input syntax for numeric time zone: \"%s\"",
-						tzname),
+				 errmsg("invalid input syntax for type %s: \"%s\"",
+						"numeric time zone", tzname),
 				 errhint("Numeric time zones must have \"-\" or \"+\" as first character.")));
 
 	rt = DecodeTimezone(tzname, &tz);
@@ -3280,7 +3280,7 @@ in_range_timestamptz_interval(PG_FUNCTION_ARGS)
 
 	if (int128_compare(interval_cmp_value(offset), int64_to_int128(0)) < 0)
 		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PRECEDING_FOLLOWING_SIZE),
+				(errcode(ERRCODE_INVALID_PRECEDING_OR_FOLLOWING_SIZE),
 				 errmsg("invalid preceding or following size in window function")));
 
 	/* We don't currently bother to avoid overflow hazards here */
@@ -3311,7 +3311,7 @@ in_range_timestamp_interval(PG_FUNCTION_ARGS)
 
 	if (int128_compare(interval_cmp_value(offset), int64_to_int128(0)) < 0)
 		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PRECEDING_FOLLOWING_SIZE),
+				(errcode(ERRCODE_INVALID_PRECEDING_OR_FOLLOWING_SIZE),
 				 errmsg("invalid preceding or following size in window function")));
 
 	/* We don't currently bother to avoid overflow hazards here */
@@ -3342,7 +3342,7 @@ in_range_interval_interval(PG_FUNCTION_ARGS)
 
 	if (int128_compare(interval_cmp_value(offset), int64_to_int128(0)) < 0)
 		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PRECEDING_FOLLOWING_SIZE),
+				(errcode(ERRCODE_INVALID_PRECEDING_OR_FOLLOWING_SIZE),
 				 errmsg("invalid preceding or following size in window function")));
 
 	/* We don't currently bother to avoid overflow hazards here */
@@ -3830,12 +3830,14 @@ timestamp_trunc(PG_FUNCTION_ARGS)
 					tm->tm_year = ((tm->tm_year + 999) / 1000) * 1000 - 999;
 				else
 					tm->tm_year = -((999 - (tm->tm_year - 1)) / 1000) * 1000 + 1;
+				/* FALL THRU */
 			case DTK_CENTURY:
 				/* see comments in timestamptz_trunc */
 				if (tm->tm_year > 0)
 					tm->tm_year = ((tm->tm_year + 99) / 100) * 100 - 99;
 				else
 					tm->tm_year = -((99 - (tm->tm_year - 1)) / 100) * 100 + 1;
+				/* FALL THRU */
 			case DTK_DECADE:
 				/* see comments in timestamptz_trunc */
 				if (val != DTK_MILLENNIUM && val != DTK_CENTURY)
@@ -3845,18 +3847,25 @@ timestamp_trunc(PG_FUNCTION_ARGS)
 					else
 						tm->tm_year = -((8 - (tm->tm_year - 1)) / 10) * 10;
 				}
+				/* FALL THRU */
 			case DTK_YEAR:
 				tm->tm_mon = 1;
+				/* FALL THRU */
 			case DTK_QUARTER:
 				tm->tm_mon = (3 * ((tm->tm_mon - 1) / 3)) + 1;
+				/* FALL THRU */
 			case DTK_MONTH:
 				tm->tm_mday = 1;
+				/* FALL THRU */
 			case DTK_DAY:
 				tm->tm_hour = 0;
+				/* FALL THRU */
 			case DTK_HOUR:
 				tm->tm_min = 0;
+				/* FALL THRU */
 			case DTK_MINUTE:
 				tm->tm_sec = 0;
+				/* FALL THRU */
 			case DTK_SECOND:
 				fsec = 0;
 				break;
@@ -4072,28 +4081,36 @@ interval_trunc(PG_FUNCTION_ARGS)
 		{
 			switch (val)
 			{
-					/* fall through */
 				case DTK_MILLENNIUM:
 					/* caution: C division may have negative remainder */
 					tm->tm_year = (tm->tm_year / 1000) * 1000;
+					/* FALL THRU */
 				case DTK_CENTURY:
 					/* caution: C division may have negative remainder */
 					tm->tm_year = (tm->tm_year / 100) * 100;
+					/* FALL THRU */
 				case DTK_DECADE:
 					/* caution: C division may have negative remainder */
 					tm->tm_year = (tm->tm_year / 10) * 10;
+					/* FALL THRU */
 				case DTK_YEAR:
 					tm->tm_mon = 0;
+					/* FALL THRU */
 				case DTK_QUARTER:
 					tm->tm_mon = 3 * (tm->tm_mon / 3);
+					/* FALL THRU */
 				case DTK_MONTH:
 					tm->tm_mday = 0;
+					/* FALL THRU */
 				case DTK_DAY:
 					tm->tm_hour = 0;
+					/* FALL THRU */
 				case DTK_HOUR:
 					tm->tm_min = 0;
+					/* FALL THRU */
 				case DTK_MINUTE:
 					tm->tm_sec = 0;
+					/* FALL THRU */
 				case DTK_SECOND:
 					fsec = 0;
 					break;

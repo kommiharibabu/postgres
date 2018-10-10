@@ -38,8 +38,16 @@ typedef struct
 	QueryEnvironment *queryEnv; /* query environment setup for SPI level */
 
 	/* transaction management support */
-	bool		atomic;			/* atomic execution context, does not allow transactions */
-	bool		internal_xact;	/* SPI-managed transaction boundary, skip cleanup */
+	bool		atomic;			/* atomic execution context, does not allow
+								 * transactions */
+	bool		internal_xact;	/* SPI-managed transaction boundary, skip
+								 * cleanup */
+
+	/* saved values of API global variables for previous nesting level */
+	uint64		outer_processed;
+	Oid			outer_lastoid;
+	SPITupleTable *outer_tuptable;
+	int			outer_result;
 } _SPI_connection;
 
 /*

@@ -44,7 +44,6 @@
 #include "access/transam.h"
 #include "access/visibilitymap.h"
 #include "access/xlog.h"
-#include "catalog/catalog.h"
 #include "catalog/storage.h"
 #include "commands/dbcommands.h"
 #include "commands/progress.h"
@@ -375,10 +374,20 @@ lazy_vacuum_rel(Relation onerel, int options, VacuumParams *params,
 			 * emitting individual parts of the message when not applicable.
 			 */
 			initStringInfo(&buf);
-			if (aggressive)
-				msgfmt = _("automatic aggressive vacuum of table \"%s.%s.%s\": index scans: %d\n");
+			if (params->is_wraparound)
+			{
+				if (aggressive)
+					msgfmt = _("automatic aggressive vacuum to prevent wraparound of table \"%s.%s.%s\": index scans: %d\n");
+				else
+					msgfmt = _("automatic vacuum to prevent wraparound of table \"%s.%s.%s\": index scans: %d\n");
+			}
 			else
-				msgfmt = _("automatic vacuum of table \"%s.%s.%s\": index scans: %d\n");
+			{
+				if (aggressive)
+					msgfmt = _("automatic aggressive vacuum of table \"%s.%s.%s\": index scans: %d\n");
+				else
+					msgfmt = _("automatic vacuum of table \"%s.%s.%s\": index scans: %d\n");
+			}
 			appendStringInfo(&buf, msgfmt,
 							 get_database_name(MyDatabaseId),
 							 get_namespace_name(RelationGetNamespace(onerel)),

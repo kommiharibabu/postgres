@@ -108,7 +108,7 @@ IndexNext(IndexScanState *node)
 	{
 		/*
 		 * We reach here if the index scan is not parallel, or if we're
-		 * executing a index scan that was intended to be parallel serially.
+		 * serially executing an index scan that was planned to be parallel.
 		 */
 		scandesc = index_beginscan(node->ss.ss_currentRelation,
 								   node->iss_RelationDesc,
@@ -140,10 +140,10 @@ IndexNext(IndexScanState *node)
 		 * Note: we pass 'false' because tuples returned by amgetnext are
 		 * pointers onto disk pages and must not be pfree()'d.
 		 */
-		ExecStoreTuple(tuple,	/* tuple to store */
-					   slot,	/* slot to store in */
-					   scandesc->xs_cbuf,	/* buffer containing tuple */
-					   false);	/* don't pfree */
+		ExecStoreBufferHeapTuple(tuple, /* tuple to store */
+								 slot,	/* slot to store in */
+								 scandesc->xs_cbuf);	/* buffer containing
+														 * tuple */
 
 		/*
 		 * If the index was lossy, we have to recheck the index quals using
@@ -214,7 +214,7 @@ IndexNextWithReorder(IndexScanState *node)
 	{
 		/*
 		 * We reach here if the index scan is not parallel, or if we're
-		 * executing a index scan that was intended to be parallel serially.
+		 * serially executing an index scan that was planned to be parallel.
 		 */
 		scandesc = index_beginscan(node->ss.ss_currentRelation,
 								   node->iss_RelationDesc,
@@ -257,7 +257,7 @@ IndexNextWithReorder(IndexScanState *node)
 				tuple = reorderqueue_pop(node);
 
 				/* Pass 'true', as the tuple in the queue is a palloc'd copy */
-				ExecStoreTuple(tuple, slot, InvalidBuffer, true);
+				ExecStoreHeapTuple(tuple, slot, true);
 				return slot;
 			}
 		}
@@ -284,13 +284,11 @@ next_indextuple:
 
 		/*
 		 * Store the scanned tuple in the scan tuple slot of the scan state.
-		 * Note: we pass 'false' because tuples returned by amgetnext are
-		 * pointers onto disk pages and must not be pfree()'d.
 		 */
-		ExecStoreTuple(tuple,	/* tuple to store */
-					   slot,	/* slot to store in */
-					   scandesc->xs_cbuf,	/* buffer containing tuple */
-					   false);	/* don't pfree */
+		ExecStoreBufferHeapTuple(tuple, /* tuple to store */
+								 slot,	/* slot to store in */
+								 scandesc->xs_cbuf);	/* buffer containing
+														 * tuple */
 
 		/*
 		 * If the index was lossy, we have to recheck the index quals and
@@ -469,9 +467,10 @@ reorderqueue_cmp(const pairingheap_node *a, const pairingheap_node *b,
 	ReorderTuple *rtb = (ReorderTuple *) b;
 	IndexScanState *node = (IndexScanState *) arg;
 
-	return -cmp_orderbyvals(rta->orderbyvals, rta->orderbynulls,
-							rtb->orderbyvals, rtb->orderbynulls,
-							node);
+	/* exchange argument order to invert the sort order */
+	return cmp_orderbyvals(rtb->orderbyvals, rtb->orderbynulls,
+						   rta->orderbyvals, rta->orderbynulls,
+						   node);
 }
 
 /*
@@ -804,14 +803,12 @@ ExecEndIndexScan(IndexScanState *node)
 {
 	Relation	indexRelationDesc;
 	IndexScanDesc indexScanDesc;
-	Relation	relation;
 
 	/*
 	 * extract information from the node
 	 */
 	indexRelationDesc = node->iss_RelationDesc;
 	indexScanDesc = node->iss_ScanDesc;
-	relation = node->ss.ss_currentRelation;
 
 	/*
 	 * Free the exprcontext(s) ... now dead code, see ExecFreeExprContext
@@ -835,11 +832,6 @@ ExecEndIndexScan(IndexScanState *node)
 		index_endscan(indexScanDesc);
 	if (indexRelationDesc)
 		index_close(indexRelationDesc, NoLock);
-
-	/*
-	 * close the heap relation.
-	 */
-	ExecCloseScanRelation(relation);
 }
 
 /* ----------------------------------------------------------------
@@ -941,7 +933,7 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	ExecAssignExprContext(estate, &indexstate->ss.ps);
 
 	/*
-	 * open the base relation and acquire appropriate lock on it.
+	 * open the scan relation
 	 */
 	currentRelation = ExecOpenScanRelation(estate, node->scan.scanrelid, eflags);
 
@@ -1227,7 +1219,9 @@ ExecIndexBuildScanKeys(PlanState *planstate, Relation index,
 		Expr	   *leftop;		/* expr on lhs of operator */
 		Expr	   *rightop;	/* expr on rhs ... */
 		AttrNumber	varattno;	/* att number used in scan */
+		int			indnkeyatts;
 
+		indnkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 		if (IsA(clause, OpExpr))
 		{
 			/* indexkey op const or indexkey op expression */
@@ -1252,7 +1246,7 @@ ExecIndexBuildScanKeys(PlanState *planstate, Relation index,
 				elog(ERROR, "indexqual doesn't have key on left side");
 
 			varattno = ((Var *) leftop)->varattno;
-			if (varattno < 1 || varattno > index->rd_index->indnatts)
+			if (varattno < 1 || varattno > indnkeyatts)
 				elog(ERROR, "bogus index qualification");
 
 			/*
@@ -1375,7 +1369,7 @@ ExecIndexBuildScanKeys(PlanState *planstate, Relation index,
 				opnos_cell = lnext(opnos_cell);
 
 				if (index->rd_rel->relam != BTREE_AM_OID ||
-					varattno < 1 || varattno > index->rd_index->indnatts)
+					varattno < 1 || varattno > indnkeyatts)
 					elog(ERROR, "bogus RowCompare index qualification");
 				opfamily = index->rd_opfamily[varattno - 1];
 
@@ -1499,7 +1493,7 @@ ExecIndexBuildScanKeys(PlanState *planstate, Relation index,
 				elog(ERROR, "indexqual doesn't have key on left side");
 
 			varattno = ((Var *) leftop)->varattno;
-			if (varattno < 1 || varattno > index->rd_index->indnatts)
+			if (varattno < 1 || varattno > indnkeyatts)
 				elog(ERROR, "bogus index qualification");
 
 			/*

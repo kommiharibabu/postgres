@@ -102,9 +102,11 @@ extern List *AddRelationNewConstraints(Relation rel,
 						  List *newConstraints,
 						  bool allow_merge,
 						  bool is_local,
-						  bool is_internal);
+						  bool is_internal,
+						  const char *queryString);
 
 extern void RelationClearMissing(Relation rel);
+extern void SetAttrMissing(Oid relid, char *attname, char *value);
 
 extern Oid StoreAttrDefault(Relation rel, AttrNumber attnum,
 				 Node *expr, bool is_internal,

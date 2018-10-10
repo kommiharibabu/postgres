@@ -28,12 +28,12 @@
  */
 
 #ifdef WIN32
-#define FD_SETSIZE 1024			/* set before winsock2.h is included */
-#endif							/* ! WIN32 */
+#define FD_SETSIZE 1024			/* must set before winsock2.h is included */
+#endif
 
 #include "postgres_fe.h"
+#include "common/int.h"
 #include "fe_utils/conditional.h"
-
 #include "getopt_long.h"
 #include "libpq-fe.h"
 #include "portability/instr_time.h"
@@ -45,12 +45,21 @@
 #include <signal.h>
 #include <time.h>
 #include <sys/time.h>
+#ifdef HAVE_SYS_RESOURCE_H
+#include <sys/resource.h>		/* for getrlimit */
+#endif
+
+/* For testing, PGBENCH_USE_SELECT can be defined to force use of that code */
+#if defined(HAVE_PPOLL) && !defined(PGBENCH_USE_SELECT)
+#define POLL_USING_PPOLL
+#ifdef HAVE_POLL_H
+#include <poll.h>
+#endif
+#else							/* no ppoll(), so use select() */
+#define POLL_USING_SELECT
 #ifdef HAVE_SYS_SELECT_H
 #include <sys/select.h>
 #endif
-
-#ifdef HAVE_SYS_RESOURCE_H
-#include <sys/resource.h>		/* for getrlimit */
 #endif
 
 #ifndef M_PI
@@ -67,7 +76,35 @@
 #define FNV_PRIME			UINT64CONST(0x100000001b3)
 #define FNV_OFFSET_BASIS	UINT64CONST(0xcbf29ce484222325)
 #define MM2_MUL				UINT64CONST(0xc6a4a7935bd1e995)
+#define MM2_MUL_TIMES_8		UINT64CONST(0x35253c9ade8f4ca8)
 #define MM2_ROT				47
+
+/*
+ * Multi-platform socket set implementations
+ */
+
+#ifdef POLL_USING_PPOLL
+#define SOCKET_WAIT_METHOD "ppoll"
+
+typedef struct socket_set
+{
+	int			maxfds;			/* allocated length of pollfds[] array */
+	int			curfds;			/* number currently in use */
+	struct pollfd pollfds[FLEXIBLE_ARRAY_MEMBER];
+} socket_set;
+
+#endif							/* POLL_USING_PPOLL */
+
+#ifdef POLL_USING_SELECT
+#define SOCKET_WAIT_METHOD "select"
+
+typedef struct socket_set
+{
+	int			maxfd;			/* largest FD currently set in fds */
+	fd_set		fds;
+} socket_set;
+
+#endif							/* POLL_USING_SELECT */
 
 /*
  * Multi-platform pthread implementations
@@ -91,13 +128,6 @@ static int	pthread_join(pthread_t th, void **thread_return);
 
 /********************************************************************
  * some configurable parameters */
-
-/* max number of clients allowed */
-#ifdef FD_SETSIZE
-#define MAXCLIENTS	(FD_SETSIZE - 10)
-#else
-#define MAXCLIENTS	1024
-#endif
 
 #define DEFAULT_INIT_STEPS "dtgvp"	/* default -I setting */
 
@@ -139,7 +169,7 @@ double		sample_rate = 0.0;
  * When threads are throttled to a given rate limit, this is the target delay
  * to reach that rate in usec.  0 is the default and means no throttling.
  */
-int64		throttle_delay = 0;
+double		throttle_delay = 0;
 
 /*
  * Transactions which take longer than this limit (in usec) are counted as
@@ -156,7 +186,7 @@ char	   *tablespace = NULL;
 char	   *index_tablespace = NULL;
 
 /* random seed used when calling srandom() */
-int64 random_seed = -1;
+int64		random_seed = -1;
 
 /*
  * end of configurable parameters
@@ -522,8 +552,14 @@ static void processXactStats(TState *thread, CState *st, instr_time *now,
 static void pgbench_error(const char *fmt,...) pg_attribute_printf(1, 2);
 static void addScript(ParsedScript script);
 static void *threadRun(void *arg);
-static void setalarm(int seconds);
 static void finishCon(CState *st);
+static void setalarm(int seconds);
+static socket_set *alloc_socket_set(int count);
+static void free_socket_set(socket_set *sa);
+static void clear_socket_set(socket_set *sa);
+static void add_socket_to_set(socket_set *sa, int fd, int idx);
+static int	wait_on_socket_set(socket_set *sa, int64 usecs);
+static bool socket_has_input(socket_set *sa, int fd, int idx);
 
 
 /* callback functions for our flex lexer */
@@ -626,19 +662,27 @@ is_an_int(const char *str)
 /*
  * strtoint64 -- convert a string to 64-bit integer
  *
- * This function is a modified version of scanint8() from
+ * This function is a slightly modified version of scanint8() from
  * src/backend/utils/adt/int8.c.
+ *
+ * The function returns whether the conversion worked, and if so
+ * "*result" is set to the result.
+ *
+ * If not errorOK, an error message is also printed out on errors.
  */
-int64
-strtoint64(const char *str)
+bool
+strtoint64(const char *str, bool errorOK, int64 *result)
 {
 	const char *ptr = str;
-	int64		result = 0;
-	int			sign = 1;
+	int64		tmp = 0;
+	bool		neg = false;
 
 	/*
 	 * Do our own scan, rather than relying on sscanf which might be broken
 	 * for long long.
+	 *
+	 * As INT64_MIN can't be stored as a positive 64 bit integer, accumulate
+	 * value as a negative number.
 	 */
 
 	/* skip leading spaces */
@@ -649,46 +693,80 @@ strtoint64(const char *str)
 	if (*ptr == '-')
 	{
 		ptr++;
-
-		/*
-		 * Do an explicit check for INT64_MIN.  Ugly though this is, it's
-		 * cleaner than trying to get the loop below to handle it portably.
-		 */
-		if (strncmp(ptr, "9223372036854775808", 19) == 0)
-		{
-			result = PG_INT64_MIN;
-			ptr += 19;
-			goto gotdigits;
-		}
-		sign = -1;
+		neg = true;
 	}
 	else if (*ptr == '+')
 		ptr++;
 
 	/* require at least one digit */
-	if (!isdigit((unsigned char) *ptr))
-		fprintf(stderr, "invalid input syntax for integer: \"%s\"\n", str);
+	if (unlikely(!isdigit((unsigned char) *ptr)))
+		goto invalid_syntax;
 
 	/* process digits */
 	while (*ptr && isdigit((unsigned char) *ptr))
 	{
-		int64		tmp = result * 10 + (*ptr++ - '0');
+		int8		digit = (*ptr++ - '0');
 
-		if ((tmp / 10) != result)	/* overflow? */
-			fprintf(stderr, "value \"%s\" is out of range for type bigint\n", str);
-		result = tmp;
+		if (unlikely(pg_mul_s64_overflow(tmp, 10, &tmp)) ||
+			unlikely(pg_sub_s64_overflow(tmp, digit, &tmp)))
+			goto out_of_range;
 	}
-
-gotdigits:
 
 	/* allow trailing whitespace, but not other trailing chars */
 	while (*ptr != '\0' && isspace((unsigned char) *ptr))
 		ptr++;
 
-	if (*ptr != '\0')
-		fprintf(stderr, "invalid input syntax for integer: \"%s\"\n", str);
+	if (unlikely(*ptr != '\0'))
+		goto invalid_syntax;
 
-	return ((sign < 0) ? -result : result);
+	if (!neg)
+	{
+		if (unlikely(tmp == PG_INT64_MIN))
+			goto out_of_range;
+		tmp = -tmp;
+	}
+
+	*result = tmp;
+	return true;
+
+out_of_range:
+	if (!errorOK)
+		fprintf(stderr,
+				"value \"%s\" is out of range for type bigint\n", str);
+	return false;
+
+invalid_syntax:
+	if (!errorOK)
+		fprintf(stderr,
+				"invalid input syntax for type bigint: \"%s\"\n",str);
+	return false;
+}
+
+/* convert string to double, detecting overflows/underflows */
+bool
+strtodouble(const char *str, bool errorOK, double *dv)
+{
+	char *end;
+
+	errno = 0;
+	*dv = strtod(str, &end);
+
+	if (unlikely(errno != 0))
+	{
+		if (!errorOK)
+			fprintf(stderr,
+					"value \"%s\" is out of range for type double\n", str);
+		return false;
+	}
+
+	if (unlikely(end == str || *end != '\0'))
+	{
+		if (!errorOK)
+			fprintf(stderr,
+					"invalid input syntax for type double: \"%s\"\n",str);
+		return false;
+	}
+	return true;
 }
 
 /* random number generator: uniform distribution from min to max inclusive */
@@ -762,7 +840,7 @@ getGaussianRand(TState *thread, int64 min, int64 max, double parameter)
 		 * pg_erand48 generates [0,1), but for the basic version of the
 		 * Box-Muller transform the two uniformly distributed random numbers
 		 * are expected in (0, 1] (see
-		 * http://en.wikipedia.org/wiki/Box_muller)
+		 * https://en.wikipedia.org/wiki/Box-Muller_transform)
 		 */
 		double		rand1 = 1.0 - pg_erand48(thread->random_state);
 		double		rand2 = 1.0 - pg_erand48(thread->random_state);
@@ -790,9 +868,12 @@ getGaussianRand(TState *thread, int64 min, int64 max, double parameter)
 /*
  * random number generator: generate a value, such that the series of values
  * will approximate a Poisson distribution centered on the given value.
+ *
+ * Individual results are rounded to integers, though the center value need
+ * not be one.
  */
 static int64
-getPoissonRand(TState *thread, int64 center)
+getPoissonRand(TState *thread, double center)
 {
 	/*
 	 * Use inverse transform sampling to generate a value > 0, such that the
@@ -803,7 +884,7 @@ getPoissonRand(TState *thread, int64 center)
 	/* erand in [0, 1), uniform in (0, 1] */
 	uniform = 1.0 - pg_erand48(thread->random_state);
 
-	return (int64) (-log(uniform) * ((double) center) + 0.5);
+	return (int64) (-log(uniform) * center + 0.5);
 }
 
 /* helper function for getZipfianRand */
@@ -820,7 +901,7 @@ generalizedHarmonicNumber(int64 n, double s)
 
 /* set harmonicn and other parameters to cache cell */
 static void
-zipfSetCacheCell(ZipfCell * cell, int64 n, double s)
+zipfSetCacheCell(ZipfCell *cell, int64 n, double s)
 {
 	double		harmonic2;
 
@@ -840,7 +921,7 @@ zipfSetCacheCell(ZipfCell * cell, int64 n, double s)
  * and create new cell if it does not exist
  */
 static ZipfCell *
-zipfFindOrCreateCacheCell(ZipfCache * cache, int64 n, double s)
+zipfFindOrCreateCacheCell(ZipfCache *cache, int64 n, double s)
 {
 	int			i,
 				least_recently_used = 0;
@@ -943,13 +1024,13 @@ getZipfianRand(TState *thread, int64 min, int64 max, double s)
 static int64
 getHashFnv1a(int64 val, uint64 seed)
 {
-	int64	result;
-	int		i;
+	int64		result;
+	int			i;
 
 	result = FNV_OFFSET_BASIS ^ seed;
 	for (i = 0; i < 8; ++i)
 	{
-		int32 octet = val & 0xff;
+		int32		octet = val & 0xff;
 
 		val = val >> 8;
 		result = result ^ octet;
@@ -968,8 +1049,8 @@ getHashFnv1a(int64 val, uint64 seed)
 static int64
 getHashMurmur2(int64 val, uint64 seed)
 {
-	uint64	result = seed ^ (sizeof(int64) * MM2_MUL);
-	uint64	k = (uint64) val;
+	uint64		result = seed ^ MM2_MUL_TIMES_8;	/* sizeof(int64) */
+	uint64		k = (uint64) val;
 
 	k *= MM2_MUL;
 	k ^= k >> MM2_ROT;
@@ -1236,7 +1317,7 @@ getVariable(CState *st, char *name)
 	else if (var->value.type == PGBT_DOUBLE)
 		snprintf(stringform, sizeof(stringform),
 				 "%.*g", DBL_DIG, var->value.u.dval);
-	else /* internal error, unexpected type */
+	else						/* internal error, unexpected type */
 		Assert(0);
 	var->svalue = pg_strdup(stringform);
 	return var->svalue;
@@ -1246,7 +1327,7 @@ getVariable(CState *st, char *name)
 static bool
 makeVariableValue(Variable *var)
 {
-	size_t slen;
+	size_t		slen;
 
 	if (var->value.type != PGBT_NO_VALUE)
 		return true;			/* no work */
@@ -1261,10 +1342,10 @@ makeVariableValue(Variable *var)
 	{
 		setNullValue(&var->value);
 	}
+
 	/*
-	 * accept prefixes such as y, ye, n, no... but not for "o".
-	 * 0/1 are recognized later as an int, which is converted
-	 * to bool if needed.
+	 * accept prefixes such as y, ye, n, no... but not for "o". 0/1 are
+	 * recognized later as an int, which is converted to bool if needed.
 	 */
 	else if (pg_strncasecmp(var->svalue, "true", slen) == 0 ||
 			 pg_strncasecmp(var->svalue, "yes", slen) == 0 ||
@@ -1281,14 +1362,19 @@ makeVariableValue(Variable *var)
 	}
 	else if (is_an_int(var->svalue))
 	{
-		setIntValue(&var->value, strtoint64(var->svalue));
+		/* if it looks like an int, it must be an int without overflow */
+		int64 iv;
+
+		if (!strtoint64(var->svalue, false, &iv))
+			return false;
+
+		setIntValue(&var->value, iv);
 	}
 	else						/* type should be double */
 	{
 		double		dv;
-		char		xs;
 
-		if (sscanf(var->svalue, "%lf%c", &dv, &xs) != 1)
+		if (!strtodouble(var->svalue, true, &dv))
 		{
 			fprintf(stderr,
 					"malformed variable \"%s\" value: \"%s\"\n",
@@ -1410,7 +1496,7 @@ putVariable(CState *st, const char *context, char *name, const char *value)
 /* Returns false on failure (bad name) */
 static bool
 putVariableValue(CState *st, const char *context, char *name,
-				  const PgBenchValue *value)
+				 const PgBenchValue *value)
 {
 	Variable   *var;
 
@@ -1563,7 +1649,7 @@ coerceToBool(PgBenchValue *pval, bool *bval)
 		*bval = pval->u.bval;
 		return true;
 	}
-	else /* NULL, INT or DOUBLE */
+	else						/* NULL, INT or DOUBLE */
 	{
 		fprintf(stderr, "cannot coerce %s to boolean\n", valueTypeName(pval));
 		*bval = false;			/* suppress uninitialized-variable warnings */
@@ -1616,7 +1702,7 @@ coerceToInt(PgBenchValue *pval, int64 *ival)
 		*ival = (int64) dval;
 		return true;
 	}
-	else /* BOOLEAN or NULL */
+	else						/* BOOLEAN or NULL */
 	{
 		fprintf(stderr, "cannot coerce %s to int\n", valueTypeName(pval));
 		return false;
@@ -1637,7 +1723,7 @@ coerceToDouble(PgBenchValue *pval, double *dval)
 		*dval = (double) pval->u.ival;
 		return true;
 	}
-	else /* BOOLEAN or NULL */
+	else						/* BOOLEAN or NULL */
 	{
 		fprintf(stderr, "cannot coerce %s to double\n", valueTypeName(pval));
 		return false;
@@ -1676,7 +1762,8 @@ setDoubleValue(PgBenchValue *pv, double dval)
 	pv->u.dval = dval;
 }
 
-static bool isLazyFunc(PgBenchFunction func)
+static bool
+isLazyFunc(PgBenchFunction func)
 {
 	return func == PGBENCH_AND || func == PGBENCH_OR || func == PGBENCH_CASE;
 }
@@ -1686,8 +1773,10 @@ static bool
 evalLazyFunc(TState *thread, CState *st,
 			 PgBenchFunction func, PgBenchExprLink *args, PgBenchValue *retval)
 {
-	PgBenchValue a1, a2;
-	bool ba1, ba2;
+	PgBenchValue a1,
+				a2;
+	bool		ba1,
+				ba2;
 
 	Assert(isLazyFunc(func) && args != NULL && args->next != NULL);
 
@@ -1700,92 +1789,92 @@ evalLazyFunc(TState *thread, CState *st,
 
 	switch (func)
 	{
-	case PGBENCH_AND:
-		if (a1.type == PGBT_NULL)
-		{
-			setNullValue(retval);
+		case PGBENCH_AND:
+			if (a1.type == PGBT_NULL)
+			{
+				setNullValue(retval);
+				return true;
+			}
+
+			if (!coerceToBool(&a1, &ba1))
+				return false;
+
+			if (!ba1)
+			{
+				setBoolValue(retval, false);
+				return true;
+			}
+
+			if (!evaluateExpr(thread, st, args->expr, &a2))
+				return false;
+
+			if (a2.type == PGBT_NULL)
+			{
+				setNullValue(retval);
+				return true;
+			}
+			else if (!coerceToBool(&a2, &ba2))
+				return false;
+			else
+			{
+				setBoolValue(retval, ba2);
+				return true;
+			}
+
 			return true;
-		}
 
-		if (!coerceToBool(&a1, &ba1))
-			return false;
+		case PGBENCH_OR:
 
-		if (!ba1)
-		{
-			setBoolValue(retval, false);
-			return true;
-		}
+			if (a1.type == PGBT_NULL)
+			{
+				setNullValue(retval);
+				return true;
+			}
 
-		if (!evaluateExpr(thread, st, args->expr, &a2))
-			return false;
+			if (!coerceToBool(&a1, &ba1))
+				return false;
 
-		if (a2.type == PGBT_NULL)
-		{
-			setNullValue(retval);
-			return true;
-		}
-		else if (!coerceToBool(&a2, &ba2))
-			return false;
-		else
-		{
-			setBoolValue(retval, ba2);
-			return true;
-		}
+			if (ba1)
+			{
+				setBoolValue(retval, true);
+				return true;
+			}
 
-		return true;
+			if (!evaluateExpr(thread, st, args->expr, &a2))
+				return false;
 
-	case PGBENCH_OR:
+			if (a2.type == PGBT_NULL)
+			{
+				setNullValue(retval);
+				return true;
+			}
+			else if (!coerceToBool(&a2, &ba2))
+				return false;
+			else
+			{
+				setBoolValue(retval, ba2);
+				return true;
+			}
 
-		if (a1.type == PGBT_NULL)
-		{
-			setNullValue(retval);
-			return true;
-		}
+		case PGBENCH_CASE:
+			/* when true, execute branch */
+			if (valueTruth(&a1))
+				return evaluateExpr(thread, st, args->expr, retval);
 
-		if (!coerceToBool(&a1, &ba1))
-			return false;
+			/* now args contains next condition or final else expression */
+			args = args->next;
 
-		if (ba1)
-		{
-			setBoolValue(retval, true);
-			return true;
-		}
+			/* final else case? */
+			if (args->next == NULL)
+				return evaluateExpr(thread, st, args->expr, retval);
 
-		if (!evaluateExpr(thread, st, args->expr, &a2))
-			return false;
+			/* no, another when, proceed */
+			return evalLazyFunc(thread, st, PGBENCH_CASE, args, retval);
 
-		if (a2.type == PGBT_NULL)
-		{
-			setNullValue(retval);
-			return true;
-		}
-		else if (!coerceToBool(&a2, &ba2))
-			return false;
-		else
-		{
-			setBoolValue(retval, ba2);
-			return true;
-		}
-
-	case PGBENCH_CASE:
-		/* when true, execute branch */
-		if (valueTruth(&a1))
-			return evaluateExpr(thread, st, args->expr, retval);
-
-		/* now args contains next condition or final else expression */
-		args = args->next;
-
-		/* final else case? */
-		if (args->next == NULL)
-			return evaluateExpr(thread, st, args->expr, retval);
-
-		/* no, another when, proceed */
-		return evalLazyFunc(thread, st, PGBENCH_CASE, args, retval);
-
-	default:
-		/* internal error, cannot get here */
-		Assert(0);
-		break;
+		default:
+			/* internal error, cannot get here */
+			Assert(0);
+			break;
 	}
 	return false;
 }
@@ -1803,10 +1892,10 @@ evalStandardFunc(TState *thread, CState *st,
 				 PgBenchValue *retval)
 {
 	/* evaluate all function arguments */
-	int				nargs = 0;
-	PgBenchValue	vargs[MAX_FARGS];
+	int			nargs = 0;
+	PgBenchValue vargs[MAX_FARGS];
 	PgBenchExprLink *l = args;
-	bool			has_null = false;
+	bool		has_null = false;
 
 	for (nargs = 0; nargs < MAX_FARGS && l != NULL; nargs++, l = l->next)
 	{
@@ -1901,7 +1990,8 @@ evalStandardFunc(TState *thread, CState *st,
 				else			/* we have integer operands, or % */
 				{
 					int64		li,
-								ri;
+								ri,
+								res;
 
 					if (!coerceToInt(lval, &li) ||
 						!coerceToInt(rval, &ri))
@@ -1910,15 +2000,30 @@ evalStandardFunc(TState *thread, CState *st,
 					switch (func)
 					{
 						case PGBENCH_ADD:
-							setIntValue(retval, li + ri);
+							if (pg_add_s64_overflow(li, ri, &res))
+							{
+								fprintf(stderr, "bigint add out of range\n");
+								return false;
+							}
+							setIntValue(retval, res);
 							return true;
 
 						case PGBENCH_SUB:
-							setIntValue(retval, li - ri);
+							if (pg_sub_s64_overflow(li, ri, &res))
+							{
+								fprintf(stderr, "bigint sub out of range\n");
+								return false;
+							}
+							setIntValue(retval, res);
 							return true;
 
 						case PGBENCH_MUL:
-							setIntValue(retval, li * ri);
+							if (pg_mul_s64_overflow(li, ri, &res))
+							{
+								fprintf(stderr, "bigint mul out of range\n");
+								return false;
+							}
+							setIntValue(retval, res);
 							return true;
 
 						case PGBENCH_EQ:
@@ -1952,7 +2057,7 @@ evalStandardFunc(TState *thread, CState *st,
 									/* overflow check (needed for INT64_MIN) */
 									if (li == PG_INT64_MIN)
 									{
-										fprintf(stderr, "bigint out of range\n");
+										fprintf(stderr, "bigint div out of range\n");
 										return false;
 									}
 									else
@@ -1975,6 +2080,9 @@ evalStandardFunc(TState *thread, CState *st,
 							Assert(0);
 					}
 				}
+
+				Assert(0);
+				return false;	/* NOTREACHED */
 			}
 
 			/* integer bitwise operators */
@@ -1984,7 +2092,8 @@ evalStandardFunc(TState *thread, CState *st,
 		case PGBENCH_LSHIFT:
 		case PGBENCH_RSHIFT:
 			{
-				int64 li, ri;
+				int64		li,
+							ri;
 
 				if (!coerceToInt(&vargs[0], &li) || !coerceToInt(&vargs[1], &ri))
 					return false;
@@ -1999,7 +2108,7 @@ evalStandardFunc(TState *thread, CState *st,
 					setIntValue(retval, li << ri);
 				else if (func == PGBENCH_RSHIFT)
 					setIntValue(retval, li >> ri);
-				else /* cannot get here */
+				else			/* cannot get here */
 					Assert(0);
 
 				return true;
@@ -2008,7 +2117,8 @@ evalStandardFunc(TState *thread, CState *st,
 			/* logical operators */
 		case PGBENCH_NOT:
 			{
-				bool b;
+				bool		b;
+
 				if (!coerceToBool(&vargs[0], &b))
 					return false;
 
@@ -2062,7 +2172,7 @@ evalStandardFunc(TState *thread, CState *st,
 					fprintf(stderr, "int " INT64_FORMAT "\n", varg->u.ival);
 				else if (varg->type == PGBT_DOUBLE)
 					fprintf(stderr, "double %.*g\n", DBL_DIG, varg->u.dval);
-				else /* internal error, unexpected type */
+				else			/* internal error, unexpected type */
 					Assert(0);
 
 				*retval = *varg;
@@ -2275,7 +2385,11 @@ evalStandardFunc(TState *thread, CState *st,
 		case PGBENCH_IS:
 			{
 				Assert(nargs == 2);
-				/* note: this simple implementation is more permissive than SQL */
+
+				/*
+				 * note: this simple implementation is more permissive than
+				 * SQL
+				 */
 				setBoolValue(retval,
 							 vargs[0].type == vargs[1].type &&
 							 vargs[0].u.bval == vargs[1].u.bval);
@@ -2286,8 +2400,8 @@ evalStandardFunc(TState *thread, CState *st,
 		case PGBENCH_HASH_FNV1A:
 		case PGBENCH_HASH_MURMUR2:
 			{
-				int64	val,
-						seed;
+				int64		val,
+							seed;
 
 				Assert(nargs == 2);
 
@@ -2935,7 +3049,10 @@ doCustom(TState *thread, CState *st, StatsData *agg)
 						if (command->meta == META_ELIF &&
 							conditional_stack_peek(st->cstack) == IFSTATE_TRUE)
 						{
-							/* elif after executed block, skip eval and wait for endif */
+							/*
+							 * elif after executed block, skip eval and wait
+							 * for endif
+							 */
 							conditional_stack_poke(st->cstack, IFSTATE_IGNORED);
 							goto move_to_end_command;
 						}
@@ -2956,18 +3073,21 @@ doCustom(TState *thread, CState *st, StatsData *agg)
 								break;
 							}
 						}
-						else /* if and elif evaluated cases */
+						else	/* if and elif evaluated cases */
 						{
-							bool cond = valueTruth(&result);
+							bool		cond = valueTruth(&result);
 
 							/* execute or not depending on evaluated condition */
 							if (command->meta == META_IF)
 							{
 								conditional_stack_push(st->cstack, cond ? IFSTATE_TRUE : IFSTATE_FALSE);
 							}
-							else /* elif */
+							else	/* elif */
 							{
-								/* we should get here only if the "elif" needed evaluation */
+								/*
+								 * we should get here only if the "elif"
+								 * needed evaluation
+								 */
 								Assert(conditional_stack_peek(st->cstack) == IFSTATE_FALSE);
 								conditional_stack_poke(st->cstack, cond ? IFSTATE_TRUE : IFSTATE_FALSE);
 							}
@@ -2981,10 +3101,10 @@ doCustom(TState *thread, CState *st, StatsData *agg)
 								conditional_stack_poke(st->cstack, IFSTATE_ELSE_FALSE);
 								break;
 							case IFSTATE_FALSE: /* inconsistent if active */
-							case IFSTATE_IGNORED: /* inconsistent if active */
-							case IFSTATE_NONE: /* else without if */
+							case IFSTATE_IGNORED:	/* inconsistent if active */
+							case IFSTATE_NONE:	/* else without if */
 							case IFSTATE_ELSE_TRUE: /* else after else */
-							case IFSTATE_ELSE_FALSE: /* else after else */
+							case IFSTATE_ELSE_FALSE:	/* else after else */
 							default:
 								/* dead code if conditional check is ok */
 								Assert(false);
@@ -3038,11 +3158,11 @@ doCustom(TState *thread, CState *st, StatsData *agg)
 						}
 					}
 
-					move_to_end_command:
+			move_to_end_command:
+
 					/*
-					 * executing the expression or shell command might
-					 * take a non-negligible amount of time, so reset
-					 * 'now'
+					 * executing the expression or shell command might take a
+					 * non-negligible amount of time, so reset 'now'
 					 */
 					INSTR_TIME_SET_ZERO(now);
 
@@ -3063,7 +3183,10 @@ doCustom(TState *thread, CState *st, StatsData *agg)
 					/* cannot reach end of script in that state */
 					Assert(command != NULL);
 
-					/* if this is conditional related, update conditional state */
+					/*
+					 * if this is conditional related, update conditional
+					 * state
+					 */
 					if (command->type == META_COMMAND &&
 						(command->meta == META_IF ||
 						 command->meta == META_ELIF ||
@@ -3072,51 +3195,59 @@ doCustom(TState *thread, CState *st, StatsData *agg)
 					{
 						switch (conditional_stack_peek(st->cstack))
 						{
-						case IFSTATE_FALSE:
-							if (command->meta == META_IF || command->meta == META_ELIF)
-							{
-								/* we must evaluate the condition */
-								st->state = CSTATE_START_COMMAND;
-							}
-							else if (command->meta == META_ELSE)
-							{
-								/* we must execute next command */
-								conditional_stack_poke(st->cstack, IFSTATE_ELSE_TRUE);
-								st->state = CSTATE_START_COMMAND;
-								st->command++;
-							}
-							else if (command->meta == META_ENDIF)
-							{
-								Assert(!conditional_stack_empty(st->cstack));
-								conditional_stack_pop(st->cstack);
-								if (conditional_active(st->cstack))
+							case IFSTATE_FALSE:
+								if (command->meta == META_IF || command->meta == META_ELIF)
+								{
+									/* we must evaluate the condition */
 									st->state = CSTATE_START_COMMAND;
-								/* else state remains in CSTATE_SKIP_COMMAND */
-								st->command++;
-							}
-							break;
-
-						case IFSTATE_IGNORED:
-						case IFSTATE_ELSE_FALSE:
-							if (command->meta == META_IF)
-								conditional_stack_push(st->cstack, IFSTATE_IGNORED);
-							else if (command->meta == META_ENDIF)
-							{
-								Assert(!conditional_stack_empty(st->cstack));
-								conditional_stack_pop(st->cstack);
-								if (conditional_active(st->cstack))
+								}
+								else if (command->meta == META_ELSE)
+								{
+									/* we must execute next command */
+									conditional_stack_poke(st->cstack, IFSTATE_ELSE_TRUE);
 									st->state = CSTATE_START_COMMAND;
-							}
-							/* could detect "else" & "elif" after "else" */
-							st->command++;
-							break;
+									st->command++;
+								}
+								else if (command->meta == META_ENDIF)
+								{
+									Assert(!conditional_stack_empty(st->cstack));
+									conditional_stack_pop(st->cstack);
+									if (conditional_active(st->cstack))
+										st->state = CSTATE_START_COMMAND;
 
-						case IFSTATE_NONE:
-						case IFSTATE_TRUE:
-						case IFSTATE_ELSE_TRUE:
-						default:
-							/* inconsistent if inactive, unreachable dead code */
-							Assert(false);
+									/*
+									 * else state remains in
+									 * CSTATE_SKIP_COMMAND
+									 */
+									st->command++;
+								}
+								break;
+
+							case IFSTATE_IGNORED:
+							case IFSTATE_ELSE_FALSE:
+								if (command->meta == META_IF)
+									conditional_stack_push(st->cstack, IFSTATE_IGNORED);
+								else if (command->meta == META_ENDIF)
+								{
+									Assert(!conditional_stack_empty(st->cstack));
+									conditional_stack_pop(st->cstack);
+									if (conditional_active(st->cstack))
+										st->state = CSTATE_START_COMMAND;
+								}
+								/* could detect "else" & "elif" after "else" */
+								st->command++;
+								break;
+
+							case IFSTATE_NONE:
+							case IFSTATE_TRUE:
+							case IFSTATE_ELSE_TRUE:
+							default:
+
+								/*
+								 * inconsistent if inactive, unreachable dead
+								 * code
+								 */
+								Assert(false);
 						}
 					}
 					else
@@ -4184,42 +4315,44 @@ CheckConditional(ParsedScript ps)
 {
 	/* statically check conditional structure */
 	ConditionalStack cs = conditional_stack_create();
-	int i;
-	for (i = 0 ; ps.commands[i] != NULL ; i++)
+	int			i;
+
+	for (i = 0; ps.commands[i] != NULL; i++)
 	{
-		Command *cmd = ps.commands[i];
+		Command    *cmd = ps.commands[i];
+
 		if (cmd->type == META_COMMAND)
 		{
 			switch (cmd->meta)
 			{
-			case META_IF:
-				conditional_stack_push(cs, IFSTATE_FALSE);
-				break;
-			case META_ELIF:
-				if (conditional_stack_empty(cs))
-					ConditionError(ps.desc, i+1, "\\elif without matching \\if");
-				if (conditional_stack_peek(cs) == IFSTATE_ELSE_FALSE)
-					ConditionError(ps.desc, i+1, "\\elif after \\else");
-				break;
-			case META_ELSE:
-				if (conditional_stack_empty(cs))
-					ConditionError(ps.desc, i+1, "\\else without matching \\if");
-				if (conditional_stack_peek(cs) == IFSTATE_ELSE_FALSE)
-					ConditionError(ps.desc, i+1, "\\else after \\else");
-				conditional_stack_poke(cs, IFSTATE_ELSE_FALSE);
-				break;
-			case META_ENDIF:
-				if (!conditional_stack_pop(cs))
-					ConditionError(ps.desc, i+1, "\\endif without matching \\if");
-				break;
-			default:
-				/* ignore anything else... */
-				break;
+				case META_IF:
+					conditional_stack_push(cs, IFSTATE_FALSE);
+					break;
+				case META_ELIF:
+					if (conditional_stack_empty(cs))
+						ConditionError(ps.desc, i + 1, "\\elif without matching \\if");
+					if (conditional_stack_peek(cs) == IFSTATE_ELSE_FALSE)
+						ConditionError(ps.desc, i + 1, "\\elif after \\else");
+					break;
+				case META_ELSE:
+					if (conditional_stack_empty(cs))
+						ConditionError(ps.desc, i + 1, "\\else without matching \\if");
+					if (conditional_stack_peek(cs) == IFSTATE_ELSE_FALSE)
+						ConditionError(ps.desc, i + 1, "\\else after \\else");
+					conditional_stack_poke(cs, IFSTATE_ELSE_FALSE);
+					break;
+				case META_ENDIF:
+					if (!conditional_stack_pop(cs))
+						ConditionError(ps.desc, i + 1, "\\endif without matching \\if");
+					break;
+				default:
+					/* ignore anything else... */
+					break;
 			}
 		}
 	}
 	if (!conditional_stack_empty(cs))
-		ConditionError(ps.desc, i+1, "\\if without matching \\endif");
+		ConditionError(ps.desc, i + 1, "\\if without matching \\endif");
 	conditional_stack_destroy(cs);
 }
 
@@ -4679,6 +4812,7 @@ set_random_seed(const char *seed)
 	{
 		/* rely on current time */
 		instr_time	now;
+
 		INSTR_TIME_SET_CURRENT(now);
 		iseed = (unsigned int) INSTR_TIME_GET_MICROSEC(now);
 	}
@@ -4698,7 +4832,8 @@ set_random_seed(const char *seed)
 	else
 	{
 		/* parse seed unsigned int value */
-		char garbage;
+		char		garbage;
+
 		if (sscanf(seed, "%u%c", &iseed, &garbage) != 1)
 		{
 			fprintf(stderr,
@@ -4869,7 +5004,7 @@ main(int argc, char **argv)
 			case 'c':
 				benchmarking_option_set = true;
 				nclients = atoi(optarg);
-				if (nclients <= 0 || nclients > MAXCLIENTS)
+				if (nclients <= 0)
 				{
 					fprintf(stderr, "invalid number of clients: \"%s\"\n",
 							optarg);
@@ -5045,8 +5180,8 @@ main(int argc, char **argv)
 						fprintf(stderr, "invalid rate limit: \"%s\"\n", optarg);
 						exit(1);
 					}
-					/* Invert rate limit into a time offset */
-					throttle_delay = (int64) (1000000.0 / throttle_value);
+					/* Invert rate limit into per-transaction delay in usec */
+					throttle_delay = 1000000.0 / throttle_value;
 				}
 				break;
 			case 'L':
@@ -5170,7 +5305,11 @@ main(int argc, char **argv)
 	if (nthreads > nclients)
 		nthreads = nclients;
 
-	/* compute a per thread delay */
+	/*
+	 * Convert throttle_delay to a per-thread delay time.  Note that this
+	 * might be a fractional number of usec, but that's OK, since it's just
+	 * the center of a Poisson distribution of delays.
+	 */
 	throttle_delay *= nthreads;
 
 	if (argc > optind)
@@ -5307,7 +5446,7 @@ main(int argc, char **argv)
 				if (var->value.type != PGBT_NO_VALUE)
 				{
 					if (!putVariableValue(&state[i], "startup",
-										   var->name, &var->value))
+										  var->name, &var->value))
 						exit(1);
 				}
 				else
@@ -5410,10 +5549,10 @@ main(int argc, char **argv)
 	/* set default seed for hash functions */
 	if (lookupVariable(&state[0], "default_seed") == NULL)
 	{
-		uint64	seed = ((uint64) (random() & 0xFFFF) << 48) |
-					   ((uint64) (random() & 0xFFFF) << 32) |
-					   ((uint64) (random() & 0xFFFF) << 16) |
-					   (uint64) (random() & 0xFFFF);
+		uint64		seed = ((uint64) (random() & 0xFFFF) << 48) |
+		((uint64) (random() & 0xFFFF) << 32) |
+		((uint64) (random() & 0xFFFF) << 16) |
+		(uint64) (random() & 0xFFFF);
 
 		for (i = 0; i < nclients; i++)
 			if (!putVariableInt(&state[i], "startup", "default_seed", (int64) seed))
@@ -5572,6 +5711,7 @@ threadRun(void *arg)
 				end;
 	int			nstate = thread->nstate;
 	int			remains = nstate;	/* number of remaining clients */
+	socket_set *sockets = alloc_socket_set(nstate);
 	int			i;
 
 	/* for reporting progress: */
@@ -5639,14 +5779,16 @@ threadRun(void *arg)
 	/* loop till all clients have terminated */
 	while (remains > 0)
 	{
-		fd_set		input_mask;
-		int			maxsock;	/* max socket number to be waited for */
+		int			nsocks;		/* number of sockets to be waited for */
 		int64		min_usec;
 		int64		now_usec = 0;	/* set this only if needed */
 
-		/* identify which client sockets should be checked for input */
-		FD_ZERO(&input_mask);
-		maxsock = -1;
+		/*
+		 * identify which client sockets should be checked for input, and
+		 * compute the nearest time (if any) at which we need to wake up.
+		 */
+		clear_socket_set(sockets);
+		nsocks = 0;
 		min_usec = PG_INT64_MAX;
 		for (i = 0; i < nstate; i++)
 		{
@@ -5694,9 +5836,7 @@ threadRun(void *arg)
 					goto done;
 				}
 
-				FD_SET(sock, &input_mask);
-				if (maxsock < sock)
-					maxsock = sock;
+				add_socket_to_set(sockets, sock, nsocks++);
 			}
 			else if (st->state != CSTATE_ABORTED &&
 					 st->state != CSTATE_FINISHED)
@@ -5730,35 +5870,29 @@ threadRun(void *arg)
 
 		/*
 		 * If no clients are ready to execute actions, sleep until we receive
-		 * data from the server, or a nap-time specified in the script ends,
-		 * or it's time to print a progress report.  Update input_mask to show
-		 * which client(s) received data.
+		 * data on some client socket or the timeout (if any) elapses.
 		 */
 		if (min_usec > 0)
 		{
-			int			nsocks = 0; /* return from select(2) if called */
+			int			rc = 0;
 
 			if (min_usec != PG_INT64_MAX)
 			{
-				if (maxsock != -1)
+				if (nsocks > 0)
 				{
-					struct timeval timeout;
-
-					timeout.tv_sec = min_usec / 1000000;
-					timeout.tv_usec = min_usec % 1000000;
-					nsocks = select(maxsock + 1, &input_mask, NULL, NULL, &timeout);
+					rc = wait_on_socket_set(sockets, min_usec);
 				}
 				else			/* nothing active, simple sleep */
 				{
 					pg_usleep(min_usec);
 				}
 			}
-			else				/* no explicit delay, select without timeout */
+			else				/* no explicit delay, wait without timeout */
 			{
-				nsocks = select(maxsock + 1, &input_mask, NULL, NULL, NULL);
+				rc = wait_on_socket_set(sockets, 0);
 			}
 
-			if (nsocks < 0)
+			if (rc < 0)
 			{
 				if (errno == EINTR)
 				{
@@ -5766,19 +5900,20 @@ threadRun(void *arg)
 					continue;
 				}
 				/* must be something wrong */
-				fprintf(stderr, "select() failed: %s\n", strerror(errno));
+				fprintf(stderr, "%s() failed: %s\n", SOCKET_WAIT_METHOD, strerror(errno));
 				goto done;
 			}
 		}
 		else
 		{
-			/* min_usec == 0, i.e. something needs to be executed */
+			/* min_usec <= 0, i.e. something needs to be executed now */
 
-			/* If we didn't call select(), don't try to read any data */
-			FD_ZERO(&input_mask);
+			/* If we didn't wait, don't try to read any data */
+			clear_socket_set(sockets);
 		}
 
 		/* ok, advance the state machine of each connection */
+		nsocks = 0;
 		for (i = 0; i < nstate; i++)
 		{
 			CState	   *st = &state[i];
@@ -5795,7 +5930,7 @@ threadRun(void *arg)
 					goto done;
 				}
 
-				if (!FD_ISSET(sock, &input_mask))
+				if (!socket_has_input(sockets, sock, nsocks++))
 					continue;
 			}
 			else if (st->state == CSTATE_FINISHED ||
@@ -5933,6 +6068,7 @@ done:
 		fclose(thread->logfile);
 		thread->logfile = NULL;
 	}
+	free_socket_set(sockets);
 	return NULL;
 }
 
@@ -5991,7 +6127,184 @@ setalarm(int seconds)
 	}
 }
 
+#endif							/* WIN32 */
+
+
+/*
+ * These functions provide an abstraction layer that hides the syscall
+ * we use to wait for input on a set of sockets.
+ *
+ * Currently there are two implementations, based on ppoll(2) and select(2).
+ * ppoll() is preferred where available due to its typically higher ceiling
+ * on the number of usable sockets.  We do not use the more-widely-available
+ * poll(2) because it only offers millisecond timeout resolution, which could
+ * be problematic with high --rate settings.
+ *
+ * Function APIs:
+ *
+ * alloc_socket_set: allocate an empty socket set with room for up to
+ *		"count" sockets.
+ *
+ * free_socket_set: deallocate a socket set.
+ *
+ * clear_socket_set: reset a socket set to empty.
+ *
+ * add_socket_to_set: add socket with indicated FD to slot "idx" in the
+ *		socket set.  Slots must be filled in order, starting with 0.
+ *
+ * wait_on_socket_set: wait for input on any socket in set, or for timeout
+ *		to expire.  timeout is measured in microseconds; 0 means wait forever.
+ *		Returns result code of underlying syscall (>=0 if OK, else see errno).
+ *
+ * socket_has_input: after waiting, call this to see if given socket has
+ *		input.  fd and idx parameters should match some previous call to
+ *		add_socket_to_set.
+ *
+ * Note that wait_on_socket_set destructively modifies the state of the
+ * socket set.  After checking for input, caller must apply clear_socket_set
+ * and add_socket_to_set again before waiting again.
+ */
+
+#ifdef POLL_USING_PPOLL
+
+static socket_set *
+alloc_socket_set(int count)
+{
+	socket_set *sa;
+
+	sa = (socket_set *) pg_malloc0(offsetof(socket_set, pollfds) +
+								   sizeof(struct pollfd) * count);
+	sa->maxfds = count;
+	sa->curfds = 0;
+	return sa;
+}
+
+static void
+free_socket_set(socket_set *sa)
+{
+	pg_free(sa);
+}
+
+static void
+clear_socket_set(socket_set *sa)
+{
+	sa->curfds = 0;
+}
+
+static void
+add_socket_to_set(socket_set *sa, int fd, int idx)
+{
+	Assert(idx < sa->maxfds && idx == sa->curfds);
+	sa->pollfds[idx].fd = fd;
+	sa->pollfds[idx].events = POLLIN;
+	sa->pollfds[idx].revents = 0;
+	sa->curfds++;
+}
+
+static int
+wait_on_socket_set(socket_set *sa, int64 usecs)
+{
+	if (usecs > 0)
+	{
+		struct timespec timeout;
+
+		timeout.tv_sec = usecs / 1000000;
+		timeout.tv_nsec = (usecs % 1000000) * 1000;
+		return ppoll(sa->pollfds, sa->curfds, &timeout, NULL);
+	}
+	else
+	{
+		return ppoll(sa->pollfds, sa->curfds, NULL, NULL);
+	}
+}
+
+static bool
+socket_has_input(socket_set *sa, int fd, int idx)
+{
+	/*
+	 * In some cases, threadRun will apply clear_socket_set and then try to
+	 * apply socket_has_input anyway with arguments that it used before that,
+	 * or might've used before that except that it exited its setup loop
+	 * early.  Hence, if the socket set is empty, silently return false
+	 * regardless of the parameters.  If it's not empty, we can Assert that
+	 * the parameters match a previous call.
+	 */
+	if (sa->curfds == 0)
+		return false;
+
+	Assert(idx < sa->curfds && sa->pollfds[idx].fd == fd);
+	return (sa->pollfds[idx].revents & POLLIN) != 0;
+}
+
+#endif							/* POLL_USING_PPOLL */
+
+#ifdef POLL_USING_SELECT
+
+static socket_set *
+alloc_socket_set(int count)
+{
+	return (socket_set *) pg_malloc0(sizeof(socket_set));
+}
+
+static void
+free_socket_set(socket_set *sa)
+{
+	pg_free(sa);
+}
+
+static void
+clear_socket_set(socket_set *sa)
+{
+	FD_ZERO(&sa->fds);
+	sa->maxfd = -1;
+}
+
+static void
+add_socket_to_set(socket_set *sa, int fd, int idx)
+{
+	if (fd < 0 || fd >= FD_SETSIZE)
+	{
+		/*
+		 * Doing a hard exit here is a bit grotty, but it doesn't seem worth
+		 * complicating the API to make it less grotty.
+		 */
+		fprintf(stderr, "too many client connections for select()\n");
+		exit(1);
+	}
+	FD_SET(fd, &sa->fds);
+	if (fd > sa->maxfd)
+		sa->maxfd = fd;
+}
+
+static int
+wait_on_socket_set(socket_set *sa, int64 usecs)
+{
+	if (usecs > 0)
+	{
+		struct timeval timeout;
+
+		timeout.tv_sec = usecs / 1000000;
+		timeout.tv_usec = usecs % 1000000;
+		return select(sa->maxfd + 1, &sa->fds, NULL, NULL, &timeout);
+	}
+	else
+	{
+		return select(sa->maxfd + 1, &sa->fds, NULL, NULL, NULL);
+	}
+}
+
+static bool
+socket_has_input(socket_set *sa, int fd, int idx)
+{
+	return (FD_ISSET(fd, &sa->fds) != 0);
+}
+
+#endif							/* POLL_USING_SELECT */
+
+
 /* partial pthread implementation for Windows */
+
+#ifdef WIN32
 
 typedef struct win32_pthread
 {

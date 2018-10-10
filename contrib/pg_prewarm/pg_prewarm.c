@@ -16,7 +16,6 @@
 #include <unistd.h>
 
 #include "access/heapam.h"
-#include "catalog/catalog.h"
 #include "fmgr.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
@@ -37,7 +36,7 @@ typedef enum
 	PREWARM_BUFFER
 } PrewarmType;
 
-static char blockbuffer[BLCKSZ];
+static PGAlignedBlock blockbuffer;
 
 /*
  * pg_prewarm(regclass, mode text, fork text,
@@ -179,7 +178,7 @@ pg_prewarm(PG_FUNCTION_ARGS)
 		for (block = first_block; block <= last_block; ++block)
 		{
 			CHECK_FOR_INTERRUPTS();
-			smgrread(rel->rd_smgr, forkNumber, block, blockbuffer);
+			smgrread(rel->rd_smgr, forkNumber, block, blockbuffer.data);
 			++blocks_done;
 		}
 	}

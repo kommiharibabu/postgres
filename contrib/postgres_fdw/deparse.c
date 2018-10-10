@@ -125,7 +125,7 @@ static char *deparse_type_name(Oid type_oid, int32 typemod);
  * Functions to construct string representation of a node tree.
  */
 static void deparseTargetList(StringInfo buf,
-				  PlannerInfo *root,
+				  RangeTblEntry *rte,
 				  Index rtindex,
 				  Relation rel,
 				  bool is_returning,
@@ -137,13 +137,14 @@ static void deparseExplicitTargetList(List *tlist,
 						  List **retrieved_attrs,
 						  deparse_expr_cxt *context);
 static void deparseSubqueryTargetList(deparse_expr_cxt *context);
-static void deparseReturningList(StringInfo buf, PlannerInfo *root,
+static void deparseReturningList(StringInfo buf, RangeTblEntry *rte,
 					 Index rtindex, Relation rel,
 					 bool trig_after_row,
+					 List *withCheckOptionList,
 					 List *returningList,
 					 List **retrieved_attrs);
 static void deparseColumnRef(StringInfo buf, int varno, int varattno,
-				 PlannerInfo *root, bool qualify_col);
+				 RangeTblEntry *rte, bool qualify_col);
 static void deparseRelation(StringInfo buf, Relation rel);
 static void deparseExpr(Expr *expr, deparse_expr_cxt *context);
 static void deparseVar(Var *node, deparse_expr_cxt *context);
@@ -1050,7 +1051,7 @@ deparseSelectSql(List *tlist, bool is_subquery, List **retrieved_attrs,
 		 */
 		Relation	rel = heap_open(rte->relid, NoLock);
 
-		deparseTargetList(buf, root, foreignrel->relid, rel, false,
+		deparseTargetList(buf, rte, foreignrel->relid, rel, false,
 						  fpinfo->attrs_used, false, retrieved_attrs);
 		heap_close(rel, NoLock);
 	}
@@ -1076,7 +1077,7 @@ deparseFromExpr(List *quals, deparse_expr_cxt *context)
 	/* Construct FROM clause */
 	appendStringInfoString(buf, " FROM ");
 	deparseFromExprForRel(buf, context->root, scanrel,
-						  (bms_num_members(scanrel->relids) > 1),
+						  (bms_membership(scanrel->relids) == BMS_MULTIPLE),
 						  (Index) 0, NULL, context->params_list);
 
 	/* Construct WHERE clause */
@@ -1099,7 +1100,7 @@ deparseFromExpr(List *quals, deparse_expr_cxt *context)
  */
 static void
 deparseTargetList(StringInfo buf,
-				  PlannerInfo *root,
+				  RangeTblEntry *rte,
 				  Index rtindex,
 				  Relation rel,
 				  bool is_returning,
@@ -1137,7 +1138,7 @@ deparseTargetList(StringInfo buf,
 				appendStringInfoString(buf, " RETURNING ");
 			first = false;
 
-			deparseColumnRef(buf, rtindex, i, root, qualify_col);
+			deparseColumnRef(buf, rtindex, i, rte, qualify_col);
 
 			*retrieved_attrs = lappend_int(*retrieved_attrs, i);
 		}
@@ -1262,7 +1263,7 @@ deparseLockingClause(deparse_expr_cxt *context)
 				}
 
 				/* Add the relation alias if we are here for a join relation */
-				if (bms_num_members(rel->relids) > 1 &&
+				if (bms_membership(rel->relids) == BMS_MULTIPLE &&
 					rc->strength != LCS_NONE)
 					appendStringInfo(buf, " OF %s%d", REL_ALIAS_PREFIX, relid);
 			}
@@ -1645,14 +1646,15 @@ deparseRangeTblRef(StringInfo buf, PlannerInfo *root, RelOptInfo *foreignrel,
  * deparse remote INSERT statement
  *
  * The statement text is appended to buf, and we also create an integer List
- * of the columns being retrieved by RETURNING (if any), which is returned
- * to *retrieved_attrs.
+ * of the columns being retrieved by WITH CHECK OPTION or RETURNING (if any),
+ * which is returned to *retrieved_attrs.
  */
 void
-deparseInsertSql(StringInfo buf, PlannerInfo *root,
+deparseInsertSql(StringInfo buf, RangeTblEntry *rte,
 				 Index rtindex, Relation rel,
 				 List *targetAttrs, bool doNothing,
-				 List *returningList, List **retrieved_attrs)
+				 List *withCheckOptionList, List *returningList,
+				 List **retrieved_attrs)
 {
 	AttrNumber	pindex;
 	bool		first;
@@ -1674,7 +1676,7 @@ deparseInsertSql(StringInfo buf, PlannerInfo *root,
 				appendStringInfoString(buf, ", ");
 			first = false;
 
-			deparseColumnRef(buf, rtindex, attnum, root, false);
+			deparseColumnRef(buf, rtindex, attnum, rte, false);
 		}
 
 		appendStringInfoString(buf, ") VALUES (");
@@ -1699,22 +1701,23 @@ deparseInsertSql(StringInfo buf, PlannerInfo *root,
 	if (doNothing)
 		appendStringInfoString(buf, " ON CONFLICT DO NOTHING");
 
-	deparseReturningList(buf, root, rtindex, rel,
+	deparseReturningList(buf, rte, rtindex, rel,
 						 rel->trigdesc && rel->trigdesc->trig_insert_after_row,
-						 returningList, retrieved_attrs);
+						 withCheckOptionList, returningList, retrieved_attrs);
 }
 
 /*
  * deparse remote UPDATE statement
  *
  * The statement text is appended to buf, and we also create an integer List
- * of the columns being retrieved by RETURNING (if any), which is returned
- * to *retrieved_attrs.
+ * of the columns being retrieved by WITH CHECK OPTION or RETURNING (if any),
+ * which is returned to *retrieved_attrs.
  */
 void
-deparseUpdateSql(StringInfo buf, PlannerInfo *root,
+deparseUpdateSql(StringInfo buf, RangeTblEntry *rte,
 				 Index rtindex, Relation rel,
-				 List *targetAttrs, List *returningList,
+				 List *targetAttrs,
+				 List *withCheckOptionList, List *returningList,
 				 List **retrieved_attrs)
 {
 	AttrNumber	pindex;
@@ -1735,15 +1738,15 @@ deparseUpdateSql(StringInfo buf, PlannerInfo *root,
 			appendStringInfoString(buf, ", ");
 		first = false;
 
-		deparseColumnRef(buf, rtindex, attnum, root, false);
+		deparseColumnRef(buf, rtindex, attnum, rte, false);
 		appendStringInfo(buf, " = $%d", pindex);
 		pindex++;
 	}
 	appendStringInfoString(buf, " WHERE ctid = $1");
 
-	deparseReturningList(buf, root, rtindex, rel,
+	deparseReturningList(buf, rte, rtindex, rel,
 						 rel->trigdesc && rel->trigdesc->trig_update_after_row,
-						 returningList, retrieved_attrs);
+						 withCheckOptionList, returningList, retrieved_attrs);
 }
 
 /*
@@ -1777,6 +1780,7 @@ deparseDirectUpdateSql(StringInfo buf, PlannerInfo *root,
 	int			nestlevel;
 	bool		first;
 	ListCell   *lc;
+	RangeTblEntry *rte = planner_rt_fetch(rtindex, root);
 
 	/* Set up context struct for recursion */
 	context.root = root;
@@ -1808,7 +1812,7 @@ deparseDirectUpdateSql(StringInfo buf, PlannerInfo *root,
 			appendStringInfoString(buf, ", ");
 		first = false;
 
-		deparseColumnRef(buf, rtindex, attnum, root, false);
+		deparseColumnRef(buf, rtindex, attnum, rte, false);
 		appendStringInfoString(buf, " = ");
 		deparseExpr((Expr *) tle->expr, &context);
 	}
@@ -1835,8 +1839,8 @@ deparseDirectUpdateSql(StringInfo buf, PlannerInfo *root,
 		deparseExplicitTargetList(returningList, true, retrieved_attrs,
 								  &context);
 	else
-		deparseReturningList(buf, root, rtindex, rel, false,
-							 returningList, retrieved_attrs);
+		deparseReturningList(buf, rte, rtindex, rel, false,
+							 NIL, returningList, retrieved_attrs);
 }
 
 /*
@@ -1847,7 +1851,7 @@ deparseDirectUpdateSql(StringInfo buf, PlannerInfo *root,
  * to *retrieved_attrs.
  */
 void
-deparseDeleteSql(StringInfo buf, PlannerInfo *root,
+deparseDeleteSql(StringInfo buf, RangeTblEntry *rte,
 				 Index rtindex, Relation rel,
 				 List *returningList,
 				 List **retrieved_attrs)
@@ -1856,9 +1860,9 @@ deparseDeleteSql(StringInfo buf, PlannerInfo *root,
 	deparseRelation(buf, rel);
 	appendStringInfoString(buf, " WHERE ctid = $1");
 
-	deparseReturningList(buf, root, rtindex, rel,
+	deparseReturningList(buf, rte, rtindex, rel,
 						 rel->trigdesc && rel->trigdesc->trig_delete_after_row,
-						 returningList, retrieved_attrs);
+						 NIL, returningList, retrieved_attrs);
 }
 
 /*
@@ -1918,17 +1922,19 @@ deparseDirectDeleteSql(StringInfo buf, PlannerInfo *root,
 		deparseExplicitTargetList(returningList, true, retrieved_attrs,
 								  &context);
 	else
-		deparseReturningList(buf, root, rtindex, rel, false,
-							 returningList, retrieved_attrs);
+		deparseReturningList(buf, planner_rt_fetch(rtindex, root),
+							 rtindex, rel, false,
+							 NIL, returningList, retrieved_attrs);
 }
 
 /*
  * Add a RETURNING clause, if needed, to an INSERT/UPDATE/DELETE.
  */
 static void
-deparseReturningList(StringInfo buf, PlannerInfo *root,
+deparseReturningList(StringInfo buf, RangeTblEntry *rte,
 					 Index rtindex, Relation rel,
 					 bool trig_after_row,
+					 List *withCheckOptionList,
 					 List *returningList,
 					 List **retrieved_attrs)
 {
@@ -1939,6 +1945,21 @@ deparseReturningList(StringInfo buf, PlannerInfo *root,
 		/* whole-row reference acquires all non-system columns */
 		attrs_used =
 			bms_make_singleton(0 - FirstLowInvalidHeapAttributeNumber);
+	}
+
+	if (withCheckOptionList != NIL)
+	{
+		/*
+		 * We need the attrs, non-system and system, mentioned in the local
+		 * query's WITH CHECK OPTION list.
+		 *
+		 * Note: we do this to ensure that WCO constraints will be evaluated
+		 * on the data actually inserted/updated on the remote side, which
+		 * might differ from the data supplied by the core code, for example
+		 * as a result of remote triggers.
+		 */
+		pull_varattnos((Node *) withCheckOptionList, rtindex,
+					   &attrs_used);
 	}
 
 	if (returningList != NIL)
@@ -1952,7 +1973,7 @@ deparseReturningList(StringInfo buf, PlannerInfo *root,
 	}
 
 	if (attrs_used != NULL)
-		deparseTargetList(buf, root, rtindex, rel, true, attrs_used, false,
+		deparseTargetList(buf, rte, rtindex, rel, true, attrs_used, false,
 						  retrieved_attrs);
 	else
 		*retrieved_attrs = NIL;
@@ -2048,11 +2069,9 @@ deparseAnalyzeSql(StringInfo buf, Relation rel, List **retrieved_attrs)
  * If qualify_col is true, qualify column name with the alias of relation.
  */
 static void
-deparseColumnRef(StringInfo buf, int varno, int varattno, PlannerInfo *root,
+deparseColumnRef(StringInfo buf, int varno, int varattno, RangeTblEntry *rte,
 				 bool qualify_col)
 {
-	RangeTblEntry *rte;
-
 	/* We support fetching the remote side's CTID and OID. */
 	if (varattno == SelfItemPointerAttributeNumber)
 	{
@@ -2077,10 +2096,7 @@ deparseColumnRef(StringInfo buf, int varno, int varattno, PlannerInfo *root,
 		Oid			fetchval = 0;
 
 		if (varattno == TableOidAttributeNumber)
-		{
-			rte = planner_rt_fetch(varno, root);
 			fetchval = rte->relid;
-		}
 
 		if (qualify_col)
 		{
@@ -2099,9 +2115,6 @@ deparseColumnRef(StringInfo buf, int varno, int varattno, PlannerInfo *root,
 
 		/* Required only to be passed down to deparseTargetList(). */
 		List	   *retrieved_attrs;
-
-		/* Get RangeTblEntry from array in PlannerInfo. */
-		rte = planner_rt_fetch(varno, root);
 
 		/*
 		 * The lock on the relation will be held by upper callers, so it's
@@ -2134,7 +2147,7 @@ deparseColumnRef(StringInfo buf, int varno, int varattno, PlannerInfo *root,
 		}
 
 		appendStringInfoString(buf, "ROW(");
-		deparseTargetList(buf, root, varno, rel, false, attrs_used, qualify_col,
+		deparseTargetList(buf, rte, varno, rel, false, attrs_used, qualify_col,
 						  &retrieved_attrs);
 		appendStringInfoChar(buf, ')');
 
@@ -2153,9 +2166,6 @@ deparseColumnRef(StringInfo buf, int varno, int varattno, PlannerInfo *root,
 
 		/* varno must not be any of OUTER_VAR, INNER_VAR and INDEX_VAR. */
 		Assert(!IS_SPECIAL_VARNO(varno));
-
-		/* Get RangeTblEntry from array in PlannerInfo. */
-		rte = planner_rt_fetch(varno, root);
 
 		/*
 		 * If it's a column of a foreign table, and it has the column_name FDW
@@ -2337,7 +2347,7 @@ deparseVar(Var *node, deparse_expr_cxt *context)
 	int			colno;
 
 	/* Qualify columns when multiple relations are involved. */
-	bool		qualify_col = (bms_num_members(relids) > 1);
+	bool		qualify_col = (bms_membership(relids) == BMS_MULTIPLE);
 
 	/*
 	 * If the Var belongs to the foreign relation that is deparsed as a
@@ -2354,7 +2364,8 @@ deparseVar(Var *node, deparse_expr_cxt *context)
 
 	if (bms_is_member(node->varno, relids) && node->varlevelsup == 0)
 		deparseColumnRef(context->buf, node->varno, node->varattno,
-						 context->root, qualify_col);
+						 planner_rt_fetch(node->varno, context->root),
+						 qualify_col);
 	else
 	{
 		/* Treat like a Param */

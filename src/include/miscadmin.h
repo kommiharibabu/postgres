@@ -77,13 +77,13 @@
 
 /* in globals.c */
 /* these are marked volatile because they are set by signal handlers: */
-extern PGDLLIMPORT volatile bool InterruptPending;
-extern PGDLLIMPORT volatile bool QueryCancelPending;
-extern PGDLLIMPORT volatile bool ProcDiePending;
-extern PGDLLIMPORT volatile bool IdleInTransactionSessionTimeoutPending;
+extern PGDLLIMPORT volatile sig_atomic_t InterruptPending;
+extern PGDLLIMPORT volatile sig_atomic_t QueryCancelPending;
+extern PGDLLIMPORT volatile sig_atomic_t ProcDiePending;
+extern PGDLLIMPORT volatile sig_atomic_t IdleInTransactionSessionTimeoutPending;
 extern PGDLLIMPORT volatile sig_atomic_t ConfigReloadPending;
 
-extern volatile bool ClientConnectionLost;
+extern PGDLLIMPORT volatile sig_atomic_t ClientConnectionLost;
 
 /* these are marked volatile because they are examined by signal handlers: */
 extern PGDLLIMPORT volatile uint32 InterruptHoldoffCount;
@@ -153,6 +153,7 @@ extern PGDLLIMPORT bool IsBinaryUpgrade;
 extern PGDLLIMPORT bool ExitOnAnyError;
 
 extern PGDLLIMPORT char *DataDir;
+extern PGDLLIMPORT int data_directory_mode;
 
 extern PGDLLIMPORT int NBuffers;
 extern PGDLLIMPORT int MaxBackends;
@@ -323,6 +324,7 @@ extern void SetSessionAuthorization(Oid userid, bool is_superuser);
 extern Oid	GetCurrentRoleId(void);
 extern void SetCurrentRoleId(Oid roleid, bool is_superuser);
 
+extern void checkDataDir(void);
 extern void SetDataDir(const char *dir);
 extern void ChangeToDataDir(void);
 

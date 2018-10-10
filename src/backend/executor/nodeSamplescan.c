@@ -63,10 +63,9 @@ SampleNext(SampleScanState *node)
 	slot = node->ss.ss_ScanTupleSlot;
 
 	if (tuple)
-		ExecStoreTuple(tuple,	/* tuple to store */
-					   slot,	/* slot to store in */
-					   node->ss.ss_currentScanDesc->rs_cbuf,	/* tuple's buffer */
-					   false);	/* don't pfree this pointer */
+		ExecStoreBufferHeapTuple(tuple, /* tuple to store */
+								 slot,	/* slot to store in */
+								 node->ss.ss_currentScanDesc->rs_cbuf); /* tuple's buffer */
 	else
 		ExecClearTuple(slot);
 
@@ -135,10 +134,7 @@ ExecInitSampleScan(SampleScan *node, EState *estate, int eflags)
 	ExecAssignExprContext(estate, &scanstate->ss.ps);
 
 	/*
-	 * Initialize scan relation.
-	 *
-	 * Get the relation object id from the relid'th entry in the range table,
-	 * open that relation and acquire appropriate lock on it.
+	 * open the scan relation
 	 */
 	scanstate->ss.ss_currentRelation =
 		ExecOpenScanRelation(estate,
@@ -153,8 +149,8 @@ ExecInitSampleScan(SampleScan *node, EState *estate, int eflags)
 						  RelationGetDescr(scanstate->ss.ss_currentRelation));
 
 	/*
-	 * Initialize result slot, type and projection.
-	 * tuple table and result tuple initialization
+	 * Initialize result slot, type and projection. tuple table and result
+	 * tuple initialization
 	 */
 	ExecInitResultTupleSlotTL(estate, &scanstate->ss.ps);
 	ExecAssignScanProjectionInfo(&scanstate->ss);
@@ -223,11 +219,6 @@ ExecEndSampleScan(SampleScanState *node)
 	 */
 	if (node->ss.ss_currentScanDesc)
 		heap_endscan(node->ss.ss_currentScanDesc);
-
-	/*
-	 * close the heap relation.
-	 */
-	ExecCloseScanRelation(node->ss.ss_currentRelation);
 }
 
 /* ----------------------------------------------------------------

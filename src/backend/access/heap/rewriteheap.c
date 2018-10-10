@@ -424,6 +424,7 @@ rewrite_heap_tuple(RewriteState state,
 	 */
 	if (!((old_tuple->t_data->t_infomask & HEAP_XMAX_INVALID) ||
 		  HeapTupleHeaderIsOnlyLocked(old_tuple->t_data)) &&
+		!HeapTupleHeaderIndicatesMovedPartitions(old_tuple->t_data) &&
 		!(ItemPointerEquals(&(old_tuple->t_self),
 							&(old_tuple->t_data->t_ctid))))
 	{
@@ -1165,11 +1166,17 @@ heap_xlog_logical_rewrite(XLogReaderState *r)
 	len = xlrec->num_mappings * sizeof(LogicalRewriteMappingData);
 
 	/* write out tail end of mapping file (again) */
+	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_LOGICAL_REWRITE_MAPPING_WRITE);
 	if (write(fd, data, len) != len)
+	{
+		/* if write didn't set errno, assume problem is no disk space */
+		if (errno == 0)
+			errno = ENOSPC;
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not write to file \"%s\": %m", path)));
+	}
 	pgstat_report_wait_end();
 
 	/*

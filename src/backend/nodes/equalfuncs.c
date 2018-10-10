@@ -812,18 +812,6 @@ _equalOnConflictExpr(const OnConflictExpr *a, const OnConflictExpr *b)
 	return true;
 }
 
-
-static bool
-_equalMergeAction(const MergeAction *a, const MergeAction *b)
-{
-	COMPARE_SCALAR_FIELD(matched);
-	COMPARE_SCALAR_FIELD(commandType);
-	COMPARE_SCALAR_FIELD(override);
-	COMPARE_NODE_FIELD(qual);
-	COMPARE_NODE_FIELD(targetList);
-
-	return true;
-}
 /*
  * Stuff from relation.h
  */
@@ -916,16 +904,6 @@ _equalAppendRelInfo(const AppendRelInfo *a, const AppendRelInfo *b)
 }
 
 static bool
-_equalPartitionedChildRelInfo(const PartitionedChildRelInfo *a, const PartitionedChildRelInfo *b)
-{
-	COMPARE_SCALAR_FIELD(parent_relid);
-	COMPARE_NODE_FIELD(child_rels);
-	COMPARE_SCALAR_FIELD(part_cols_updated);
-
-	return true;
-}
-
-static bool
 _equalPlaceHolderInfo(const PlaceHolderInfo *a, const PlaceHolderInfo *b)
 {
 	COMPARE_SCALAR_FIELD(phid);
@@ -999,8 +977,6 @@ _equalQuery(const Query *a, const Query *b)
 	COMPARE_NODE_FIELD(setOperations);
 	COMPARE_NODE_FIELD(constraintDeps);
 	COMPARE_NODE_FIELD(withCheckOptions);
-	COMPARE_NODE_FIELD(mergeSourceTargetList);
-	COMPARE_NODE_FIELD(mergeActionList);
 	COMPARE_LOCATION_FIELD(stmt_location);
 	COMPARE_LOCATION_FIELD(stmt_len);
 
@@ -1052,32 +1028,6 @@ _equalUpdateStmt(const UpdateStmt *a, const UpdateStmt *b)
 	COMPARE_NODE_FIELD(fromClause);
 	COMPARE_NODE_FIELD(returningList);
 	COMPARE_NODE_FIELD(withClause);
-
-	return true;
-}
-
-static bool
-_equalMergeStmt(const MergeStmt *a, const MergeStmt *b)
-{
-	COMPARE_NODE_FIELD(relation);
-	COMPARE_NODE_FIELD(source_relation);
-	COMPARE_NODE_FIELD(join_condition);
-	COMPARE_NODE_FIELD(mergeWhenClauses);
-	COMPARE_NODE_FIELD(withClause);
-
-	return true;
-}
-
-static bool
-_equalMergeWhenClause(const MergeWhenClause *a, const MergeWhenClause *b)
-{
-	COMPARE_SCALAR_FIELD(matched);
-	COMPARE_SCALAR_FIELD(commandType);
-	COMPARE_NODE_FIELD(condition);
-	COMPARE_NODE_FIELD(targetList);
-	COMPARE_NODE_FIELD(cols);
-	COMPARE_NODE_FIELD(values);
-	COMPARE_SCALAR_FIELD(override);
 
 	return true;
 }
@@ -1256,7 +1206,7 @@ _equalClusterStmt(const ClusterStmt *a, const ClusterStmt *b)
 {
 	COMPARE_NODE_FIELD(relation);
 	COMPARE_STRING_FIELD(indexname);
-	COMPARE_SCALAR_FIELD(verbose);
+	COMPARE_SCALAR_FIELD(options);
 
 	return true;
 }
@@ -1378,6 +1328,7 @@ _equalIndexStmt(const IndexStmt *a, const IndexStmt *b)
 	COMPARE_STRING_FIELD(accessMethod);
 	COMPARE_STRING_FIELD(tableSpace);
 	COMPARE_NODE_FIELD(indexParams);
+	COMPARE_NODE_FIELD(indexIncludingParams);
 	COMPARE_NODE_FIELD(options);
 	COMPARE_NODE_FIELD(whereClause);
 	COMPARE_NODE_FIELD(excludeOpNames);
@@ -2630,6 +2581,7 @@ _equalConstraint(const Constraint *a, const Constraint *b)
 	COMPARE_STRING_FIELD(cooked_expr);
 	COMPARE_SCALAR_FIELD(generated_when);
 	COMPARE_NODE_FIELD(keys);
+	COMPARE_NODE_FIELD(including);
 	COMPARE_NODE_FIELD(exclusions);
 	COMPARE_NODE_FIELD(options);
 	COMPARE_STRING_FIELD(indexname);
@@ -2678,6 +2630,7 @@ _equalRangeTblEntry(const RangeTblEntry *a, const RangeTblEntry *b)
 	COMPARE_SCALAR_FIELD(rtekind);
 	COMPARE_SCALAR_FIELD(relid);
 	COMPARE_SCALAR_FIELD(relkind);
+	COMPARE_SCALAR_FIELD(rellockmode);
 	COMPARE_NODE_FIELD(tablesample);
 	COMPARE_NODE_FIELD(subquery);
 	COMPARE_SCALAR_FIELD(security_barrier);
@@ -3205,9 +3158,6 @@ equal(const void *a, const void *b)
 		case T_OnConflictExpr:
 			retval = _equalOnConflictExpr(a, b);
 			break;
-		case T_MergeAction:
-			retval = _equalMergeAction(a, b);
-			break;
 		case T_JoinExpr:
 			retval = _equalJoinExpr(a, b);
 			break;
@@ -3229,9 +3179,6 @@ equal(const void *a, const void *b)
 			break;
 		case T_AppendRelInfo:
 			retval = _equalAppendRelInfo(a, b);
-			break;
-		case T_PartitionedChildRelInfo:
-			retval = _equalPartitionedChildRelInfo(a, b);
 			break;
 		case T_PlaceHolderInfo:
 			retval = _equalPlaceHolderInfo(a, b);
@@ -3275,12 +3222,6 @@ equal(const void *a, const void *b)
 			break;
 		case T_UpdateStmt:
 			retval = _equalUpdateStmt(a, b);
-			break;
-		case T_MergeStmt:
-			retval = _equalMergeStmt(a, b);
-			break;
-		case T_MergeWhenClause:
-			retval = _equalMergeWhenClause(a, b);
 			break;
 		case T_SelectStmt:
 			retval = _equalSelectStmt(a, b);

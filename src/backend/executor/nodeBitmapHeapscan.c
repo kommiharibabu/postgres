@@ -340,10 +340,9 @@ BitmapHeapNext(BitmapHeapScanState *node)
 			 * Set up the result slot to point to this tuple.  Note that the
 			 * slot acquires a pin on the buffer.
 			 */
-			ExecStoreTuple(&scan->rs_ctup,
-						   slot,
-						   scan->rs_cbuf,
-						   false);
+			ExecStoreBufferHeapTuple(&scan->rs_ctup,
+									 slot,
+									 scan->rs_cbuf);
 
 			/*
 			 * If we are using lossy info, we have to recheck the qual
@@ -786,13 +785,11 @@ ExecReScanBitmapHeapScan(BitmapHeapScanState *node)
 void
 ExecEndBitmapHeapScan(BitmapHeapScanState *node)
 {
-	Relation	relation;
 	HeapScanDesc scanDesc;
 
 	/*
 	 * extract information from the node
 	 */
-	relation = node->ss.ss_currentRelation;
 	scanDesc = node->ss.ss_currentScanDesc;
 
 	/*
@@ -833,11 +830,6 @@ ExecEndBitmapHeapScan(BitmapHeapScanState *node)
 	 * close heap scan
 	 */
 	heap_endscan(scanDesc);
-
-	/*
-	 * close the heap relation.
-	 */
-	ExecCloseScanRelation(relation);
 }
 
 /* ----------------------------------------------------------------
@@ -907,16 +899,12 @@ ExecInitBitmapHeapScan(BitmapHeapScan *node, EState *estate, int eflags)
 	ExecAssignExprContext(estate, &scanstate->ss.ps);
 
 	/*
-	 * open the base relation and acquire appropriate lock on it.
+	 * open the scan relation
 	 */
 	currentRelation = ExecOpenScanRelation(estate, node->scan.scanrelid, eflags);
 
 	/*
 	 * initialize child nodes
-	 *
-	 * We do this after ExecOpenScanRelation because the child nodes will open
-	 * indexscans on our relation's indexes, and we want to be sure we have
-	 * acquired a lock on the relation first.
 	 */
 	outerPlanState(scanstate) = ExecInitNode(outerPlan(node), estate, eflags);
 

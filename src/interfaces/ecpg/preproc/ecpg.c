@@ -149,7 +149,7 @@ main(int argc, char *const argv[])
 		}
 		if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)
 		{
-			printf("ecpg %s\n", PG_VERSION);
+			printf("ecpg (PostgreSQL) %s\n", PG_VERSION);
 			exit(0);
 		}
 	}
@@ -189,8 +189,8 @@ main(int argc, char *const argv[])
 				break;
 			case 'h':
 				header_mode = true;
-				/* this must include "-c" to make sense */
-				/* so do not place a "break;" here */
+				/* this must include "-c" to make sense, so fall through */
+				/* FALLTHROUGH */
 			case 'c':
 				auto_create_c = true;
 				break;
@@ -479,7 +479,8 @@ main(int argc, char *const argv[])
 				}
 			}
 
-			if (output_filename && out_option == 0) {
+			if (output_filename && out_option == 0)
+			{
 				free(output_filename);
 				output_filename = NULL;
 			}

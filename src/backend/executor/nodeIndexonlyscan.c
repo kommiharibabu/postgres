@@ -84,8 +84,8 @@ IndexOnlyNext(IndexOnlyScanState *node)
 	{
 		/*
 		 * We reach here if the index only scan is not parallel, or if we're
-		 * executing a index only scan that was intended to be parallel
-		 * serially.
+		 * serially executing an index only scan that was planned to be
+		 * parallel.
 		 */
 		scandesc = index_beginscan(node->ss.ss_currentRelation,
 								   node->ioss_RelationDesc,
@@ -162,7 +162,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 			/*
 			 * Rats, we have to visit the heap to check visibility.
 			 */
-			node->ioss_HeapFetches++;
+			InstrCountTuples2(node, 1);
 			tuple = index_fetch_heap(scandesc);
 			if (tuple == NULL)
 				continue;		/* no visible tuple, try next index entry */
@@ -199,7 +199,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 			 */
 			Assert(slot->tts_tupleDescriptor->natts ==
 				   scandesc->xs_hitupdesc->natts);
-			ExecStoreTuple(scandesc->xs_hitup, slot, InvalidBuffer, false);
+			ExecStoreHeapTuple(scandesc->xs_hitup, slot, false);
 		}
 		else if (scandesc->xs_itup)
 			StoreIndexTuple(slot, scandesc->xs_itup, scandesc->xs_itupdesc);
@@ -373,14 +373,12 @@ ExecEndIndexOnlyScan(IndexOnlyScanState *node)
 {
 	Relation	indexRelationDesc;
 	IndexScanDesc indexScanDesc;
-	Relation	relation;
 
 	/*
 	 * extract information from the node
 	 */
 	indexRelationDesc = node->ioss_RelationDesc;
 	indexScanDesc = node->ioss_ScanDesc;
-	relation = node->ss.ss_currentRelation;
 
 	/* Release VM buffer pin, if any. */
 	if (node->ioss_VMBuffer != InvalidBuffer)
@@ -411,11 +409,6 @@ ExecEndIndexOnlyScan(IndexOnlyScanState *node)
 		index_endscan(indexScanDesc);
 	if (indexRelationDesc)
 		index_close(indexRelationDesc, NoLock);
-
-	/*
-	 * close the heap relation.
-	 */
-	ExecCloseScanRelation(relation);
 }
 
 /* ----------------------------------------------------------------
@@ -509,7 +502,6 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	indexstate->ss.ps.plan = (Plan *) node;
 	indexstate->ss.ps.state = estate;
 	indexstate->ss.ps.ExecProcNode = ExecIndexOnlyScan;
-	indexstate->ioss_HeapFetches = 0;
 
 	/*
 	 * Miscellaneous initialization
@@ -519,7 +511,7 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	ExecAssignExprContext(estate, &indexstate->ss.ps);
 
 	/*
-	 * open the base relation and acquire appropriate lock on it.
+	 * open the scan relation
 	 */
 	currentRelation = ExecOpenScanRelation(estate, node->scan.scanrelid, eflags);
 

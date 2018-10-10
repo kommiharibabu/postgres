@@ -140,13 +140,15 @@ extern void classifyConditions(PlannerInfo *root,
 extern bool is_foreign_expr(PlannerInfo *root,
 				RelOptInfo *baserel,
 				Expr *expr);
-extern void deparseInsertSql(StringInfo buf, PlannerInfo *root,
+extern void deparseInsertSql(StringInfo buf, RangeTblEntry *rte,
 				 Index rtindex, Relation rel,
-				 List *targetAttrs, bool doNothing, List *returningList,
+				 List *targetAttrs, bool doNothing,
+				 List *withCheckOptionList, List *returningList,
 				 List **retrieved_attrs);
-extern void deparseUpdateSql(StringInfo buf, PlannerInfo *root,
+extern void deparseUpdateSql(StringInfo buf, RangeTblEntry *rte,
 				 Index rtindex, Relation rel,
-				 List *targetAttrs, List *returningList,
+				 List *targetAttrs,
+				 List *withCheckOptionList, List *returningList,
 				 List **retrieved_attrs);
 extern void deparseDirectUpdateSql(StringInfo buf, PlannerInfo *root,
 					   Index rtindex, Relation rel,
@@ -157,7 +159,7 @@ extern void deparseDirectUpdateSql(StringInfo buf, PlannerInfo *root,
 					   List **params_list,
 					   List *returningList,
 					   List **retrieved_attrs);
-extern void deparseDeleteSql(StringInfo buf, PlannerInfo *root,
+extern void deparseDeleteSql(StringInfo buf, RangeTblEntry *rte,
 				 Index rtindex, Relation rel,
 				 List *returningList,
 				 List **retrieved_attrs);

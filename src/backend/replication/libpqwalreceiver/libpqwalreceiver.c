@@ -54,7 +54,7 @@ static WalReceiverConn *libpqrcv_connect(const char *conninfo,
 static void libpqrcv_check_conninfo(const char *conninfo);
 static char *libpqrcv_get_conninfo(WalReceiverConn *conn);
 static void libpqrcv_get_senderinfo(WalReceiverConn *conn,
-					char **sender_host, int *sender_port);
+						char **sender_host, int *sender_port);
 static char *libpqrcv_identify_system(WalReceiverConn *conn,
 						 TimeLineID *primary_tli,
 						 int *server_version);
@@ -128,10 +128,7 @@ libpqrcv_connect(const char *conninfo, bool logical, const char *appname,
 
 	/*
 	 * We use the expand_dbname parameter to process the connection string (or
-	 * URI), and pass some extra options. The deliberately undocumented
-	 * parameter "replication=true" makes it a replication connection. The
-	 * database name is ignored by the server in replication mode, but specify
-	 * "replication" for .pgpass lookup.
+	 * URI), and pass some extra options.
 	 */
 	keys[i] = "dbname";
 	vals[i] = conninfo;
@@ -139,6 +136,10 @@ libpqrcv_connect(const char *conninfo, bool logical, const char *appname,
 	vals[i] = logical ? "database" : "true";
 	if (!logical)
 	{
+		/*
+		 * The database name is ignored by the server in replication mode, but
+		 * specify "replication" for .pgpass lookup.
+		 */
 		keys[++i] = "dbname";
 		vals[i] = "replication";
 	}
@@ -290,9 +291,9 @@ libpqrcv_get_conninfo(WalReceiverConn *conn)
  */
 static void
 libpqrcv_get_senderinfo(WalReceiverConn *conn, char **sender_host,
-					  int *sender_port)
+						int *sender_port)
 {
-	char *ret = NULL;
+	char	   *ret = NULL;
 
 	*sender_host = NULL;
 	*sender_port = 0;
@@ -344,7 +345,7 @@ libpqrcv_identify_system(WalReceiverConn *conn, TimeLineID *primary_tli,
 						   ntuples, nfields, 3, 1)));
 	}
 	primary_sysid = pstrdup(PQgetvalue(res, 0, 0));
-	*primary_tli = pg_atoi(PQgetvalue(res, 0, 1), 4, 0);
+	*primary_tli = pg_strtoint32(PQgetvalue(res, 0, 1));
 	PQclear(res);
 
 	*server_version = PQserverVersion(conn->streamConn);
@@ -479,7 +480,7 @@ libpqrcv_endstreaming(WalReceiverConn *conn, TimeLineID *next_tli)
 		if (PQnfields(res) < 2 || PQntuples(res) != 1)
 			ereport(ERROR,
 					(errmsg("unexpected result set after end-of-streaming")));
-		*next_tli = pg_atoi(PQgetvalue(res, 0, 0), sizeof(uint32), 0);
+		*next_tli = pg_strtoint32(PQgetvalue(res, 0, 0));
 		PQclear(res);
 
 		/* the result set should be followed by CommandComplete */

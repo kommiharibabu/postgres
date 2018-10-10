@@ -1007,7 +1007,7 @@ create rule r3 as on delete to rules_src do notify rules_src_deletion;
 \d+ rules_src
 
 --
--- Ensure a aliased target relation for insert is correctly deparsed.
+-- Ensure an aliased target relation for insert is correctly deparsed.
 --
 create rule r4 as on insert to rules_src do instead insert into rules_log AS trgt SELECT NEW.* RETURNING trgt.f1, trgt.f2;
 create rule r5 as on update to rules_src do instead UPDATE rules_log AS trgt SET tag = 'updated' WHERE trgt.f1 = new.f1;
@@ -1164,7 +1164,7 @@ CREATE FUNCTION func_with_set_params() RETURNS integer
     SET extra_float_digits TO 2
     SET work_mem TO '4MB'
     SET datestyle to iso, mdy
-    SET local_preload_libraries TO "Mixed/Case", 'c:/"a"/path'
+    SET local_preload_libraries TO "Mixed/Case", 'c:/''a"/path', '', '0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789'
     IMMUTABLE STRICT;
 SELECT pg_get_functiondef('func_with_set_params()'::regprocedure);
 
@@ -1190,39 +1190,6 @@ CREATE RULE rules_parted_table_insert AS ON INSERT to rules_parted_table
     DO INSTEAD INSERT INTO rules_parted_table_1 VALUES (NEW.*);
 ALTER RULE rules_parted_table_insert ON rules_parted_table RENAME TO rules_parted_table_insert_redirect;
 DROP TABLE rules_parted_table;
-
---
--- test MERGE
---
-CREATE TABLE rule_merge1 (a int, b text);
-CREATE TABLE rule_merge2 (a int, b text);
-CREATE RULE rule1 AS ON INSERT TO rule_merge1
-	DO INSTEAD INSERT INTO rule_merge2 VALUES (NEW.*);
-CREATE RULE rule2 AS ON UPDATE TO rule_merge1
-	DO INSTEAD UPDATE rule_merge2 SET a = NEW.a, b = NEW.b
-	WHERE a = OLD.a;
-CREATE RULE rule3 AS ON DELETE TO rule_merge1
-	DO INSTEAD DELETE FROM rule_merge2 WHERE a = OLD.a;
-
--- MERGE not supported for table with rules
-MERGE INTO rule_merge1 t USING (SELECT 1 AS a) s
-	ON t.a = s.a
-	WHEN MATCHED AND t.a < 2 THEN
-		UPDATE SET b = b || ' updated by merge'
-	WHEN MATCHED AND t.a > 2 THEN
-		DELETE
-	WHEN NOT MATCHED THEN
-		INSERT VALUES (s.a, '');
-
--- should be ok with the other table though
-MERGE INTO rule_merge2 t USING (SELECT 1 AS a) s
-	ON t.a = s.a
-	WHEN MATCHED AND t.a < 2 THEN
-		UPDATE SET b = b || ' updated by merge'
-	WHEN MATCHED AND t.a > 2 THEN
-		DELETE
-	WHEN NOT MATCHED THEN
-		INSERT VALUES (s.a, '');
 
 --
 -- Test enabling/disabling

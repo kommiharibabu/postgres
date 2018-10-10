@@ -52,6 +52,7 @@
 #include "catalog/catversion.h"
 #include "catalog/pg_control.h"
 #include "common/fe_memutils.h"
+#include "common/file_perm.h"
 #include "common/restricted_token.h"
 #include "storage/large_object.h"
 #include "pg_getopt.h"
@@ -355,6 +356,16 @@ main(int argc, char *argv[])
 
 	get_restricted_token(progname);
 
+	/* Set mask based on PGDATA permissions */
+	if (!GetDataDirectoryCreatePerm(DataDir))
+	{
+		fprintf(stderr, _("%s: could not read permissions of directory \"%s\": %s\n"),
+				progname, DataDir, strerror(errno));
+		exit(1);
+	}
+
+	umask(pg_mode_mask);
+
 	if (chdir(DataDir) < 0)
 	{
 		fprintf(stderr, _("%s: could not change directory to \"%s\": %s\n"),
@@ -644,7 +655,9 @@ ReadControlFile(void)
 		if (!IsValidWalSegSize(ControlFile.xlog_seg_size))
 		{
 			fprintf(stderr,
-					_("%s: pg_control specifies invalid WAL segment size (%d bytes); proceed with caution \n"),
+					ngettext("%s: pg_control specifies invalid WAL segment size (%d byte); proceed with caution\n",
+							 "%s: pg_control specifies invalid WAL segment size (%d bytes); proceed with caution\n",
+							 ControlFile.xlog_seg_size),
 					progname, ControlFile.xlog_seg_size);
 			return false;
 		}
@@ -920,8 +933,8 @@ RewriteControlFile(void)
 	 * Adjust fields as needed to force an empty XLOG starting at
 	 * newXlogSegNo.
 	 */
-	XLogSegNoOffsetToRecPtr(newXlogSegNo, SizeOfXLogLongPHD,
-							ControlFile.checkPointCopy.redo, WalSegSz);
+	XLogSegNoOffsetToRecPtr(newXlogSegNo, SizeOfXLogLongPHD, WalSegSz,
+							ControlFile.checkPointCopy.redo);
 	ControlFile.checkPointCopy.time = (pg_time_t) time(NULL);
 
 	ControlFile.state = DB_SHUTDOWNED;
@@ -967,7 +980,7 @@ RewriteControlFile(void)
 
 	fd = open(XLOG_CONTROL_FILE,
 			  O_RDWR | O_CREAT | O_EXCL | PG_BINARY,
-			  S_IRUSR | S_IWUSR);
+			  pg_file_create_mode);
 	if (fd < 0)
 	{
 		fprintf(stderr, _("%s: could not create pg_control file: %s\n"),
@@ -1196,7 +1209,7 @@ KillExistingArchiveStatus(void)
 static void
 WriteEmptyXLOG(void)
 {
-	char	   *buffer;
+	PGAlignedXLogBlock buffer;
 	XLogPageHeader page;
 	XLogLongPageHeader longpage;
 	XLogRecord *record;
@@ -1206,12 +1219,10 @@ WriteEmptyXLOG(void)
 	int			nbytes;
 	char	   *recptr;
 
-	/* Use malloc() to ensure buffer is MAXALIGNED */
-	buffer = (char *) pg_malloc(XLOG_BLCKSZ);
-	page = (XLogPageHeader) buffer;
-	memset(buffer, 0, XLOG_BLCKSZ);
+	memset(buffer.data, 0, XLOG_BLCKSZ);
 
 	/* Set up the XLOG page header */
+	page = (XLogPageHeader) buffer.data;
 	page->xlp_magic = XLOG_PAGE_MAGIC;
 	page->xlp_info = XLP_LONG_HEADER;
 	page->xlp_tli = ControlFile.checkPointCopy.ThisTimeLineID;
@@ -1249,7 +1260,7 @@ WriteEmptyXLOG(void)
 	unlink(path);
 
 	fd = open(path, O_RDWR | O_CREAT | O_EXCL | PG_BINARY,
-			  S_IRUSR | S_IWUSR);
+			  pg_file_create_mode);
 	if (fd < 0)
 	{
 		fprintf(stderr, _("%s: could not open file \"%s\": %s\n"),
@@ -1258,7 +1269,7 @@ WriteEmptyXLOG(void)
 	}
 
 	errno = 0;
-	if (write(fd, buffer, XLOG_BLCKSZ) != XLOG_BLCKSZ)
+	if (write(fd, buffer.data, XLOG_BLCKSZ) != XLOG_BLCKSZ)
 	{
 		/* if write didn't set errno, assume problem is no disk space */
 		if (errno == 0)
@@ -1269,11 +1280,11 @@ WriteEmptyXLOG(void)
 	}
 
 	/* Fill the rest of the file with zeroes */
-	memset(buffer, 0, XLOG_BLCKSZ);
+	memset(buffer.data, 0, XLOG_BLCKSZ);
 	for (nbytes = XLOG_BLCKSZ; nbytes < WalSegSz; nbytes += XLOG_BLCKSZ)
 	{
 		errno = 0;
-		if (write(fd, buffer, XLOG_BLCKSZ) != XLOG_BLCKSZ)
+		if (write(fd, buffer.data, XLOG_BLCKSZ) != XLOG_BLCKSZ)
 		{
 			if (errno == 0)
 				errno = ENOSPC;

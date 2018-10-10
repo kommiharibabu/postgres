@@ -130,8 +130,6 @@ static Expr *simplify_function(Oid funcid,
 				  Oid result_collid, Oid input_collid, List **args_p,
 				  bool funcvariadic, bool process_args, bool allow_non_const,
 				  eval_const_expressions_context *context);
-static List *expand_function_arguments(List *args, Oid result_type,
-						  HeapTuple func_tuple);
 static List *reorder_function_arguments(List *args, HeapTuple func_tuple);
 static List *add_function_defaults(List *args, HeapTuple func_tuple);
 static List *fetch_function_defaults(HeapTuple func_tuple);
@@ -1192,9 +1190,23 @@ max_parallel_hazard_walker(Node *node, max_parallel_hazard_context *context)
 			return true;
 	}
 
-	if (IsA(node, NextValueExpr))
+	else if (IsA(node, NextValueExpr))
 	{
 		if (max_parallel_hazard_test(PROPARALLEL_UNSAFE, context))
+			return true;
+	}
+
+	/*
+	 * Treat window functions as parallel-restricted because we aren't sure
+	 * whether the input row ordering is fully deterministic, and the output
+	 * of window functions might vary across workers if not.  (In some cases,
+	 * like where the window frame orders by a primary key, we could relax
+	 * this restriction.  But it doesn't currently seem worth expending extra
+	 * effort to do so.)
+	 */
+	else if (IsA(node, WindowFunc))
+	{
+		if (max_parallel_hazard_test(PROPARALLEL_RESTRICTED, context))
 			return true;
 	}
 
@@ -2569,7 +2581,14 @@ eval_const_expressions_mutator(Node *node,
 					else
 						prm = &paramLI->params[param->paramid - 1];
 
-					if (OidIsValid(prm->ptype))
+					/*
+					 * We don't just check OidIsValid, but insist that the
+					 * fetched type match the Param, just in case the hook did
+					 * something unexpected.  No need to throw an error here
+					 * though; leave that for runtime.
+					 */
+					if (OidIsValid(prm->ptype) &&
+						prm->ptype == param->paramtype)
 					{
 						/* OK to substitute parameter value? */
 						if (context->estimate ||
@@ -2585,7 +2604,6 @@ eval_const_expressions_mutator(Node *node,
 							bool		typByVal;
 							Datum		pval;
 
-							Assert(prm->ptype == param->paramtype);
 							get_typlenbyval(param->paramtype,
 											&typLen, &typByVal);
 							if (prm->isnull || typByVal)
@@ -4112,7 +4130,7 @@ simplify_function(Oid funcid, Oid result_type, int32 result_typmod,
  * cases it handles should never occur there.  This should be OK since it
  * will fall through very quickly if there's nothing to do.
  */
-static List *
+List *
 expand_function_arguments(List *args, Oid result_type, HeapTuple func_tuple)
 {
 	Form_pg_proc funcform = (Form_pg_proc) GETSTRUCT(func_tuple);

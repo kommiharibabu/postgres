@@ -198,6 +198,18 @@ SELECT count(*) FROM quad_point_tbl WHERE p >^ '(5000, 4000)';
 
 SELECT count(*) FROM quad_point_tbl WHERE p ~= '(4585, 365)';
 
+CREATE TEMP TABLE quad_point_tbl_ord_seq1 AS
+SELECT rank() OVER (ORDER BY p <-> '0,0') n, p <-> '0,0' dist, p
+FROM quad_point_tbl;
+
+CREATE TEMP TABLE quad_point_tbl_ord_seq2 AS
+SELECT rank() OVER (ORDER BY p <-> '0,0') n, p <-> '0,0' dist, p
+FROM quad_point_tbl WHERE p <@ box '(200,200,1000,1000)';
+
+CREATE TEMP TABLE quad_point_tbl_ord_seq3 AS
+SELECT rank() OVER (ORDER BY p <-> '333,400') n, p <-> '333,400' dist, p
+FROM quad_point_tbl WHERE p IS NOT NULL;
+
 SELECT count(*) FROM radix_text_tbl WHERE t = 'P0123456789abcdef';
 
 SELECT count(*) FROM radix_text_tbl WHERE t = 'P0123456789abcde';
@@ -364,6 +376,39 @@ SELECT count(*) FROM quad_point_tbl WHERE p ~= '(4585, 365)';
 SELECT count(*) FROM quad_point_tbl WHERE p ~= '(4585, 365)';
 
 EXPLAIN (COSTS OFF)
+SELECT rank() OVER (ORDER BY p <-> '0,0') n, p <-> '0,0' dist, p
+FROM quad_point_tbl;
+CREATE TEMP TABLE quad_point_tbl_ord_idx1 AS
+SELECT rank() OVER (ORDER BY p <-> '0,0') n, p <-> '0,0' dist, p
+FROM quad_point_tbl;
+SELECT * FROM quad_point_tbl_ord_seq1 seq FULL JOIN quad_point_tbl_ord_idx1 idx
+ON seq.n = idx.n
+AND (seq.dist = idx.dist AND seq.p ~= idx.p OR seq.p IS NULL AND idx.p IS NULL)
+WHERE seq.n IS NULL OR idx.n IS NULL;
+
+EXPLAIN (COSTS OFF)
+SELECT rank() OVER (ORDER BY p <-> '0,0') n, p <-> '0,0' dist, p
+FROM quad_point_tbl WHERE p <@ box '(200,200,1000,1000)';
+CREATE TEMP TABLE quad_point_tbl_ord_idx2 AS
+SELECT rank() OVER (ORDER BY p <-> '0,0') n, p <-> '0,0' dist, p
+FROM quad_point_tbl WHERE p <@ box '(200,200,1000,1000)';
+SELECT * FROM quad_point_tbl_ord_seq2 seq FULL JOIN quad_point_tbl_ord_idx2 idx
+ON seq.n = idx.n
+AND (seq.dist = idx.dist AND seq.p ~= idx.p OR seq.p IS NULL AND idx.p IS NULL)
+WHERE seq.n IS NULL OR idx.n IS NULL;
+
+EXPLAIN (COSTS OFF)
+SELECT rank() OVER (ORDER BY p <-> '333,400') n, p <-> '333,400' dist, p
+FROM quad_point_tbl WHERE p IS NOT NULL;
+CREATE TEMP TABLE quad_point_tbl_ord_idx3 AS
+SELECT rank() OVER (ORDER BY p <-> '333,400') n, p <-> '333,400' dist, p
+FROM quad_point_tbl WHERE p IS NOT NULL;
+SELECT * FROM quad_point_tbl_ord_seq3 seq FULL JOIN quad_point_tbl_ord_idx3 idx
+ON seq.n = idx.n
+AND (seq.dist = idx.dist AND seq.p ~= idx.p OR seq.p IS NULL AND idx.p IS NULL)
+WHERE seq.n IS NULL OR idx.n IS NULL;
+
+EXPLAIN (COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p <@ box '(200,200,1000,1000)';
 SELECT count(*) FROM kd_point_tbl WHERE p <@ box '(200,200,1000,1000)';
 
@@ -390,6 +435,39 @@ SELECT count(*) FROM kd_point_tbl WHERE p >^ '(5000, 4000)';
 EXPLAIN (COSTS OFF)
 SELECT count(*) FROM kd_point_tbl WHERE p ~= '(4585, 365)';
 SELECT count(*) FROM kd_point_tbl WHERE p ~= '(4585, 365)';
+
+EXPLAIN (COSTS OFF)
+SELECT rank() OVER (ORDER BY p <-> '0,0') n, p <-> '0,0' dist, p
+FROM kd_point_tbl;
+CREATE TEMP TABLE kd_point_tbl_ord_idx1 AS
+SELECT rank() OVER (ORDER BY p <-> '0,0') n, p <-> '0,0' dist, p
+FROM kd_point_tbl;
+SELECT * FROM quad_point_tbl_ord_seq1 seq FULL JOIN kd_point_tbl_ord_idx1 idx
+ON seq.n = idx.n AND
+(seq.dist = idx.dist AND seq.p ~= idx.p OR seq.p IS NULL AND idx.p IS NULL)
+WHERE seq.n IS NULL OR idx.n IS NULL;
+
+EXPLAIN (COSTS OFF)
+SELECT rank() OVER (ORDER BY p <-> '0,0') n, p <-> '0,0' dist, p
+FROM kd_point_tbl WHERE p <@ box '(200,200,1000,1000)';
+CREATE TEMP TABLE kd_point_tbl_ord_idx2 AS
+SELECT rank() OVER (ORDER BY p <-> '0,0') n, p <-> '0,0' dist, p
+FROM kd_point_tbl WHERE p <@ box '(200,200,1000,1000)';
+SELECT * FROM quad_point_tbl_ord_seq2 seq FULL JOIN kd_point_tbl_ord_idx2 idx
+ON seq.n = idx.n AND
+(seq.dist = idx.dist AND seq.p ~= idx.p OR seq.p IS NULL AND idx.p IS NULL)
+WHERE seq.n IS NULL OR idx.n IS NULL;
+
+EXPLAIN (COSTS OFF)
+SELECT rank() OVER (ORDER BY p <-> '333,400') n, p <-> '333,400' dist, p
+FROM kd_point_tbl WHERE p IS NOT NULL;
+CREATE TEMP TABLE kd_point_tbl_ord_idx3 AS
+SELECT rank() OVER (ORDER BY p <-> '333,400') n, p <-> '333,400' dist, p
+FROM kd_point_tbl WHERE p IS NOT NULL;
+SELECT * FROM quad_point_tbl_ord_seq3 seq FULL JOIN kd_point_tbl_ord_idx3 idx
+ON seq.n = idx.n AND
+(seq.dist = idx.dist AND seq.p ~= idx.p OR seq.p IS NULL AND idx.p IS NULL)
+WHERE seq.n IS NULL OR idx.n IS NULL;
 
 EXPLAIN (COSTS OFF)
 SELECT count(*) FROM radix_text_tbl WHERE t = 'P0123456789abcdef';
@@ -742,6 +820,26 @@ INSERT INTO func_index_heap VALUES('ABCD', 'EF');
 INSERT INTO func_index_heap VALUES('QWERTY');
 
 --
+-- Test unique index with included columns
+--
+CREATE TABLE covering_index_heap (f1 int, f2 int, f3 text);
+CREATE UNIQUE INDEX covering_index_index on covering_index_heap (f1,f2) INCLUDE(f3);
+
+INSERT INTO covering_index_heap VALUES(1,1,'AAA');
+INSERT INTO covering_index_heap VALUES(1,2,'AAA');
+-- this should fail because of unique index on f1,f2:
+INSERT INTO covering_index_heap VALUES(1,2,'BBB');
+-- and this shouldn't:
+INSERT INTO covering_index_heap VALUES(1,4,'AAA');
+-- Try to build index on table that already contains data
+CREATE UNIQUE INDEX covering_pkey on covering_index_heap (f1,f2) INCLUDE(f3);
+-- Try to use existing covering index as primary key
+ALTER TABLE covering_index_heap ADD CONSTRAINT covering_pkey PRIMARY KEY USING INDEX
+covering_pkey;
+DROP TABLE covering_index_heap;
+
+
+--
 -- Also try building functional, expressional, and partial indexes on
 -- tables that already contain data.
 --
@@ -1040,6 +1138,17 @@ explain (costs off)
   select * from boolindex where b = true order by i desc limit 10;
 explain (costs off)
   select * from boolindex where not b order by i limit 10;
+
+--
+-- Test for multilevel page deletion
+--
+CREATE TABLE delete_test_table (a bigint, b bigint, c bigint, d bigint);
+INSERT INTO delete_test_table SELECT i, 1, 2, 3 FROM generate_series(1,80000) i;
+ALTER TABLE delete_test_table ADD PRIMARY KEY (a,b,c,d);
+DELETE FROM delete_test_table WHERE a > 40000;
+VACUUM delete_test_table;
+DELETE FROM delete_test_table WHERE a > 10;
+VACUUM delete_test_table;
 
 --
 -- REINDEX (VERBOSE)

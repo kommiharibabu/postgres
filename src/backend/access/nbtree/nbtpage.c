@@ -155,11 +155,11 @@ void
 _bt_update_meta_cleanup_info(Relation rel, TransactionId oldestBtpoXact,
 							 float8 numHeapTuples)
 {
-	Buffer			metabuf;
-	Page			metapg;
+	Buffer		metabuf;
+	Page		metapg;
 	BTMetaPageData *metad;
-	bool			needsRewrite = false;
-	XLogRecPtr		recptr;
+	bool		needsRewrite = false;
+	XLogRecPtr	recptr;
 
 	/* read the metapage and check if it needs rewrite */
 	metabuf = _bt_getbuf(rel, BTREE_METAPAGE, BT_READ);
@@ -189,7 +189,7 @@ _bt_update_meta_cleanup_info(Relation rel, TransactionId oldestBtpoXact,
 	if (metad->btm_version < BTREE_VERSION)
 		_bt_upgrademetapage(metapg);
 
-	/* update cleanup-related infromation */
+	/* update cleanup-related information */
 	metad->btm_oldest_btpo_xact = oldestBtpoXact;
 	metad->btm_last_cleanup_num_heap_tuples = numHeapTuples;
 	MarkBufferDirty(metabuf);
@@ -341,10 +341,6 @@ _bt_getroot(Relation rel, int access)
 		LockBuffer(metabuf, BUFFER_LOCK_UNLOCK);
 		LockBuffer(metabuf, BT_WRITE);
 
-		/* upgrade metapage if needed */
-		if (metad->btm_version < BTREE_VERSION)
-			_bt_upgrademetapage(metapg);
-
 		/*
 		 * Race condition:	if someone else initialized the metadata between
 		 * the time we released the read lock and acquired the write lock, we
@@ -378,6 +374,10 @@ _bt_getroot(Relation rel, int access)
 
 		/* NO ELOG(ERROR) till meta is updated */
 		START_CRIT_SECTION();
+
+		/* upgrade metapage if needed */
+		if (metad->btm_version < BTREE_VERSION)
+			_bt_upgrademetapage(metapg);
 
 		metad->btm_root = rootblkno;
 		metad->btm_level = 0;
@@ -782,9 +782,14 @@ _bt_getbuf(Relation rel, BlockNumber blkno, int access)
 					/*
 					 * If we are generating WAL for Hot Standby then create a
 					 * WAL record that will allow us to conflict with queries
-					 * running on standby.
+					 * running on standby, in case they have snapshots older
+					 * than btpo.xact.  This can only apply if the page does
+					 * have a valid btpo.xact value, ie not if it's new.  (We
+					 * must check that because an all-zero page has no special
+					 * space.)
 					 */
-					if (XLogStandbyInfoActive() && RelationNeedsWAL(rel))
+					if (XLogStandbyInfoActive() && RelationNeedsWAL(rel) &&
+						!PageIsNew(page))
 					{
 						BTPageOpaque opaque = (BTPageOpaque) PageGetSpecialPointer(page);
 
@@ -897,7 +902,10 @@ _bt_pageinit(Page page, Size size)
  *	_bt_page_recyclable() -- Is an existing page recyclable?
  *
  * This exists to make sure _bt_getbuf and btvacuumscan have the same
- * policy about whether a page is safe to re-use.
+ * policy about whether a page is safe to re-use.  But note that _bt_getbuf
+ * knows enough to distinguish the PageIsNew condition from the other one.
+ * At some point it might be appropriate to redesign this to have a three-way
+ * result value.
  */
 bool
 _bt_page_recyclable(Page page)
@@ -1143,7 +1151,7 @@ _bt_lock_branch_parent(Relation rel, BlockNumber child, BTStack stack,
 	 * Locate the downlink of "child" in the parent (updating the stack entry
 	 * if needed)
 	 */
-	ItemPointerSet(&(stack->bts_btentry.t_tid), child, P_HIKEY);
+	stack->bts_btentry = child;
 	pbuf = _bt_getstackbuf(rel, stack, BT_WRITE);
 	if (pbuf == InvalidBuffer)
 		elog(ERROR, "failed to re-find parent key in index \"%s\" for deletion target page %u",
@@ -1414,8 +1422,9 @@ _bt_pagedel(Relation rel, Buffer buf)
 				/* we need an insertion scan key for the search, so build one */
 				itup_scankey = _bt_mkscankey(rel, targetkey);
 				/* find the leftmost leaf page containing this key */
-				stack = _bt_search(rel, rel->rd_rel->relnatts, itup_scankey,
-								   false, &lbuf, BT_READ, NULL);
+				stack = _bt_search(rel,
+								   IndexRelationGetNumberOfKeyAttributes(rel),
+								   itup_scankey, false, &lbuf, BT_READ, NULL);
 				/* don't need a pin on the page */
 				_bt_relbuf(rel, lbuf);
 
@@ -1442,6 +1451,7 @@ _bt_pagedel(Relation rel, Buffer buf)
 		rightsib_empty = false;
 		while (P_ISHALFDEAD(opaque))
 		{
+			/* will check for interrupts, once lock is released */
 			if (!_bt_unlink_halfdead_page(rel, buf, &rightsib_empty))
 			{
 				/* _bt_unlink_halfdead_page already released buffer */
@@ -1453,6 +1463,12 @@ _bt_pagedel(Relation rel, Buffer buf)
 		rightsib = opaque->btpo_next;
 
 		_bt_relbuf(rel, buf);
+
+		/*
+		 * Check here, as calling loops will have locks held, preventing
+		 * interrupts from being processed.
+		 */
+		CHECK_FOR_INTERRUPTS();
 
 		/*
 		 * The page has now been deleted. If its right sibling is completely
@@ -1551,15 +1567,15 @@ _bt_mark_page_halfdead(Relation rel, Buffer leafbuf, BTStack stack)
 #ifdef USE_ASSERT_CHECKING
 	itemid = PageGetItemId(page, topoff);
 	itup = (IndexTuple) PageGetItem(page, itemid);
-	Assert(ItemPointerGetBlockNumber(&(itup->t_tid)) == target);
+	Assert(BTreeInnerTupleGetDownLink(itup) == target);
 #endif
 
 	nextoffset = OffsetNumberNext(topoff);
 	itemid = PageGetItemId(page, nextoffset);
 	itup = (IndexTuple) PageGetItem(page, itemid);
-	if (ItemPointerGetBlockNumber(&(itup->t_tid)) != rightsib)
+	if (BTreeInnerTupleGetDownLink(itup) != rightsib)
 		elog(ERROR, "right sibling %u of block %u is not next child %u of block %u in index \"%s\"",
-			 rightsib, target, ItemPointerGetBlockNumber(&(itup->t_tid)),
+			 rightsib, target, BTreeInnerTupleGetDownLink(itup),
 			 BufferGetBlockNumber(topparent), RelationGetRelationName(rel));
 
 	/*
@@ -1582,7 +1598,7 @@ _bt_mark_page_halfdead(Relation rel, Buffer leafbuf, BTStack stack)
 
 	itemid = PageGetItemId(page, topoff);
 	itup = (IndexTuple) PageGetItem(page, itemid);
-	ItemPointerSet(&(itup->t_tid), rightsib, P_HIKEY);
+	BTreeInnerTupleSetDownLink(itup, rightsib);
 
 	nextoffset = OffsetNumberNext(topoff);
 	PageIndexTupleDelete(page, nextoffset);
@@ -1601,9 +1617,10 @@ _bt_mark_page_halfdead(Relation rel, Buffer leafbuf, BTStack stack)
 	MemSet(&trunctuple, 0, sizeof(IndexTupleData));
 	trunctuple.t_info = sizeof(IndexTupleData);
 	if (target != leafblkno)
-		ItemPointerSet(&trunctuple.t_tid, target, P_HIKEY);
+		BTreeTupleSetTopParent(&trunctuple, target);
 	else
-		ItemPointerSetInvalid(&trunctuple.t_tid);
+		BTreeTupleSetTopParent(&trunctuple, InvalidBlockNumber);
+
 	if (PageAddItem(page, (Item) &trunctuple, sizeof(IndexTupleData), P_HIKEY,
 					false, false) == InvalidOffsetNumber)
 		elog(ERROR, "could not add dummy high key to half-dead page");
@@ -1687,7 +1704,7 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, bool *rightsib_empty)
 	BTPageOpaque opaque;
 	bool		rightsib_is_rightmost;
 	int			targetlevel;
-	ItemPointer leafhikey;
+	IndexTuple	leafhikey;
 	BlockNumber nextchild;
 
 	page = BufferGetPage(leafbuf);
@@ -1699,11 +1716,17 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, bool *rightsib_empty)
 	 * Remember some information about the leaf page.
 	 */
 	itemid = PageGetItemId(page, P_HIKEY);
-	leafhikey = &((IndexTuple) PageGetItem(page, itemid))->t_tid;
+	leafhikey = (IndexTuple) PageGetItem(page, itemid);
 	leafleftsib = opaque->btpo_prev;
 	leafrightsib = opaque->btpo_next;
 
 	LockBuffer(leafbuf, BUFFER_LOCK_UNLOCK);
+
+	/*
+	 * Check here, as calling loops will have locks held, preventing
+	 * interrupts from being processed.
+	 */
+	CHECK_FOR_INTERRUPTS();
 
 	/*
 	 * If the leaf page still has a parent pointing to it (or a chain of
@@ -1711,9 +1734,10 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, bool *rightsib_empty)
 	 * parent in the branch.  Set 'target' and 'buf' to reference the page
 	 * actually being unlinked.
 	 */
-	if (ItemPointerIsValid(leafhikey))
+	target = BTreeTupleGetTopParent(leafhikey);
+
+	if (target != InvalidBlockNumber)
 	{
-		target = ItemPointerGetBlockNumber(leafhikey);
 		Assert(target != leafblkno);
 
 		/* fetch the block number of the topmost parent's left sibling */
@@ -1763,6 +1787,14 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, bool *rightsib_empty)
 			/* step right one page */
 			leftsib = opaque->btpo_next;
 			_bt_relbuf(rel, lbuf);
+
+			/*
+			 * It'd be good to check for interrupts here, but it's not easy to
+			 * do so because a lock is always held. This block isn't
+			 * frequently reached, so hopefully the consequences of not
+			 * checking interrupts aren't too bad.
+			 */
+
 			if (leftsib == P_NONE)
 			{
 				elog(LOG, "no left sibling (concurrent deletion?) of block %u in \"%s\"",
@@ -1829,7 +1861,7 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, bool *rightsib_empty)
 
 		/* remember the next non-leaf child down in the branch. */
 		itemid = PageGetItemId(page, P_FIRSTDATAKEY(opaque));
-		nextchild = ItemPointerGetBlockNumber(&((IndexTuple) PageGetItem(page, itemid))->t_tid);
+		nextchild = BTreeInnerTupleGetDownLink((IndexTuple) PageGetItem(page, itemid));
 		if (nextchild == leafblkno)
 			nextchild = InvalidBlockNumber;
 	}
@@ -1916,12 +1948,7 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, bool *rightsib_empty)
 	 * branch.
 	 */
 	if (target != leafblkno)
-	{
-		if (nextchild == InvalidBlockNumber)
-			ItemPointerSetInvalid(leafhikey);
-		else
-			ItemPointerSet(leafhikey, nextchild, P_HIKEY);
-	}
+		BTreeTupleSetTopParent(leafhikey, nextchild);
 
 	/*
 	 * Mark the page itself deleted.  It can be recycled when all current

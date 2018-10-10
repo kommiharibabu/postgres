@@ -1106,6 +1106,15 @@ CREATE TABLE fk_partitioned_fk_3_1 PARTITION OF fk_partitioned_fk_3 FOR VALUES W
 ALTER TABLE fk_partitioned_fk ATTACH PARTITION fk_partitioned_fk_3
   FOR VALUES FROM (2000,2000) TO (3000,3000);
 
+-- Creating a foreign key with ONLY on a partitioned table referencing
+-- a non-partitioned table fails.
+ALTER TABLE ONLY fk_partitioned_fk ADD FOREIGN KEY (a, b)
+  REFERENCES fk_notpartitioned_pk;
+-- Adding a NOT VALID foreign key on a partitioned table referencing
+-- a non-partitioned table fails.
+ALTER TABLE fk_partitioned_fk ADD FOREIGN KEY (a, b)
+  REFERENCES fk_notpartitioned_pk NOT VALID;
+
 -- these inserts, targetting both the partition directly as well as the
 -- partitioned table, should all fail
 INSERT INTO fk_partitioned_fk (a,b) VALUES (500, 501);
@@ -1137,6 +1146,17 @@ UPDATE fk_notpartitioned_pk SET b = 1502 WHERE a = 1500;
 UPDATE fk_notpartitioned_pk SET b = 2504 WHERE a = 2500;
 ALTER TABLE fk_partitioned_fk DROP CONSTRAINT fk_partitioned_fk_a_fkey;
 -- done.
+DROP TABLE fk_notpartitioned_pk, fk_partitioned_fk;
+
+-- Altering a type referenced by a foreign key needs to drop/recreate the FK.
+-- Ensure that works.
+CREATE TABLE fk_notpartitioned_pk (a INT, PRIMARY KEY(a), CHECK (a > 0));
+CREATE TABLE fk_partitioned_fk (a INT REFERENCES fk_notpartitioned_pk(a) PRIMARY KEY) PARTITION BY RANGE(a);
+CREATE TABLE fk_partitioned_fk_1 PARTITION OF fk_partitioned_fk FOR VALUES FROM (MINVALUE) TO (MAXVALUE);
+INSERT INTO fk_notpartitioned_pk VALUES (1);
+INSERT INTO fk_partitioned_fk VALUES (1);
+ALTER TABLE fk_notpartitioned_pk ALTER COLUMN a TYPE bigint;
+DELETE FROM fk_notpartitioned_pk WHERE a = 1;
 DROP TABLE fk_notpartitioned_pk, fk_partitioned_fk;
 
 -- Test some other exotic foreign key features: MATCH SIMPLE, ON UPDATE/DELETE

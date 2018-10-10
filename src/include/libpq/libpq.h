@@ -75,6 +75,7 @@ extern int	pq_putbytes(const char *s, size_t len);
 /*
  * prototypes for functions in be-secure.c
  */
+extern char *ssl_library;
 extern char *ssl_cert_file;
 extern char *ssl_key_file;
 extern char *ssl_ca_file;
@@ -106,8 +107,8 @@ extern bool SSLPreferServerCiphers;
  * prototypes for functions in be-secure-common.c
  */
 extern int run_ssl_passphrase_command(const char *prompt, bool is_server_start,
-									  char *buf, int size);
+						   char *buf, int size);
 extern bool check_ssl_key_file_permissions(const char *ssl_key_file,
-										   bool isServerStart);
+							   bool isServerStart);
 
 #endif							/* LIBPQ_H */

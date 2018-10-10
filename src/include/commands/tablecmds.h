@@ -18,7 +18,6 @@
 #include "catalog/dependency.h"
 #include "catalog/objectaddress.h"
 #include "nodes/parsenodes.h"
-#include "catalog/partition.h"
 #include "storage/lock.h"
 #include "utils/relcache.h"
 
@@ -54,6 +53,8 @@ extern void AlterRelationNamespaceInternal(Relation classRel, Oid relOid,
 extern void CheckTableNotInUse(Relation rel, const char *stmt);
 
 extern void ExecuteTruncate(TruncateStmt *stmt);
+extern void ExecuteTruncateGuts(List *explicit_rels, List *relids, List *relids_logged,
+					DropBehavior behavior, bool restart_seqs);
 
 extern void SetRelationHasSubclass(Oid relationId, bool relhassubclass);
 

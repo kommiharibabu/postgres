@@ -26,6 +26,8 @@
 #include "nodes/lockoptions.h"
 #include "nodes/primnodes.h"
 #include "nodes/value.h"
+#include "partitioning/partdefs.h"
+
 
 typedef enum OverridingKind
 {
@@ -38,7 +40,7 @@ typedef enum OverridingKind
 typedef enum QuerySource
 {
 	QSRC_ORIGINAL,				/* original parsetree (explicit query) */
-	QSRC_PARSER,				/* added by parse analysis in MERGE */
+	QSRC_PARSER,				/* added by parse analysis (now unused) */
 	QSRC_INSTEAD_RULE,			/* added by unconditional INSTEAD rule */
 	QSRC_QUAL_INSTEAD_RULE,		/* added by conditional INSTEAD rule */
 	QSRC_NON_INSTEAD_RULE		/* added by non-INSTEAD rule */
@@ -107,7 +109,7 @@ typedef struct Query
 {
 	NodeTag		type;
 
-	CmdType		commandType;	/* select|insert|update|delete|merge|utility */
+	CmdType		commandType;	/* select|insert|update|delete|utility */
 
 	QuerySource querySource;	/* where did I come from? */
 
@@ -118,7 +120,7 @@ typedef struct Query
 	Node	   *utilityStmt;	/* non-null if commandType == CMD_UTILITY */
 
 	int			resultRelation; /* rtable index of target relation for
-								 * INSERT/UPDATE/DELETE/MERGE; 0 for SELECT */
+								 * INSERT/UPDATE/DELETE; 0 for SELECT */
 
 	bool		hasAggs;		/* has aggregates in tlist or havingQual */
 	bool		hasWindowFuncs; /* has window functions in tlist */
@@ -166,12 +168,8 @@ typedef struct Query
 	List	   *constraintDeps; /* a list of pg_constraint OIDs that the query
 								 * depends on to be semantically valid */
 
-	List	   *withCheckOptions;	/* a list of WithCheckOption's, which are
-									 * only added during rewrite and therefore
-									 * are not written out as part of Query. */
-	int			mergeTarget_relation;
-	List	   *mergeSourceTargetList;
-	List	   *mergeActionList;	/* list of actions for MERGE (only) */
+	List	   *withCheckOptions;	/* a list of WithCheckOption's (added
+									 * during rewrite) */
 
 	/*
 	 * The following two fields identify the portion of the source text string
@@ -656,8 +654,8 @@ typedef struct ColumnDef
 	Node	   *raw_default;	/* default value (untransformed parse tree) */
 	Node	   *cooked_default; /* default value (transformed expr tree) */
 	char		identity;		/* attidentity setting */
-	RangeVar   *identitySequence; /* to store identity sequence name for ALTER
-								   * TABLE ... ADD COLUMN */
+	RangeVar   *identitySequence;	/* to store identity sequence name for
+									 * ALTER TABLE ... ADD COLUMN */
 	CollateClause *collClause;	/* untransformed COLLATE spec, if any */
 	Oid			collOid;		/* collation OID (InvalidOid if not set) */
 	List	   *constraints;	/* other constraints on column */
@@ -806,7 +804,7 @@ typedef struct PartitionSpec
  * This represents the portion of the partition key space assigned to a
  * particular partition.  These are stored on disk in pg_class.relpartbound.
  */
-typedef struct PartitionBoundSpec
+struct PartitionBoundSpec
 {
 	NodeTag		type;
 
@@ -825,7 +823,7 @@ typedef struct PartitionBoundSpec
 	List	   *upperdatums;	/* List of PartitionRangeDatums */
 
 	int			location;		/* token location, or -1 if unknown */
-} PartitionBoundSpec;
+};
 
 /*
  * PartitionRangeDatum - one of the values in a range partition bound
@@ -975,9 +973,21 @@ typedef struct RangeTblEntry
 	 * that the tuple format of the tuplestore is the same as the referenced
 	 * relation.  This allows plans referencing AFTER trigger transition
 	 * tables to be invalidated if the underlying table is altered.
+	 *
+	 * rellockmode is really LOCKMODE, but it's declared int to avoid having
+	 * to include lock-related headers here.  It must be RowExclusiveLock if
+	 * the RTE is an INSERT/UPDATE/DELETE target, else RowShareLock if the RTE
+	 * is a SELECT FOR UPDATE/FOR SHARE target, else AccessShareLock.
+	 *
+	 * Note: in some cases, rule expansion may result in RTEs that are marked
+	 * with RowExclusiveLock even though they are not the target of the
+	 * current query; this happens if a DO ALSO rule simply scans the original
+	 * target table.  We leave such RTEs with their original lockmode so as to
+	 * avoid getting an additional, lesser lock.
 	 */
 	Oid			relid;			/* OID of the relation */
 	char		relkind;		/* relation kind (see pg_class.relkind) */
+	int			rellockmode;	/* lock level that query requires on the rel */
 	struct TableSampleClause *tablesample;	/* sampling info, or NULL */
 
 	/*
@@ -1035,7 +1045,7 @@ typedef struct RangeTblEntry
 	bool		self_reference; /* is this a recursive self-reference? */
 
 	/*
-	 * Fields valid for table functions, values, CTE and ENR RTEs (else NIL):
+	 * Fields valid for CTE, VALUES, ENR, and TableFunc RTEs (else NIL):
 	 *
 	 * We need these for CTE RTEs so that the types of self-referential
 	 * columns are well-defined.  For VALUES RTEs, storing these explicitly
@@ -1043,7 +1053,9 @@ typedef struct RangeTblEntry
 	 * ENRs, we store the types explicitly here (we could get the information
 	 * from the catalogs if 'relid' was supplied, but we'd still need these
 	 * for TupleDesc-based ENRs, so we might as well always store the type
-	 * info here).
+	 * info here).  For TableFuncs, these fields are redundant with data in
+	 * the TableFunc node, but keeping them here allows some code sharing with
+	 * the other cases.
 	 *
 	 * For ENRs only, we have to consider the possibility of dropped columns.
 	 * A dropped column is included in these lists, but it will have zeroes in
@@ -1131,9 +1143,7 @@ typedef enum WCOKind
 	WCO_VIEW_CHECK,				/* WCO on an auto-updatable view */
 	WCO_RLS_INSERT_CHECK,		/* RLS INSERT WITH CHECK policy */
 	WCO_RLS_UPDATE_CHECK,		/* RLS UPDATE WITH CHECK policy */
-	WCO_RLS_CONFLICT_CHECK,		/* RLS ON CONFLICT DO UPDATE USING policy */
-	WCO_RLS_MERGE_UPDATE_CHECK, /* RLS MERGE UPDATE USING policy */
-	WCO_RLS_MERGE_DELETE_CHECK	/* RLS MERGE DELETE USING policy */
+	WCO_RLS_CONFLICT_CHECK		/* RLS ON CONFLICT DO UPDATE USING policy */
 } WCOKind;
 
 typedef struct WithCheckOption
@@ -1507,46 +1517,6 @@ typedef struct UpdateStmt
 	List	   *returningList;	/* list of expressions to return */
 	WithClause *withClause;		/* WITH clause */
 } UpdateStmt;
-
-/* ----------------------
- *		Merge Statement
- * ----------------------
- */
-typedef struct MergeStmt
-{
-	NodeTag		type;
-	RangeVar   *relation;			/* target relation to merge into */
-	Node	   *source_relation;	/* source relation */
-	Node	   *join_condition; /* join condition between source and target */
-	List	   *mergeWhenClauses;	/* list of MergeWhenClause(es) */
-	WithClause *withClause;		/* WITH clause */
-} MergeStmt;
-
-typedef struct MergeWhenClause
-{
-	NodeTag		type;
-	bool		matched;		/* true=MATCHED, false=NOT MATCHED */
-	CmdType		commandType;	/* INSERT/UPDATE/DELETE/DO NOTHING */
-	Node	   *condition;		/* WHEN AND conditions (raw parser) */
-	List	   *targetList;		/* INSERT/UPDATE targetlist */
-	/* the following members are only useful for INSERT action */
-	List	   *cols;			/* optional: names of the target columns */
-	List	   *values;			/* VALUES to INSERT, or NULL */
-	OverridingKind override;	/* OVERRIDING clause */
-} MergeWhenClause;
-
-/*
- * WHEN [NOT] MATCHED THEN action info
- */
-typedef struct MergeAction
-{
-	NodeTag     type;
-	bool        matched;        /* true=MATCHED, false=NOT MATCHED */
-	OverridingKind	override;	/* OVERRIDING clause */
-	Node       *qual;           /* transformed WHEN AND conditions */
-	CmdType     commandType;    /* INSERT/UPDATE/DELETE/DO NOTHING */
-	List       *targetList;     /* the target list (of ResTarget) */
-} MergeAction;
 
 /* ----------------------
  *		Select Statement
@@ -2147,7 +2117,10 @@ typedef struct Constraint
 	char		generated_when;
 
 	/* Fields used for unique constraints (UNIQUE and PRIMARY KEY): */
-	List	   *keys;			/* String nodes naming referenced column(s) */
+	List	   *keys;			/* String nodes naming referenced key
+								 * column(s) */
+	List	   *including;		/* String nodes naming referenced nonkey
+								 * column(s) */
 
 	/* Fields used for EXCLUSION constraints: */
 	List	   *exclusions;		/* list of (IndexElem, operator name) pairs */
@@ -2760,6 +2733,8 @@ typedef struct IndexStmt
 	char	   *accessMethod;	/* name of access method (eg. btree) */
 	char	   *tableSpace;		/* tablespace, or NULL for default */
 	List	   *indexParams;	/* columns to index: a list of IndexElem */
+	List	   *indexIncludingParams;	/* additional columns to index: a list
+										 * of IndexElem */
 	List	   *options;		/* WITH clause options: a list of DefElem */
 	Node	   *whereClause;	/* qualification (partial-index predicate) */
 	List	   *excludeOpNames; /* exclusion operator names, or NIL if none */
@@ -3012,7 +2987,7 @@ typedef struct TransactionStmt
 	NodeTag		type;
 	TransactionStmtKind kind;	/* see above */
 	List	   *options;		/* for BEGIN/START commands */
-	char	   *savepoint_name;	/* for savepoint commands */
+	char	   *savepoint_name; /* for savepoint commands */
 	char	   *gid;			/* for two-phase-commit related commands */
 } TransactionStmt;
 
@@ -3150,12 +3125,18 @@ typedef struct AlterSystemStmt
  *		Cluster Statement (support pbrown's cluster index implementation)
  * ----------------------
  */
+typedef enum ClusterOption
+{
+	CLUOPT_RECHECK = 1 << 0,	/* recheck relation state */
+	CLUOPT_VERBOSE = 1 << 1		/* print progress info */
+} ClusterOption;
+
 typedef struct ClusterStmt
 {
 	NodeTag		type;
 	RangeVar   *relation;		/* relation being indexed, or NULL if all */
 	char	   *indexname;		/* original index defined */
-	bool		verbose;		/* print progress info */
+	int			options;		/* OR of ClusterOption flags */
 } ClusterStmt;
 
 /* ----------------------
@@ -3173,7 +3154,7 @@ typedef enum VacuumOption
 	VACOPT_VERBOSE = 1 << 2,	/* print progress info */
 	VACOPT_FREEZE = 1 << 3,		/* FREEZE option */
 	VACOPT_FULL = 1 << 4,		/* FULL (non-concurrent) vacuum */
-	VACOPT_NOWAIT = 1 << 5,		/* don't wait to get lock (autovacuum only) */
+	VACOPT_SKIP_LOCKED = 1 << 5,	/* skip if cannot get lock */
 	VACOPT_SKIPTOAST = 1 << 6,	/* don't process the TOAST table, if any */
 	VACOPT_DISABLE_PAGE_SKIPPING = 1 << 7	/* don't skip any pages */
 } VacuumOption;
@@ -3470,7 +3451,7 @@ typedef struct AlterTSConfigurationStmt
 typedef struct CreatePublicationStmt
 {
 	NodeTag		type;
-	char	   *pubname;		/* Name of of the publication */
+	char	   *pubname;		/* Name of the publication */
 	List	   *options;		/* List of DefElem nodes */
 	List	   *tables;			/* Optional list of tables to add */
 	bool		for_all_tables; /* Special publication for all tables in db */
@@ -3479,7 +3460,7 @@ typedef struct CreatePublicationStmt
 typedef struct AlterPublicationStmt
 {
 	NodeTag		type;
-	char	   *pubname;		/* Name of of the publication */
+	char	   *pubname;		/* Name of the publication */
 
 	/* parameters used for ALTER PUBLICATION ... WITH */
 	List	   *options;		/* List of DefElem nodes */
@@ -3493,7 +3474,7 @@ typedef struct AlterPublicationStmt
 typedef struct CreateSubscriptionStmt
 {
 	NodeTag		type;
-	char	   *subname;		/* Name of of the subscription */
+	char	   *subname;		/* Name of the subscription */
 	char	   *conninfo;		/* Connection string to publisher */
 	List	   *publication;	/* One or more publication to subscribe to */
 	List	   *options;		/* List of DefElem nodes */
@@ -3512,7 +3493,7 @@ typedef struct AlterSubscriptionStmt
 {
 	NodeTag		type;
 	AlterSubscriptionType kind; /* ALTER_SUBSCRIPTION_OPTIONS, etc */
-	char	   *subname;		/* Name of of the subscription */
+	char	   *subname;		/* Name of the subscription */
 	char	   *conninfo;		/* Connection string to publisher */
 	List	   *publication;	/* One or more publication to subscribe to */
 	List	   *options;		/* List of DefElem nodes */
@@ -3521,7 +3502,7 @@ typedef struct AlterSubscriptionStmt
 typedef struct DropSubscriptionStmt
 {
 	NodeTag		type;
-	char	   *subname;		/* Name of of the subscription */
+	char	   *subname;		/* Name of the subscription */
 	bool		missing_ok;		/* Skip error if missing? */
 	DropBehavior behavior;		/* RESTRICT or CASCADE behavior */
 } DropSubscriptionStmt;

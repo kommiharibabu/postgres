@@ -326,7 +326,12 @@ typedef struct PLpgSQL_var
  * Note that there's no way to name the row as such from PL/pgSQL code,
  * so many functions don't need to support these.
  *
- * refname, isconst, notnull, and default_val are unsupported (and hence
+ * That also means that there's no real name for the row variable, so we
+ * conventionally set refname to "(unnamed row)".  We could leave it NULL,
+ * but it's too convenient to be able to assume that refname is valid in
+ * all variants of PLpgSQL_variable.
+ *
+ * isconst, notnull, and default_val are unsupported (and hence
  * always zero/null) for a row.  The member variables of a row should have
  * been checked to be writable at compile time, so isconst is correctly set
  * to false.  notnull and default_val aren't applicable.
@@ -857,8 +862,8 @@ typedef struct PLpgSQL_stmt_execsql
 	PLpgSQL_stmt_type cmd_type;
 	int			lineno;
 	PLpgSQL_expr *sqlstmt;
-	bool		mod_stmt;		/* is the stmt INSERT/UPDATE/DELETE/MERGE?
-								 * Note mod_stmt is set when we plan the query */
+	bool		mod_stmt;		/* is the stmt INSERT/UPDATE/DELETE?  Note:
+								 * mod_stmt is set when we plan the query */
 	bool		into;			/* INTO supplied? */
 	bool		strict;			/* INTO STRICT flag */
 	PLpgSQL_variable *target;	/* INTO target (record or row) */
@@ -1135,10 +1140,12 @@ extern bool plpgsql_print_strict_params;
 
 extern bool plpgsql_check_asserts;
 
-/* extra compile-time checks */
-#define PLPGSQL_XCHECK_NONE			0
-#define PLPGSQL_XCHECK_SHADOWVAR	1
-#define PLPGSQL_XCHECK_ALL			((int) ~0)
+/* extra compile-time and run-time checks */
+#define PLPGSQL_XCHECK_NONE						0
+#define PLPGSQL_XCHECK_SHADOWVAR				(1 << 1)
+#define PLPGSQL_XCHECK_TOOMANYROWS				(1 << 2)
+#define PLPGSQL_XCHECK_STRICTMULTIASSIGNMENT	(1 << 3)
+#define PLPGSQL_XCHECK_ALL						((int) ~0)
 
 extern int	plpgsql_extra_warnings;
 extern int	plpgsql_extra_errors;

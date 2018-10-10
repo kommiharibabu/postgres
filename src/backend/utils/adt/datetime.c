@@ -15,7 +15,6 @@
 #include "postgres.h"
 
 #include <ctype.h>
-#include <float.h>
 #include <limits.h>
 #include <math.h>
 
@@ -1145,8 +1144,8 @@ DecodeDateTime(char **field, int *ftype, int nf,
 					 * Is this a YMD or HMS specification, or a year number?
 					 * YMD and HMS are required to be six digits or more, so
 					 * if it is 5 digits, it is a year.  If it is six or more
-					 * more digits, we assume it is YMD or HMS unless no date
-					 * and no time values have been specified.  This forces 6+
+					 * digits, we assume it is YMD or HMS unless no date and
+					 * no time values have been specified.  This forces 6+
 					 * digit years to be at the end of the string, or to use
 					 * the ISO date specification.
 					 */
@@ -1575,7 +1574,10 @@ DetermineTimeZoneOffsetInternal(struct pg_tm *tm, pg_tz *tzp, pg_time_t *tp)
 	 * fall-back transition, prefer "after".  (We used to define and implement
 	 * this test as "prefer the standard-time interpretation", but that rule
 	 * does not help to resolve the behavior when both times are reported as
-	 * standard time; which does happen, eg Europe/Moscow in Oct 2014.)
+	 * standard time; which does happen, eg Europe/Moscow in Oct 2014.  Also,
+	 * in some zones such as Europe/Dublin, there is widespread confusion
+	 * about which time offset is "standard" time, so it's fortunate that our
+	 * behavior doesn't depend on that.)
 	 */
 	if (beforetime > aftertime)
 	{
@@ -3146,7 +3148,7 @@ DecodeInterval(char **field, int *ftype, int nf, int range,
 				 * handle signed float numbers and signed year-month values.
 				 */
 
-				/* FALL THROUGH */
+				/* FALLTHROUGH */
 
 			case DTK_DATE:
 			case DTK_NUMBER:
@@ -3577,6 +3579,7 @@ DecodeISO8601Interval(char *str,
 						continue;
 					}
 					/* Else fall through to extended alternative format */
+					/* FALLTHROUGH */
 				case '-':		/* ISO 8601 4.4.3.3 Alternative Format,
 								 * Extended */
 					if (havefield)
@@ -3655,6 +3658,7 @@ DecodeISO8601Interval(char *str,
 						return 0;
 					}
 					/* Else fall through to extended alternative format */
+					/* FALLTHROUGH */
 				case ':':		/* ISO 8601 4.4.3.3 Alternative Format,
 								 * Extended */
 					if (havefield)

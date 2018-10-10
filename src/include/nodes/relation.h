@@ -15,6 +15,7 @@
 #define RELATION_H
 
 #include "access/sdir.h"
+#include "fmgr.h"
 #include "lib/stringinfo.h"
 #include "nodes/params.h"
 #include "nodes/parsenodes.h"
@@ -81,6 +82,17 @@ typedef enum UpperRelationKind
 	/* NB: UPPERREL_FINAL must be last enum entry; it's used to size arrays */
 } UpperRelationKind;
 
+/*
+ * This enum identifies which type of relation is being planned through the
+ * inheritance planner.  INHKIND_NONE indicates the inheritance planner
+ * was not used.
+ */
+typedef enum InheritanceKind
+{
+	INHKIND_NONE,
+	INHKIND_INHERITED,
+	INHKIND_PARTITIONED
+} InheritanceKind;
 
 /*----------
  * PlannerGlobal
@@ -109,7 +121,6 @@ typedef struct PlannerGlobal
 
 	List	   *resultRelations;	/* "flat" list of integer RT indexes */
 
-	List	   *nonleafResultRelations; /* "flat" list of integer RT indexes */
 	List	   *rootResultRelations;	/* "flat" list of integer RT indexes */
 
 	List	   *relationOids;	/* OIDs of relations the plan depends on */
@@ -150,6 +161,8 @@ typedef struct PlannerGlobal
  * the passed-in Query data structure; someday that should stop.
  *----------
  */
+struct AppendRelInfo;
+
 typedef struct PlannerInfo
 {
 	NodeTag		type;
@@ -188,6 +201,14 @@ typedef struct PlannerInfo
 	 * been expanded.
 	 */
 	RangeTblEntry **simple_rte_array;	/* rangetable as an array */
+
+	/*
+	 * append_rel_array is the same length as the above arrays, and holds
+	 * pointers to the corresponding AppendRelInfo entry indexed by
+	 * child_relid, or NULL if none.  The array itself is not allocated if
+	 * append_rel_list is empty.
+	 */
+	struct AppendRelInfo **append_rel_array;
 
 	/*
 	 * all_baserels is a Relids set of all base relids (but not "other"
@@ -253,8 +274,6 @@ typedef struct PlannerInfo
 
 	List	   *append_rel_list;	/* list of AppendRelInfos */
 
-	List	   *pcinfo_list;	/* list of PartitionedChildRelInfos */
-
 	List	   *rowMarks;		/* list of PlanRowMarks */
 
 	List	   *placeholder_list;	/* list of PlaceHolderInfos */
@@ -299,8 +318,9 @@ typedef struct PlannerInfo
 	Index		qual_security_level;	/* minimum security_level for quals */
 	/* Note: qual_security_level is zero if there are no securityQuals */
 
-	bool		hasInheritedTarget; /* true if parse->resultRelation is an
-									 * inheritance child rel */
+	InheritanceKind inhTargetKind;	/* indicates if the target relation is an
+									 * inheritance child or partition or a
+									 * partitioned table */
 	bool		hasJoinRTEs;	/* true if any RTEs are RTE_JOIN kind */
 	bool		hasLateralRTEs; /* true if any RTEs are marked LATERAL */
 	bool		hasDeletedRTEs; /* true if any RTE was deleted from jointree */
@@ -319,6 +339,9 @@ typedef struct PlannerInfo
 
 	/* optional private data for join_search_hook, e.g., GEQO */
 	void	   *join_search_private;
+
+	/* Does this query modify any partition key columns? */
+	bool		partColsUpdated;
 } PlannerInfo;
 
 
@@ -356,6 +379,9 @@ typedef struct PartitionSchemeData
 	/* Cached information about partition key data types. */
 	int16	   *parttyplen;
 	bool	   *parttypbyval;
+
+	/* Cached information about partition comparison functions. */
+	FmgrInfo   *partsupfunc;
 }			PartitionSchemeData;
 
 typedef struct PartitionSchemeData *PartitionScheme;
@@ -528,11 +554,15 @@ typedef struct PartitionSchemeData *PartitionScheme;
  *
  * If the relation is partitioned, these fields will be set:
  *
- * 		part_scheme - Partitioning scheme of the relation
- * 		boundinfo - Partition bounds
- * 		nparts - Number of partitions
- * 		part_rels - RelOptInfos for each partition
- * 		partexprs, nullable_partexprs - Partition key expressions
+ *		part_scheme - Partitioning scheme of the relation
+ *		nparts - Number of partitions
+ *		boundinfo - Partition bounds
+ *		partition_qual - Partition constraint if not the root
+ *		part_rels - RelOptInfos for each partition
+ *		partexprs, nullable_partexprs - Partition key expressions
+ *		partitioned_child_rels - RT indexes of unpruned partitions of
+ *								 this relation that are partitioned tables
+ *								 themselves, in hierarchical order
  *
  * Note: A base relation always has only one set of partition keys, but a join
  * relation may have as many sets of partition keys as the number of relations
@@ -656,17 +686,23 @@ typedef struct RelOptInfo
 								 * involving this rel */
 	bool		has_eclass_joins;	/* T means joininfo is incomplete */
 
-	/* used by "other" relations */
-	Relids		top_parent_relids;	/* Relids of topmost parents */
+	/* used by partitionwise joins: */
+	bool		consider_partitionwise_join;	/* consider partitionwise
+												 * join paths? (if
+												 * partitioned rel) */
+	Relids		top_parent_relids;	/* Relids of topmost parents (if "other"
+									 * rel) */
 
 	/* used for partitioned relations */
 	PartitionScheme part_scheme;	/* Partitioning scheme. */
 	int			nparts;			/* number of partitions */
 	struct PartitionBoundInfoData *boundinfo;	/* Partition bounds */
+	List	   *partition_qual; /* partition constraint */
 	struct RelOptInfo **part_rels;	/* Array of RelOptInfos of partitions,
 									 * stored in the same order of bounds */
 	List	  **partexprs;		/* Non-nullable partition key expressions. */
 	List	  **nullable_partexprs; /* Nullable partition key expressions. */
+	List	   *partitioned_child_rels; /* List of RT indexes. */
 } RelOptInfo;
 
 /*
@@ -696,11 +732,12 @@ typedef struct RelOptInfo
  * IndexOptInfo
  *		Per-index information for planning/optimization
  *
- *		indexkeys[], indexcollations[], opfamily[], and opcintype[]
- *		each have ncolumns entries.
+ *		indexkeys[], indexcollations[] each have ncolumns entries.
+ *		opfamily[], and opcintype[]	each have nkeycolumns entries. They do
+ *		not contain any information about included attributes.
  *
- *		sortopfamily[], reverse_sort[], and nulls_first[] likewise have
- *		ncolumns entries, if the index is ordered; but if it is unordered,
+ *		sortopfamily[], reverse_sort[], and nulls_first[] have
+ *		nkeycolumns entries, if the index is ordered; but if it is unordered,
  *		those pointers are NULL.
  *
  *		Zeroes in the indexkeys[] array indicate index columns that are
@@ -737,7 +774,9 @@ typedef struct IndexOptInfo
 
 	/* index descriptor information */
 	int			ncolumns;		/* number of columns in index */
-	int		   *indexkeys;		/* column numbers of index's keys, or 0 */
+	int			nkeycolumns;	/* number of key columns in index */
+	int		   *indexkeys;		/* column numbers of index's attributes both
+								 * key and included columns, or 0 */
 	Oid		   *indexcollations;	/* OIDs of collations of index columns */
 	Oid		   *opfamily;		/* OIDs of operator families for columns */
 	Oid		   *opcintype;		/* OIDs of opclass declared input data types */
@@ -1617,17 +1656,12 @@ typedef struct MinMaxAggPath
 
 /*
  * WindowAggPath represents generic computation of window functions
- *
- * Note: winpathkeys is separate from path.pathkeys because the actual sort
- * order might be an extension of winpathkeys; but createplan.c needs to
- * know exactly how many pathkeys match the window clause.
  */
 typedef struct WindowAggPath
 {
 	Path		path;
 	Path	   *subpath;		/* path representing input source */
 	WindowClause *winclause;	/* WindowClause we'll be using */
-	List	   *winpathkeys;	/* PathKeys for PARTITION keys + ORDER keys */
 } WindowAggPath;
 
 /*
@@ -1670,7 +1704,7 @@ typedef struct LockRowsPath
 } LockRowsPath;
 
 /*
- * ModifyTablePath represents performing INSERT/UPDATE/DELETE/MERGE
+ * ModifyTablePath represents performing INSERT/UPDATE/DELETE modifications
  *
  * We represent most things that will be in the ModifyTable plan node
  * literally, except we have child Path(s) not Plan(s).  But analysis of the
@@ -1679,14 +1713,12 @@ typedef struct LockRowsPath
 typedef struct ModifyTablePath
 {
 	Path		path;
-	CmdType		operation;		/* INSERT, UPDATE, DELETE or MERGE */
+	CmdType		operation;		/* INSERT, UPDATE, or DELETE */
 	bool		canSetTag;		/* do we set the command tag/es_processed? */
 	Index		nominalRelation;	/* Parent RT index for use of EXPLAIN */
-	/* RT indexes of non-leaf tables in a partition tree */
-	List	   *partitioned_rels;
+	Index		rootRelation;	/* Root RT index, if target is partitioned */
 	bool		partColsUpdated;	/* some part key in hierarchy updated */
 	List	   *resultRelations;	/* integer list of RT indexes */
-	Index	  	mergeTargetRelation;/* RT index of merge target relation */
 	List	   *subpaths;		/* Path(s) producing source data */
 	List	   *subroots;		/* per-target-table PlannerInfos */
 	List	   *withCheckOptionLists;	/* per-target-table WCO lists */
@@ -1694,8 +1726,6 @@ typedef struct ModifyTablePath
 	List	   *rowMarks;		/* PlanRowMarks (non-locking only) */
 	OnConflictExpr *onconflict; /* ON CONFLICT clause, or NULL */
 	int			epqParam;		/* ID of Param for EvalPlanQual re-eval */
-	List	   *mergeSourceTargetList;
-	List	   *mergeActionList;	/* actions for MERGE */
 } ModifyTablePath;
 
 /*
@@ -1778,7 +1808,8 @@ typedef struct LimitPath
  * if we decide that it can be pushed down into the nullable side of the join.
  * In that case it acts as a plain filter qual for wherever it gets evaluated.
  * (In short, is_pushed_down is only false for non-degenerate outer join
- * conditions.  Possibly we should rename it to reflect that meaning?)
+ * conditions.  Possibly we should rename it to reflect that meaning?  But
+ * see also the comments for RINFO_IS_PUSHED_DOWN, below.)
  *
  * RestrictInfo nodes also contain an outerjoin_delayed flag, which is true
  * if the clause's applicability must be delayed due to any outer joins
@@ -1919,6 +1950,20 @@ typedef struct RestrictInfo
 	Selectivity left_mcvfreq;	/* left side's most common val's freq */
 	Selectivity right_mcvfreq;	/* right side's most common val's freq */
 } RestrictInfo;
+
+/*
+ * This macro embodies the correct way to test whether a RestrictInfo is
+ * "pushed down" to a given outer join, that is, should be treated as a filter
+ * clause rather than a join clause at that outer join.  This is certainly so
+ * if is_pushed_down is true; but examining that is not sufficient anymore,
+ * because outer-join clauses will get pushed down to lower outer joins when
+ * we generate a path for the lower outer join that is parameterized by the
+ * LHS of the upper one.  We can detect such a clause by noting that its
+ * required_relids exceed the scope of the join.
+ */
+#define RINFO_IS_PUSHED_DOWN(rinfo, joinrelids) \
+	((rinfo)->is_pushed_down || \
+	 !bms_is_subset((rinfo)->required_relids, joinrelids))
 
 /*
  * Since mergejoinscansel() is a relatively expensive function, and would
@@ -2120,27 +2165,6 @@ typedef struct AppendRelInfo
 	 */
 	Oid			parent_reloid;	/* OID of parent relation */
 } AppendRelInfo;
-
-/*
- * For a partitioned table, this maps its RT index to the list of RT indexes
- * of the partitioned child tables in the partition tree.  We need to
- * separately store this information, because we do not create AppendRelInfos
- * for the partitioned child tables of a parent table, since AppendRelInfos
- * contain information that is unnecessary for the partitioned child tables.
- * The child_rels list must contain at least one element, because the parent
- * partitioned table is itself counted as a child.
- *
- * These structs are kept in the PlannerInfo node's pcinfo_list.
- */
-typedef struct PartitionedChildRelInfo
-{
-	NodeTag		type;
-
-	Index		parent_relid;
-	List	   *child_rels;
-	bool		part_cols_updated;	/* is the partition key of any of
-									 * the partitioned tables updated? */
-} PartitionedChildRelInfo;
 
 /*
  * For each distinct placeholder expression generated during planning, we

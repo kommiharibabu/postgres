@@ -207,7 +207,7 @@ extern bool ExecBRDeleteTriggers(EState *estate,
 					 ResultRelInfo *relinfo,
 					 ItemPointer tupleid,
 					 HeapTuple fdw_trigtuple,
-					 HeapUpdateFailureData *hufdp);
+					 TupleTableSlot **epqslot);
 extern void ExecARDeleteTriggers(EState *estate,
 					 ResultRelInfo *relinfo,
 					 ItemPointer tupleid,
@@ -226,8 +226,7 @@ extern TupleTableSlot *ExecBRUpdateTriggers(EState *estate,
 					 ResultRelInfo *relinfo,
 					 ItemPointer tupleid,
 					 HeapTuple fdw_trigtuple,
-					 TupleTableSlot *slot,
-					 HeapUpdateFailureData *hufdp);
+					 TupleTableSlot *slot);
 extern void ExecARUpdateTriggers(EState *estate,
 					 ResultRelInfo *relinfo,
 					 ItemPointer tupleid,

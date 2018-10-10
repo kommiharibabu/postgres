@@ -19,6 +19,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "common/file_perm.h"
 #include "libpq-fe.h"
 #include "access/xlog_internal.h"
 #include "getopt_long.h"
@@ -119,7 +120,7 @@ stop_streaming(XLogRecPtr xlogpos, uint32 timeline, bool segment_finished)
 	if (!XLogRecPtrIsInvalid(endpos) && endpos < xlogpos)
 	{
 		if (verbose)
-			fprintf(stderr, _("%s: stopped streaming at %X/%X (timeline %u)\n"),
+			fprintf(stderr, _("%s: stopped log streaming at %X/%X (timeline %u)\n"),
 					progname, (uint32) (xlogpos >> 32), (uint32) xlogpos,
 					timeline);
 		time_to_stop = true;
@@ -283,10 +284,11 @@ FindStreamingStart(uint32 *tli)
 			char		buf[4];
 			int			bytes_out;
 			char		fullpath[MAXPGPATH * 2];
+			int			r;
 
 			snprintf(fullpath, sizeof(fullpath), "%s/%s", basedir, dirent->d_name);
 
-			fd = open(fullpath, O_RDONLY | PG_BINARY);
+			fd = open(fullpath, O_RDONLY | PG_BINARY, 0);
 			if (fd < 0)
 			{
 				fprintf(stderr, _("%s: could not open compressed file \"%s\": %s\n"),
@@ -299,10 +301,15 @@ FindStreamingStart(uint32 *tli)
 						progname, fullpath, strerror(errno));
 				disconnect_and_exit(1);
 			}
-			if (read(fd, (char *) buf, sizeof(buf)) != sizeof(buf))
+			r = read(fd, (char *) buf, sizeof(buf));
+			if (r != sizeof(buf))
 			{
-				fprintf(stderr, _("%s: could not read compressed file \"%s\": %s\n"),
-						progname, fullpath, strerror(errno));
+				if (r < 0)
+					fprintf(stderr, _("%s: could not read compressed file \"%s\": %s\n"),
+							progname, fullpath, strerror(errno));
+				else
+					fprintf(stderr, _("%s: could not read compressed file \"%s\": read %d of %zu\n"),
+							progname, fullpath, r, sizeof(buf));
 				disconnect_and_exit(1);
 			}
 
@@ -351,7 +358,7 @@ FindStreamingStart(uint32 *tli)
 		if (!high_ispartial)
 			high_segno++;
 
-		XLogSegNoOffsetToRecPtr(high_segno, 0, high_ptr, WalSegSz);
+		XLogSegNoOffsetToRecPtr(high_segno, 0, WalSegSz, high_ptr);
 
 		*tli = high_tli;
 		return high_ptr;
@@ -702,6 +709,16 @@ main(int argc, char **argv)
 	 */
 	if (!RunIdentifySystem(conn, NULL, NULL, NULL, &db_name))
 		disconnect_and_exit(1);
+
+	/*
+	 * Set umask so that directories/files are created with the same
+	 * permissions as directories/files in the source data directory.
+	 *
+	 * pg_mode_mask is set to owner-only by default and then updated in
+	 * GetConnection() where we get the mode from the server-side with
+	 * RetrieveDataDirCreatePerm() and then call SetDataDirectoryCreatePerm().
+	 */
+	umask(pg_mode_mask);
 
 	/* determine remote server's xlog segment size */
 	if (!RetrieveWalSegSize(conn))

@@ -2200,7 +2200,7 @@ ExecEvalFuncExprFusage(ExprState *state, ExprEvalStep *op,
  */
 void
 ExecEvalFuncExprStrictFusage(ExprState *state, ExprEvalStep *op,
-				  ExprContext *econtext)
+							 ExprContext *econtext)
 {
 
 	FunctionCallInfo fcinfo = op->d.func.fcinfo_data;
@@ -2250,33 +2250,6 @@ ExecEvalParamExec(ExprState *state, ExprEvalStep *op, ExprContext *econtext)
 	}
 	*op->resvalue = prm->value;
 	*op->resnull = prm->isnull;
-}
-
-/*
- * ExecEvalParamExecParams
- *
- * Execute the subplan stored in PARAM_EXEC initplans params, if not executed
- * till now.
- */
-void
-ExecEvalParamExecParams(Bitmapset *params, EState *estate)
-{
-	ParamExecData *prm;
-	int			paramid;
-
-	paramid = -1;
-	while ((paramid = bms_next_member(params, paramid)) >= 0)
-	{
-		prm = &(estate->es_param_exec_vals[paramid]);
-
-		if (prm->execPlan != NULL)
-		{
-			/* Parameter not evaluated yet, so go do it */
-			ExecSetParamPlan(prm->execPlan, GetPerTupleExprContext(estate));
-			/* ExecSetParamPlan should have processed this param... */
-			Assert(prm->execPlan == NULL);
-		}
-	}
 }
 
 /*
@@ -3312,7 +3285,7 @@ ExecEvalConvertRowtype(ExprState *state, ExprEvalStep *op, ExprContext *econtext
 	if (op->d.convert_rowtype.map != NULL)
 	{
 		/* Full conversion with attribute rearrangement needed */
-		result = do_convert_tuple(&tmptup, op->d.convert_rowtype.map);
+		result = execute_attr_map_tuple(&tmptup, op->d.convert_rowtype.map);
 		/* Result already has appropriate composite-datum header fields */
 		*op->resvalue = HeapTupleGetDatum(result);
 	}
@@ -3961,10 +3934,10 @@ ExecEvalWholeRowVar(ExprState *state, ExprEvalStep *op, ExprContext *econtext)
 		 * perhaps other places.)
 		 */
 		if (econtext->ecxt_estate &&
-			variable->varno <= list_length(econtext->ecxt_estate->es_range_table))
+			variable->varno <= econtext->ecxt_estate->es_range_table_size)
 		{
-			RangeTblEntry *rte = rt_fetch(variable->varno,
-										  econtext->ecxt_estate->es_range_table);
+			RangeTblEntry *rte = exec_rt_fetch(variable->varno,
+											   econtext->ecxt_estate);
 
 			if (rte->eref)
 				ExecTypeSetColNames(output_tupdesc, rte->eref->colnames);

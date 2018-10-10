@@ -25,9 +25,8 @@
 #include "catalog/indexing.h"
 #include "catalog/partition.h"
 #include "catalog/pg_am.h"
-#include "catalog/pg_constraint_fn.h"
+#include "catalog/pg_constraint.h"
 #include "catalog/pg_inherits.h"
-#include "catalog/pg_inherits_fn.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_opfamily.h"
 #include "catalog/pg_tablespace.h"
@@ -35,6 +34,7 @@
 #include "commands/comment.h"
 #include "commands/dbcommands.h"
 #include "commands/defrem.h"
+#include "commands/event_trigger.h"
 #include "commands/tablecmds.h"
 #include "commands/tablespace.h"
 #include "mb/pg_wchar.h"
@@ -57,6 +57,7 @@
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/partcache.h"
 #include "utils/regproc.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
@@ -109,8 +110,10 @@ static void ReindexPartitionedIndex(Relation parentIdx);
  * indexes.  We acknowledge this when all operator classes, collations and
  * exclusion operators match.  Though we could further permit intra-opfamily
  * changes for btree and hash indexes, that adds subtle complexity with no
- * concrete benefit for core types.
-
+ * concrete benefit for core types. Note, that INCLUDE columns aren't
+ * checked by this function, for them it's enough that table rewrite is
+ * skipped.
+ *
  * When a comparison or exclusion operator has a polymorphic input type, the
  * actual input types must also match.  This defends against the possibility
  * that operators could vary behavior in response to get_fn_expr_argtype().
@@ -181,9 +184,13 @@ CheckIndexCompatible(Oid oldId,
 	 * the new index, so we can test whether it's compatible with the existing
 	 * one.  Note that ComputeIndexAttrs might fail here, but that's OK:
 	 * DefineIndex would have called this function with the same arguments
-	 * later on, and it would have failed then anyway.
+	 * later on, and it would have failed then anyway.  Our attributeList
+	 * contains only key attributes, thus we're filling ii_NumIndexAttrs and
+	 * ii_NumIndexKeyAttrs with same value.
 	 */
 	indexInfo = makeNode(IndexInfo);
+	indexInfo->ii_NumIndexAttrs = numberOfAttributes;
+	indexInfo->ii_NumIndexKeyAttrs = numberOfAttributes;
 	indexInfo->ii_Expressions = NIL;
 	indexInfo->ii_ExpressionsState = NIL;
 	indexInfo->ii_PredicateState = NULL;
@@ -224,7 +231,7 @@ CheckIndexCompatible(Oid oldId,
 	}
 
 	/* Any change in operator class or collation breaks compatibility. */
-	old_natts = indexForm->indnatts;
+	old_natts = indexForm->indnkeyatts;
 	Assert(old_natts == numberOfAttributes);
 
 	d = SysCacheGetAttr(INDEXRELID, tuple, Anum_pg_index_indcollation, &isnull);
@@ -320,7 +327,7 @@ DefineIndex(Oid relationId,
 			IndexStmt *stmt,
 			Oid indexRelationId,
 			Oid parentIndexId,
-			Oid	parentConstraintId,
+			Oid parentConstraintId,
 			bool is_alter_table,
 			bool check_rights,
 			bool check_not_in_use,
@@ -337,6 +344,7 @@ DefineIndex(Oid relationId,
 	Oid			tablespaceId;
 	Oid			createdConstraintId = InvalidOid;
 	List	   *indexColNames;
+	List	   *allIndexParams;
 	Relation	rel;
 	Relation	indexRelation;
 	HeapTuple	tuple;
@@ -351,6 +359,7 @@ DefineIndex(Oid relationId,
 	bits16		flags;
 	bits16		constr_flags;
 	int			numberOfAttributes;
+	int			numberOfKeyAttributes;
 	TransactionId limitXmin;
 	VirtualTransactionId *old_snapshots;
 	ObjectAddress address;
@@ -362,9 +371,22 @@ DefineIndex(Oid relationId,
 	int			i;
 
 	/*
-	 * count attributes in index
+	 * count key attributes in index
 	 */
-	numberOfAttributes = list_length(stmt->indexParams);
+	numberOfKeyAttributes = list_length(stmt->indexParams);
+
+	/*
+	 * Calculate the new list of index columns including both key columns and
+	 * INCLUDE columns.  Later we can determine which of these are key
+	 * columns, and which are just part of the INCLUDE list by checking the
+	 * list position.  A list item in a position less than ii_NumIndexKeyAttrs
+	 * is part of the key columns, and anything equal to and over is part of
+	 * the INCLUDE columns.
+	 */
+	allIndexParams = list_concat(list_copy(stmt->indexParams),
+								 list_copy(stmt->indexIncludingParams));
+	numberOfAttributes = list_length(allIndexParams);
+
 	if (numberOfAttributes <= 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
@@ -405,6 +427,7 @@ DefineIndex(Oid relationId,
 			/* OK */
 			break;
 		case RELKIND_FOREIGN_TABLE:
+
 			/*
 			 * Custom error message for FOREIGN TABLE since the term is close
 			 * to a regular table and can confuse the user.
@@ -413,6 +436,7 @@ DefineIndex(Oid relationId,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 					 errmsg("cannot create index on foreign table \"%s\"",
 							RelationGetRelationName(rel))));
+			break;
 		default:
 			ereport(ERROR,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
@@ -520,7 +544,7 @@ DefineIndex(Oid relationId,
 	/*
 	 * Choose the index column names.
 	 */
-	indexColNames = ChooseIndexColumnNames(stmt->indexParams);
+	indexColNames = ChooseIndexColumnNames(allIndexParams);
 
 	/*
 	 * Select name for index if caller didn't specify
@@ -568,6 +592,11 @@ DefineIndex(Oid relationId,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("access method \"%s\" does not support unique indexes",
 						accessMethodName)));
+	if (stmt->indexIncludingParams != NIL && !amRoutine->amcaninclude)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("access method \"%s\" does not support included columns",
+						accessMethodName)));
 	if (numberOfAttributes > 1 && !amRoutine->amcanmulticol)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -605,6 +634,7 @@ DefineIndex(Oid relationId,
 	 */
 	indexInfo = makeNode(IndexInfo);
 	indexInfo->ii_NumIndexAttrs = numberOfAttributes;
+	indexInfo->ii_NumIndexKeyAttrs = numberOfKeyAttributes;
 	indexInfo->ii_Expressions = NIL;	/* for now */
 	indexInfo->ii_ExpressionsState = NIL;
 	indexInfo->ii_Predicate = make_ands_implicit((Expr *) stmt->whereClause);
@@ -628,7 +658,7 @@ DefineIndex(Oid relationId,
 	coloptions = (int16 *) palloc(numberOfAttributes * sizeof(int16));
 	ComputeIndexAttrs(indexInfo,
 					  typeObjectId, collationObjectId, classObjectId,
-					  coloptions, stmt->indexParams,
+					  coloptions, allIndexParams,
 					  stmt->excludeOpNames, relationId,
 					  accessMethodName, accessMethodId,
 					  amcanorder, stmt->isconstraint);
@@ -637,7 +667,7 @@ DefineIndex(Oid relationId,
 	 * Extra checks when creating a PRIMARY KEY index.
 	 */
 	if (stmt->primary)
-		index_check_primary_key(rel, indexInfo, is_alter_table);
+		index_check_primary_key(rel, indexInfo, is_alter_table, stmt);
 
 	/*
 	 * If this table is partitioned and we're creating a unique index or a
@@ -659,13 +689,13 @@ DefineIndex(Oid relationId,
 		 * partition-local index can enforce global uniqueness iff the PK
 		 * value completely determines the partition that a row is in.
 		 *
-		 * Thus, verify that all the columns in the partition key appear
-		 * in the unique key definition.
+		 * Thus, verify that all the columns in the partition key appear in
+		 * the unique key definition.
 		 */
 		for (i = 0; i < key->partnatts; i++)
 		{
-			bool	found = false;
-			int		j;
+			bool		found = false;
+			int			j;
 			const char *constraint_type;
 
 			if (stmt->primary)
@@ -690,11 +720,11 @@ DefineIndex(Oid relationId,
 						 errmsg("unsupported %s constraint with partition key definition",
 								constraint_type),
 						 errdetail("%s constraints cannot be used when partition keys include expressions.",
-								constraint_type)));
+								   constraint_type)));
 
 			for (j = 0; j < indexInfo->ii_NumIndexAttrs; j++)
 			{
-				if (key->partattrs[i] == indexInfo->ii_KeyAttrNumbers[j])
+				if (key->partattrs[i] == indexInfo->ii_IndexAttrNumbers[j])
 				{
 					found = true;
 					break;
@@ -723,7 +753,7 @@ DefineIndex(Oid relationId,
 	 */
 	for (i = 0; i < indexInfo->ii_NumIndexAttrs; i++)
 	{
-		AttrNumber	attno = indexInfo->ii_KeyAttrNumbers[i];
+		AttrNumber	attno = indexInfo->ii_IndexAttrNumbers[i];
 
 		if (attno < 0 && attno != ObjectIdAttributeNumber)
 			ereport(ERROR,
@@ -788,8 +818,8 @@ DefineIndex(Oid relationId,
 	/*
 	 * Make the catalog entries for the index, including constraints. This
 	 * step also actually builds the index, except if caller requested not to
-	 * or in concurrent mode, in which case it'll be done later, or
-	 * doing a partitioned index (because those don't have storage).
+	 * or in concurrent mode, in which case it'll be done later, or doing a
+	 * partitioned index (because those don't have storage).
 	 */
 	flags = constr_flags = 0;
 	if (stmt->isconstraint)
@@ -839,8 +869,8 @@ DefineIndex(Oid relationId,
 	if (partitioned)
 	{
 		/*
-		 * Unless caller specified to skip this step (via ONLY), process
-		 * each partition to make sure they all contain a corresponding index.
+		 * Unless caller specified to skip this step (via ONLY), process each
+		 * partition to make sure they all contain a corresponding index.
 		 *
 		 * If we're called internally (no stmt->relation), recurse always.
 		 */
@@ -856,8 +886,8 @@ DefineIndex(Oid relationId,
 			memcpy(part_oids, partdesc->oids, sizeof(Oid) * nparts);
 
 			parentDesc = CreateTupleDescCopy(RelationGetDescr(rel));
-			opfamOids = palloc(sizeof(Oid) * numberOfAttributes);
-			for (i = 0; i < numberOfAttributes; i++)
+			opfamOids = palloc(sizeof(Oid) * numberOfKeyAttributes);
+			for (i = 0; i < numberOfKeyAttributes; i++)
 				opfamOids[i] = get_opclass_family(classObjectId[i]);
 
 			heap_close(rel, NoLock);
@@ -872,13 +902,13 @@ DefineIndex(Oid relationId,
 			 */
 			for (i = 0; i < nparts; i++)
 			{
-				Oid		childRelid = part_oids[i];
-				Relation childrel;
-				List   *childidxs;
-				ListCell *cell;
+				Oid			childRelid = part_oids[i];
+				Relation	childrel;
+				List	   *childidxs;
+				ListCell   *cell;
 				AttrNumber *attmap;
-				bool	found = false;
-				int		maplen;
+				bool		found = false;
+				int			maplen;
 
 				childrel = heap_open(childRelid, lockmode);
 				childidxs = RelationGetIndexList(childrel);
@@ -908,7 +938,7 @@ DefineIndex(Oid relationId,
 										 opfamOids,
 										 attmap, maplen))
 					{
-						Oid		cldConstrOid = InvalidOid;
+						Oid			cldConstrOid = InvalidOid;
 
 						/*
 						 * Found a match.
@@ -959,7 +989,32 @@ DefineIndex(Oid relationId,
 				{
 					IndexStmt  *childStmt = copyObject(stmt);
 					bool		found_whole_row;
+					ListCell   *lc;
 
+					/*
+					 * Adjust any Vars (both in expressions and in the index's
+					 * WHERE clause) to match the partition's column numbering
+					 * in case it's different from the parent's.
+					 */
+					foreach(lc, childStmt->indexParams)
+					{
+						IndexElem  *ielem = lfirst(lc);
+
+						/*
+						 * If the index parameter is an expression, we must
+						 * translate it to contain child Vars.
+						 */
+						if (ielem->expr)
+						{
+							ielem->expr =
+								map_variable_attnos((Node *) ielem->expr,
+													1, 0, attmap, maplen,
+													InvalidOid,
+													&found_whole_row);
+							if (found_whole_row)
+								elog(ERROR, "cannot convert whole-row table reference");
+						}
+					}
 					childStmt->whereClause =
 						map_variable_attnos(stmt->whereClause, 1, 0,
 											attmap, maplen,
@@ -970,11 +1025,11 @@ DefineIndex(Oid relationId,
 					childStmt->idxname = NULL;
 					childStmt->relationId = childRelid;
 					DefineIndex(childRelid, childStmt,
-								InvalidOid,			/* no predefined OID */
+								InvalidOid, /* no predefined OID */
 								indexRelationId,	/* this is our child */
 								createdConstraintId,
 								is_alter_table, check_rights, check_not_in_use,
-								false, quiet);
+								skip_build, quiet);
 				}
 
 				pfree(attmap);
@@ -982,9 +1037,8 @@ DefineIndex(Oid relationId,
 
 			/*
 			 * The pg_index row we inserted for this index was marked
-			 * indisvalid=true.  But if we attached an existing index that
-			 * is invalid, this is incorrect, so update our row to
-			 * invalid too.
+			 * indisvalid=true.  But if we attached an existing index that is
+			 * invalid, this is incorrect, so update our row to invalid too.
 			 */
 			if (invalidate_parent)
 			{
@@ -1165,14 +1219,25 @@ DefineIndex(Oid relationId,
 	 * doing CREATE INDEX CONCURRENTLY, which would see our snapshot as one
 	 * they must wait for.  But first, save the snapshot's xmin to use as
 	 * limitXmin for GetCurrentVirtualXIDs().
-	 *
-	 * Our catalog snapshot could have the same effect, so drop that one too.
 	 */
 	limitXmin = snapshot->xmin;
 
 	PopActiveSnapshot();
 	UnregisterSnapshot(snapshot);
-	InvalidateCatalogSnapshot();
+
+	/*
+	 * The snapshot subsystem could still contain registered snapshots that
+	 * are holding back our process's advertised xmin; in particular, if
+	 * default_transaction_isolation = serializable, there is a transaction
+	 * snapshot that is still active.  The CatalogSnapshot is likewise a
+	 * hazard.  To ensure no deadlocks, we must commit and start yet another
+	 * transaction, and do our wait before any snapshot has been taken in it.
+	 */
+	CommitTransactionCommand();
+	StartTransactionCommand();
+
+	/* We should now definitely not be advertising any xmin. */
+	Assert(MyPgXact->xmin == InvalidTransactionId);
 
 	/*
 	 * The index is now valid in the sense that it contains all currently
@@ -1329,7 +1394,8 @@ CheckPredicate(Expr *predicate)
 
 /*
  * Compute per-index-column information, including indexed column numbers
- * or index expressions, opclasses, and indoptions.
+ * or index expressions, opclasses, and indoptions. Note, all output vectors
+ * should be allocated for all columns, including "including" ones.
  */
 static void
 ComputeIndexAttrs(IndexInfo *indexInfo,
@@ -1348,16 +1414,15 @@ ComputeIndexAttrs(IndexInfo *indexInfo,
 	ListCell   *nextExclOp;
 	ListCell   *lc;
 	int			attn;
+	int			nkeycols = indexInfo->ii_NumIndexKeyAttrs;
 
 	/* Allocate space for exclusion operator info, if needed */
 	if (exclusionOpNames)
 	{
-		int			ncols = list_length(attList);
-
-		Assert(list_length(exclusionOpNames) == ncols);
-		indexInfo->ii_ExclusionOps = (Oid *) palloc(sizeof(Oid) * ncols);
-		indexInfo->ii_ExclusionProcs = (Oid *) palloc(sizeof(Oid) * ncols);
-		indexInfo->ii_ExclusionStrats = (uint16 *) palloc(sizeof(uint16) * ncols);
+		Assert(list_length(exclusionOpNames) == nkeycols);
+		indexInfo->ii_ExclusionOps = (Oid *) palloc(sizeof(Oid) * nkeycols);
+		indexInfo->ii_ExclusionProcs = (Oid *) palloc(sizeof(Oid) * nkeycols);
+		indexInfo->ii_ExclusionStrats = (uint16 *) palloc(sizeof(uint16) * nkeycols);
 		nextExclOp = list_head(exclusionOpNames);
 	}
 	else
@@ -1399,7 +1464,7 @@ ComputeIndexAttrs(IndexInfo *indexInfo,
 									attribute->name)));
 			}
 			attform = (Form_pg_attribute) GETSTRUCT(atttuple);
-			indexInfo->ii_KeyAttrNumbers[attn] = attform->attnum;
+			indexInfo->ii_IndexAttrNumbers[attn] = attform->attnum;
 			atttype = attform->atttypid;
 			attcollation = attform->attcollation;
 			ReleaseSysCache(atttuple);
@@ -1410,6 +1475,11 @@ ComputeIndexAttrs(IndexInfo *indexInfo,
 			Node	   *expr = attribute->expr;
 
 			Assert(expr != NULL);
+
+			if (attn >= nkeycols)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("expressions are not supported in included columns")));
 			atttype = exprType(expr);
 			attcollation = exprCollation(expr);
 
@@ -1427,11 +1497,11 @@ ComputeIndexAttrs(IndexInfo *indexInfo,
 				 * User wrote "(column)" or "(column COLLATE something)".
 				 * Treat it like simple attribute anyway.
 				 */
-				indexInfo->ii_KeyAttrNumbers[attn] = ((Var *) expr)->varattno;
+				indexInfo->ii_IndexAttrNumbers[attn] = ((Var *) expr)->varattno;
 			}
 			else
 			{
-				indexInfo->ii_KeyAttrNumbers[attn] = 0; /* marks expression */
+				indexInfo->ii_IndexAttrNumbers[attn] = 0;	/* marks expression */
 				indexInfo->ii_Expressions = lappend(indexInfo->ii_Expressions,
 													expr);
 
@@ -1455,6 +1525,37 @@ ComputeIndexAttrs(IndexInfo *indexInfo,
 		}
 
 		typeOidP[attn] = atttype;
+
+		/*
+		 * Included columns have no collation, no opclass and no ordering
+		 * options.
+		 */
+		if (attn >= nkeycols)
+		{
+			if (attribute->collation)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+						 errmsg("including column does not support a collation")));
+			if (attribute->opclass)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+						 errmsg("including column does not support an operator class")));
+			if (attribute->ordering != SORTBY_DEFAULT)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+						 errmsg("including column does not support ASC/DESC options")));
+			if (attribute->nulls_ordering != SORTBY_NULLS_DEFAULT)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+						 errmsg("including column does not support NULLS FIRST/LAST options")));
+
+			classOidP[attn] = InvalidOid;
+			colOptionP[attn] = 0;
+			collationOidP[attn] = InvalidOid;
+			attn++;
+
+			continue;
+		}
 
 		/*
 		 * Apply collation override if any
@@ -1895,6 +1996,12 @@ makeObjectName(const char *name1, const char *name2, const char *label)
  * except that the label can't be NULL; digits will be appended to the label
  * if needed to create a name that is unique within the specified namespace.
  *
+ * If isconstraint is true, we also avoid choosing a name matching any
+ * existing constraint in the same namespace.  (This is stricter than what
+ * Postgres itself requires, but the SQL standard says that constraint names
+ * should be unique within schemas, so we follow that for autogenerated
+ * constraint names.)
+ *
  * Note: it is theoretically possible to get a collision anyway, if someone
  * else chooses the same name concurrently.  This is fairly unlikely to be
  * a problem in practice, especially if one is holding an exclusive lock on
@@ -1906,7 +2013,8 @@ makeObjectName(const char *name1, const char *name2, const char *label)
  */
 char *
 ChooseRelationName(const char *name1, const char *name2,
-				   const char *label, Oid namespaceid)
+				   const char *label, Oid namespaceid,
+				   bool isconstraint)
 {
 	int			pass = 0;
 	char	   *relname = NULL;
@@ -1920,7 +2028,11 @@ ChooseRelationName(const char *name1, const char *name2,
 		relname = makeObjectName(name1, name2, modlabel);
 
 		if (!OidIsValid(get_relname_relid(relname, namespaceid)))
-			break;
+		{
+			if (!isconstraint ||
+				!ConstraintNameExists(relname, namespaceid))
+				break;
+		}
 
 		/* found a conflict, so try a new name component */
 		pfree(relname);
@@ -1948,28 +2060,32 @@ ChooseIndexName(const char *tabname, Oid namespaceId,
 		indexname = ChooseRelationName(tabname,
 									   NULL,
 									   "pkey",
-									   namespaceId);
+									   namespaceId,
+									   true);
 	}
 	else if (exclusionOpNames != NIL)
 	{
 		indexname = ChooseRelationName(tabname,
 									   ChooseIndexNameAddition(colnames),
 									   "excl",
-									   namespaceId);
+									   namespaceId,
+									   true);
 	}
 	else if (isconstraint)
 	{
 		indexname = ChooseRelationName(tabname,
 									   ChooseIndexNameAddition(colnames),
 									   "key",
-									   namespaceId);
+									   namespaceId,
+									   true);
 	}
 	else
 	{
 		indexname = ChooseRelationName(tabname,
 									   ChooseIndexNameAddition(colnames),
 									   "idx",
-									   namespaceId);
+									   namespaceId,
+									   false);
 	}
 
 	return indexname;
@@ -2315,6 +2431,18 @@ ReindexMultipleTables(const char *objectName, ReindexObjectType objectKind,
 			!IsSystemClass(relid, classtuple))
 			continue;
 
+		/*
+		 * The table can be reindexed if the user is superuser, the table
+		 * owner, or the database/schema owner (but in the latter case, only
+		 * if it's not a shared relation).  pg_class_ownercheck includes the
+		 * superuser case, and depending on objectKind we already know that
+		 * the user has permission to run REINDEX on this database or schema
+		 * per the permission checks at the beginning of this routine.
+		 */
+		if (classtuple->relisshared &&
+			!pg_class_ownercheck(relid, GetUserId()))
+			continue;
+
 		/* Save the list of relation OIDs in private context */
 		old = MemoryContextSwitchTo(private_context);
 
@@ -2387,8 +2515,8 @@ void
 IndexSetParentIndex(Relation partitionIdx, Oid parentOid)
 {
 	Relation	pg_inherits;
-	ScanKeyData	key[2];
-	SysScanDesc	scan;
+	ScanKeyData key[2];
+	SysScanDesc scan;
 	Oid			partRelid = RelationGetRelid(partitionIdx);
 	HeapTuple	tuple;
 	bool		fix_dependencies;
@@ -2418,15 +2546,15 @@ IndexSetParentIndex(Relation partitionIdx, Oid parentOid)
 		if (parentOid == InvalidOid)
 		{
 			/*
-			 * No pg_inherits row, and no parent wanted: nothing to do in
-			 * this case.
+			 * No pg_inherits row, and no parent wanted: nothing to do in this
+			 * case.
 			 */
 			fix_dependencies = false;
 		}
 		else
 		{
-			Datum	values[Natts_pg_inherits];
-			bool	isnull[Natts_pg_inherits];
+			Datum		values[Natts_pg_inherits];
+			bool		isnull[Natts_pg_inherits];
 
 			/*
 			 * No pg_inherits row exists, and we want a parent for this index,
@@ -2447,7 +2575,7 @@ IndexSetParentIndex(Relation partitionIdx, Oid parentOid)
 	}
 	else
 	{
-		Form_pg_inherits	inhForm = (Form_pg_inherits) GETSTRUCT(tuple);
+		Form_pg_inherits inhForm = (Form_pg_inherits) GETSTRUCT(tuple);
 
 		if (parentOid == InvalidOid)
 		{
@@ -2494,14 +2622,14 @@ IndexSetParentIndex(Relation partitionIdx, Oid parentOid)
 
 		if (OidIsValid(parentOid))
 		{
-			ObjectAddress	parentIdx;
+			ObjectAddress parentIdx;
 
 			ObjectAddressSet(parentIdx, RelationRelationId, parentOid);
 			recordDependencyOn(&partIdx, &parentIdx, DEPENDENCY_INTERNAL_AUTO);
 		}
 		else
 		{
-			ObjectAddress	partitionTbl;
+			ObjectAddress partitionTbl;
 
 			ObjectAddressSet(partitionTbl, RelationRelationId,
 							 partitionIdx->rd_index->indrelid);

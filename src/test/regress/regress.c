@@ -16,7 +16,6 @@
 
 #include "postgres.h"
 
-#include <float.h>
 #include <math.h>
 #include <signal.h>
 
@@ -38,7 +37,6 @@
 #include "utils/memutils.h"
 
 
-#define P_MAXDIG 12
 #define LDELIM			'('
 #define RDELIM			')'
 #define DELIM			','
@@ -150,8 +148,8 @@ widget_in(PG_FUNCTION_ARGS)
 	if (i < NARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-				 errmsg("invalid input syntax for type widget: \"%s\"",
-						str)));
+				 errmsg("invalid input syntax for type %s: \"%s\"",
+						"widget", str)));
 
 	result = (WIDGET *) palloc(sizeof(WIDGET));
 	result->center.x = atof(coord[0]);
@@ -178,8 +176,13 @@ pt_in_widget(PG_FUNCTION_ARGS)
 {
 	Point	   *point = PG_GETARG_POINT_P(0);
 	WIDGET	   *widget = (WIDGET *) PG_GETARG_POINTER(1);
+	float8		distance;
 
-	PG_RETURN_BOOL(point_dt(point, &widget->center) < widget->radius);
+	distance = DatumGetFloat8(DirectFunctionCall2(point_distance,
+												  PointPGetDatum(point),
+											PointPGetDatum(&widget->center)));
+
+	PG_RETURN_BOOL(distance < widget->radius);
 }
 
 PG_FUNCTION_INFO_V1(reverse_name);
@@ -633,7 +636,6 @@ wait_pid(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
-#ifndef PG_HAVE_ATOMIC_FLAG_SIMULATION
 static void
 test_atomic_flag(void)
 {
@@ -663,7 +665,6 @@ test_atomic_flag(void)
 
 	pg_atomic_clear_flag(&flag);
 }
-#endif							/* PG_HAVE_ATOMIC_FLAG_SIMULATION */
 
 static void
 test_atomic_uint32(void)
@@ -846,19 +847,7 @@ PG_FUNCTION_INFO_V1(test_atomic_ops);
 Datum
 test_atomic_ops(PG_FUNCTION_ARGS)
 {
-	/* ---
-	 * Can't run the test under the semaphore emulation, it doesn't handle
-	 * checking two edge cases well:
-	 * - pg_atomic_unlocked_test_flag() always returns true
-	 * - locking a already locked flag blocks
-	 * it seems better to not test the semaphore fallback here, than weaken
-	 * the checks for the other cases. The semaphore code will be the same
-	 * everywhere, whereas the efficient implementations wont.
-	 * ---
-	 */
-#ifndef PG_HAVE_ATOMIC_FLAG_SIMULATION
 	test_atomic_flag();
-#endif
 
 	test_atomic_uint32();
 

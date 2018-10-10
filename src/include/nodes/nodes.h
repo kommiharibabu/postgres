@@ -87,6 +87,10 @@ typedef enum NodeTag
 	/* these aren't subclasses of Plan: */
 	T_NestLoopParam,
 	T_PlanRowMark,
+	T_PartitionPruneInfo,
+	T_PartitionedRelPruneInfo,
+	T_PartitionPruneStepOp,
+	T_PartitionPruneStepCombine,
 	T_PlanInvalItem,
 
 	/*
@@ -97,7 +101,6 @@ typedef enum NodeTag
 	T_PlanState,
 	T_ResultState,
 	T_ProjectSetState,
-	T_MergeActionState,
 	T_ModifyTableState,
 	T_AppendState,
 	T_MergeAppendState,
@@ -262,14 +265,12 @@ typedef enum NodeTag
 	T_PlaceHolderVar,
 	T_SpecialJoinInfo,
 	T_AppendRelInfo,
-	T_PartitionedChildRelInfo,
 	T_PlaceHolderInfo,
 	T_MinMaxAggInfo,
 	T_PlannerParamItem,
 	T_RollupData,
 	T_GroupingSetData,
 	T_StatisticExtInfo,
-	T_MergeAction,
 
 	/*
 	 * TAGS FOR MEMORY NODES (memnodes.h)
@@ -310,7 +311,6 @@ typedef enum NodeTag
 	T_InsertStmt,
 	T_DeleteStmt,
 	T_UpdateStmt,
-	T_MergeStmt,
 	T_SelectStmt,
 	T_AlterTableStmt,
 	T_AlterTableCmd,
@@ -475,7 +475,6 @@ typedef enum NodeTag
 	T_PartitionRangeDatum,
 	T_PartitionCmd,
 	T_VacuumRelation,
-	T_MergeWhenClause,
 
 	/*
 	 * TAGS FOR REPLICATION GRAMMAR PARSE NODES (replnodes.h)
@@ -611,7 +610,10 @@ extern char *bmsToString(const struct Bitmapset *bms);
 /*
  * nodes/{readfuncs.c,read.c}
  */
-extern void *stringToNode(char *str);
+extern void *stringToNode(const char *str);
+#ifdef WRITE_READ_PARSE_PLAN_TREES
+extern void *stringToNodeWithLocations(const char *str);
+#endif
 extern struct Bitmapset *readBitmapset(void);
 extern uintptr_t readDatum(bool typbyval);
 extern bool *readBoolCols(int numCols);
@@ -661,8 +663,7 @@ typedef enum CmdType
 	CMD_SELECT,					/* select stmt */
 	CMD_UPDATE,					/* update stmt */
 	CMD_INSERT,					/* insert stmt */
-	CMD_DELETE,					/* delete stmt */
-	CMD_MERGE,					/* merge stmt */
+	CMD_DELETE,
 	CMD_UTILITY,				/* cmds like create, destroy, copy, vacuum,
 								 * etc. */
 	CMD_NOTHING					/* dummy command for instead nothing rules

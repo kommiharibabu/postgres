@@ -19,8 +19,7 @@
 #include "pg_rewind.h"
 
 #include "common/string.h"
-#include "catalog/catalog.h"
-#include "catalog/pg_tablespace.h"
+#include "catalog/pg_tablespace_d.h"
 #include "storage/fd.h"
 
 filemap_t  *filemap = NULL;
@@ -31,7 +30,7 @@ static char *datasegpath(RelFileNode rnode, ForkNumber forknum,
 static int	path_cmp(const void *a, const void *b);
 static int	final_filemap_cmp(const void *a, const void *b);
 static void filemap_list_to_array(filemap_t *map);
-static bool check_file_excluded(const char *path, const char *type);
+static bool check_file_excluded(const char *path, bool is_source);
 
 /*
  * The contents of these directories are removed or recreated during server
@@ -49,7 +48,7 @@ static const char *excludeDirContents[] =
 	 * when stats_temp_directory is set because PGSS_TEXT_FILE is always
 	 * created there.
 	 */
-	"pg_stat_tmp",	/* defined as PG_STAT_TMP_DIR */
+	"pg_stat_tmp",				/* defined as PG_STAT_TMP_DIR */
 
 	/*
 	 * It is generally not useful to backup the contents of this directory
@@ -59,7 +58,7 @@ static const char *excludeDirContents[] =
 	"pg_replslot",
 
 	/* Contents removed on startup, see dsm_cleanup_for_mmap(). */
-	"pg_dynshmem",	/* defined as PG_DYNSHMEM_DIR */
+	"pg_dynshmem",				/* defined as PG_DYNSHMEM_DIR */
 
 	/* Contents removed on startup, see AsyncShmemInit(). */
 	"pg_notify",
@@ -149,7 +148,7 @@ process_source_file(const char *path, file_type_t type, size_t newsize,
 	Assert(map->array == NULL);
 
 	/* ignore any path matching the exclusion filters */
-	if (check_file_excluded(path, "source"))
+	if (check_file_excluded(path, true))
 		return;
 
 	/*
@@ -339,7 +338,7 @@ process_target_file(const char *path, file_type_t type, size_t oldsize,
 	 * mandatory for target files, but this does not hurt and let's be
 	 * consistent with the source processing.
 	 */
-	if (check_file_excluded(path, "target"))
+	if (check_file_excluded(path, false))
 		return;
 
 	snprintf(localpath, sizeof(localpath), "%s/%s", datadir_target, path);
@@ -491,11 +490,11 @@ process_block_change(ForkNumber forknum, RelFileNode rnode, BlockNumber blkno)
  * Is this the path of file that pg_rewind can skip copying?
  */
 static bool
-check_file_excluded(const char *path, const char *type)
+check_file_excluded(const char *path, bool is_source)
 {
-	char	localpath[MAXPGPATH];
-	int		excludeIdx;
-	const char	*filename;
+	char		localpath[MAXPGPATH];
+	int			excludeIdx;
+	const char *filename;
 
 	/* check individual files... */
 	for (excludeIdx = 0; excludeFiles[excludeIdx] != NULL; excludeIdx++)
@@ -507,8 +506,12 @@ check_file_excluded(const char *path, const char *type)
 			filename++;
 		if (strcmp(filename, excludeFiles[excludeIdx]) == 0)
 		{
-			pg_log(PG_DEBUG, "entry \"%s\" excluded from %s file list\n",
-				   path, type);
+			if (is_source)
+				pg_log(PG_DEBUG, "entry \"%s\" excluded from source file list\n",
+					   path);
+			else
+				pg_log(PG_DEBUG, "entry \"%s\" excluded from target file list\n",
+					   path);
 			return true;
 		}
 	}
@@ -523,8 +526,12 @@ check_file_excluded(const char *path, const char *type)
 				 excludeDirContents[excludeIdx]);
 		if (strstr(path, localpath) == path)
 		{
-			pg_log(PG_DEBUG, "entry \"%s\" excluded from %s file list\n",
-				   path, type);
+			if (is_source)
+				pg_log(PG_DEBUG, "entry \"%s\" excluded from source file list\n",
+					   path);
+			else
+				pg_log(PG_DEBUG, "entry \"%s\" excluded from target file list\n",
+					   path);
 			return true;
 		}
 	}
@@ -734,8 +741,8 @@ isRelDataFile(const char *path)
 	/*
 	 * The sscanf tests above can match files that have extra characters at
 	 * the end. To eliminate such cases, cross-check that GetRelationPath
-	 * creates the exact same filename, when passed the RelFileNode information
-	 * we extracted from the filename.
+	 * creates the exact same filename, when passed the RelFileNode
+	 * information we extracted from the filename.
 	 */
 	if (matched)
 	{
@@ -803,7 +810,7 @@ final_filemap_cmp(const void *a, const void *b)
 		return -1;
 
 	if (fa->action == FILE_ACTION_REMOVE)
-		return -strcmp(fa->path, fb->path);
+		return strcmp(fb->path, fa->path);
 	else
 		return strcmp(fa->path, fb->path);
 }

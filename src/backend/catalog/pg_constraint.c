@@ -18,11 +18,12 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
+#include "access/tupconvert.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/objectaccess.h"
+#include "catalog/partition.h"
 #include "catalog/pg_constraint.h"
-#include "catalog/pg_constraint_fn.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
@@ -57,6 +58,7 @@ CreateConstraintEntry(const char *constraintName,
 					  Oid relId,
 					  const int16 *constraintKey,
 					  int constraintNKeys,
+					  int constraintNTotalKeys,
 					  Oid domainId,
 					  Oid indexRelId,
 					  Oid foreignRelId,
@@ -247,9 +249,9 @@ CreateConstraintEntry(const char *constraintName,
 
 		relobject.classId = RelationRelationId;
 		relobject.objectId = relId;
-		if (constraintNKeys > 0)
+		if (constraintNTotalKeys > 0)
 		{
-			for (i = 0; i < constraintNKeys; i++)
+			for (i = 0; i < constraintNTotalKeys; i++)
 			{
 				relobject.objectSubId = constraintKey[i];
 
@@ -396,8 +398,8 @@ CloneForeignKeyConstraints(Oid parentId, Oid relationId, List **cloned)
 	Relation	pg_constraint;
 	Relation	parentRel;
 	Relation	rel;
-	ScanKeyData	key;
-	SysScanDesc	scan;
+	ScanKeyData key;
+	SysScanDesc scan;
 	TupleDesc	tupdesc;
 	HeapTuple	tuple;
 	AttrNumber *attmap;
@@ -420,12 +422,12 @@ CloneForeignKeyConstraints(Oid parentId, Oid relationId, List **cloned)
 	ScanKeyInit(&key,
 				Anum_pg_constraint_conrelid, BTEqualStrategyNumber,
 				F_OIDEQ, ObjectIdGetDatum(parentId));
-	scan = systable_beginscan(pg_constraint, ConstraintRelidIndexId, true,
+	scan = systable_beginscan(pg_constraint, ConstraintRelidTypidNameIndexId, true,
 							  NULL, 1, &key);
 
 	while ((tuple = systable_getnext(scan)) != NULL)
 	{
-		Form_pg_constraint	constrForm = (Form_pg_constraint) GETSTRUCT(tuple);
+		Form_pg_constraint constrForm = (Form_pg_constraint) GETSTRUCT(tuple);
 		AttrNumber	conkey[INDEX_MAX_KEYS];
 		AttrNumber	mapped_conkey[INDEX_MAX_KEYS];
 		AttrNumber	confkey[INDEX_MAX_KEYS];
@@ -548,9 +550,10 @@ CloneForeignKeyConstraints(Oid parentId, Oid relationId, List **cloned)
 								  relationId,
 								  mapped_conkey,
 								  nelem,
+								  nelem,
 								  InvalidOid,	/* not a domain constraint */
-								  constrForm->conindid,	/* same index */
-								  constrForm->confrelid, /* same foreign rel */
+								  constrForm->conindid, /* same index */
+								  constrForm->confrelid,	/* same foreign rel */
 								  confkey,
 								  conpfeqop,
 								  conppeqop,
@@ -571,6 +574,7 @@ CloneForeignKeyConstraints(Oid parentId, Oid relationId, List **cloned)
 
 		fkconstraint = makeNode(Constraint);
 		/* for now this is all we need */
+		fkconstraint->conname = pstrdup(NameStr(constrForm->conname));
 		fkconstraint->fk_upd_action = constrForm->confupdtype;
 		fkconstraint->fk_del_action = constrForm->confdeltype;
 		fkconstraint->deferrable = constrForm->condeferrable;
@@ -582,8 +586,8 @@ CloneForeignKeyConstraints(Oid parentId, Oid relationId, List **cloned)
 		if (cloned)
 		{
 			/*
-			 * Feed back caller about the constraints we created, so that they can
-			 * set up constraint verification.
+			 * Feed back caller about the constraints we created, so that they
+			 * can set up constraint verification.
 			 */
 			newc = palloc(sizeof(ClonedConstraint));
 			newc->relid = relationId;
@@ -601,7 +605,7 @@ CloneForeignKeyConstraints(Oid parentId, Oid relationId, List **cloned)
 
 	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 	{
-		PartitionDesc	partdesc = RelationGetPartitionDesc(rel);
+		PartitionDesc partdesc = RelationGetPartitionDesc(rel);
 		int			i;
 
 		for (i = 0; i < partdesc->nparts; i++)
@@ -610,7 +614,7 @@ CloneForeignKeyConstraints(Oid parentId, Oid relationId, List **cloned)
 									   cloned);
 	}
 
-	heap_close(rel, NoLock);		/* keep lock till commit */
+	heap_close(rel, NoLock);	/* keep lock till commit */
 	heap_close(parentRel, NoLock);
 	heap_close(pg_constraint, RowShareLock);
 }
@@ -629,17 +633,58 @@ CloneForeignKeyConstraints(Oid parentId, Oid relationId, List **cloned)
  */
 bool
 ConstraintNameIsUsed(ConstraintCategory conCat, Oid objId,
-					 Oid objNamespace, const char *conname)
+					 const char *conname)
+{
+	bool		found;
+	Relation	conDesc;
+	SysScanDesc conscan;
+	ScanKeyData skey[3];
+
+	conDesc = heap_open(ConstraintRelationId, AccessShareLock);
+
+	ScanKeyInit(&skey[0],
+				Anum_pg_constraint_conrelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum((conCat == CONSTRAINT_RELATION)
+								 ? objId : InvalidOid));
+	ScanKeyInit(&skey[1],
+				Anum_pg_constraint_contypid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum((conCat == CONSTRAINT_DOMAIN)
+								 ? objId : InvalidOid));
+	ScanKeyInit(&skey[2],
+				Anum_pg_constraint_conname,
+				BTEqualStrategyNumber, F_NAMEEQ,
+				CStringGetDatum(conname));
+
+	conscan = systable_beginscan(conDesc, ConstraintRelidTypidNameIndexId,
+								 true, NULL, 3, skey);
+
+	/* There can be at most one matching row */
+	found = (HeapTupleIsValid(systable_getnext(conscan)));
+
+	systable_endscan(conscan);
+	heap_close(conDesc, AccessShareLock);
+
+	return found;
+}
+
+/*
+ * Does any constraint of the given name exist in the given namespace?
+ *
+ * This is used for code that wants to match ChooseConstraintName's rule
+ * that we should avoid autogenerating duplicate constraint names within a
+ * namespace.
+ */
+bool
+ConstraintNameExists(const char *conname, Oid namespaceid)
 {
 	bool		found;
 	Relation	conDesc;
 	SysScanDesc conscan;
 	ScanKeyData skey[2];
-	HeapTuple	tup;
 
 	conDesc = heap_open(ConstraintRelationId, AccessShareLock);
-
-	found = false;
 
 	ScanKeyInit(&skey[0],
 				Anum_pg_constraint_conname,
@@ -649,26 +694,12 @@ ConstraintNameIsUsed(ConstraintCategory conCat, Oid objId,
 	ScanKeyInit(&skey[1],
 				Anum_pg_constraint_connamespace,
 				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(objNamespace));
+				ObjectIdGetDatum(namespaceid));
 
 	conscan = systable_beginscan(conDesc, ConstraintNameNspIndexId, true,
 								 NULL, 2, skey);
 
-	while (HeapTupleIsValid(tup = systable_getnext(conscan)))
-	{
-		Form_pg_constraint con = (Form_pg_constraint) GETSTRUCT(tup);
-
-		if (conCat == CONSTRAINT_RELATION && con->conrelid == objId)
-		{
-			found = true;
-			break;
-		}
-		else if (conCat == CONSTRAINT_DOMAIN && con->contypid == objId)
-		{
-			found = true;
-			break;
-		}
-	}
+	found = (HeapTupleIsValid(systable_getnext(conscan)));
 
 	systable_endscan(conscan);
 	heap_close(conDesc, AccessShareLock);
@@ -875,13 +906,11 @@ RenameConstraintById(Oid conId, const char *newname)
 	con = (Form_pg_constraint) GETSTRUCT(tuple);
 
 	/*
-	 * We need to check whether the name is already in use --- note that there
-	 * currently is not a unique index that would catch this.
+	 * For user-friendliness, check whether the name is already in use.
 	 */
 	if (OidIsValid(con->conrelid) &&
 		ConstraintNameIsUsed(CONSTRAINT_RELATION,
 							 con->conrelid,
-							 con->connamespace,
 							 newname))
 		ereport(ERROR,
 				(errcode(ERRCODE_DUPLICATE_OBJECT),
@@ -890,7 +919,6 @@ RenameConstraintById(Oid conId, const char *newname)
 	if (OidIsValid(con->contypid) &&
 		ConstraintNameIsUsed(CONSTRAINT_DOMAIN,
 							 con->contypid,
-							 con->connamespace,
 							 newname))
 		ereport(ERROR,
 				(errcode(ERRCODE_DUPLICATE_OBJECT),
@@ -920,32 +948,23 @@ AlterConstraintNamespaces(Oid ownerId, Oid oldNspId,
 						  Oid newNspId, bool isType, ObjectAddresses *objsMoved)
 {
 	Relation	conRel;
-	ScanKeyData key[1];
+	ScanKeyData key[2];
 	SysScanDesc scan;
 	HeapTuple	tup;
 
 	conRel = heap_open(ConstraintRelationId, RowExclusiveLock);
 
-	if (isType)
-	{
-		ScanKeyInit(&key[0],
-					Anum_pg_constraint_contypid,
-					BTEqualStrategyNumber, F_OIDEQ,
-					ObjectIdGetDatum(ownerId));
+	ScanKeyInit(&key[0],
+				Anum_pg_constraint_conrelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(isType ? InvalidOid : ownerId));
+	ScanKeyInit(&key[1],
+				Anum_pg_constraint_contypid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(isType ? ownerId : InvalidOid));
 
-		scan = systable_beginscan(conRel, ConstraintTypidIndexId, true,
-								  NULL, 1, key);
-	}
-	else
-	{
-		ScanKeyInit(&key[0],
-					Anum_pg_constraint_conrelid,
-					BTEqualStrategyNumber, F_OIDEQ,
-					ObjectIdGetDatum(ownerId));
-
-		scan = systable_beginscan(conRel, ConstraintRelidIndexId, true,
-								  NULL, 1, key);
-	}
+	scan = systable_beginscan(conRel, ConstraintRelidTypidNameIndexId, true,
+							  NULL, 2, key);
 
 	while (HeapTupleIsValid((tup = systable_getnext(scan))))
 	{
@@ -996,12 +1015,12 @@ AlterConstraintNamespaces(Oid ownerId, Oid oldNspId,
 void
 ConstraintSetParentConstraint(Oid childConstrId, Oid parentConstrId)
 {
-	Relation		constrRel;
+	Relation	constrRel;
 	Form_pg_constraint constrForm;
-	HeapTuple		tuple,
-					newtup;
-	ObjectAddress	depender;
-	ObjectAddress	referenced;
+	HeapTuple	tuple,
+				newtup;
+	ObjectAddress depender;
+	ObjectAddress referenced;
 
 	constrRel = heap_open(ConstraintRelationId, RowExclusiveLock);
 	tuple = SearchSysCache1(CONSTROID, ObjectIdGetDatum(childConstrId));
@@ -1035,38 +1054,30 @@ get_relation_constraint_oid(Oid relid, const char *conname, bool missing_ok)
 	Relation	pg_constraint;
 	HeapTuple	tuple;
 	SysScanDesc scan;
-	ScanKeyData skey[1];
+	ScanKeyData skey[3];
 	Oid			conOid = InvalidOid;
 
-	/*
-	 * Fetch the constraint tuple from pg_constraint.  There may be more than
-	 * one match, because constraints are not required to have unique names;
-	 * if so, error out.
-	 */
 	pg_constraint = heap_open(ConstraintRelationId, AccessShareLock);
 
 	ScanKeyInit(&skey[0],
 				Anum_pg_constraint_conrelid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(relid));
+	ScanKeyInit(&skey[1],
+				Anum_pg_constraint_contypid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(InvalidOid));
+	ScanKeyInit(&skey[2],
+				Anum_pg_constraint_conname,
+				BTEqualStrategyNumber, F_NAMEEQ,
+				CStringGetDatum(conname));
 
-	scan = systable_beginscan(pg_constraint, ConstraintRelidIndexId, true,
-							  NULL, 1, skey);
+	scan = systable_beginscan(pg_constraint, ConstraintRelidTypidNameIndexId, true,
+							  NULL, 3, skey);
 
-	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
-	{
-		Form_pg_constraint con = (Form_pg_constraint) GETSTRUCT(tuple);
-
-		if (strcmp(NameStr(con->conname), conname) == 0)
-		{
-			if (OidIsValid(conOid))
-				ereport(ERROR,
-						(errcode(ERRCODE_DUPLICATE_OBJECT),
-						 errmsg("table \"%s\" has multiple constraints named \"%s\"",
-								get_rel_name(relid), conname)));
-			conOid = HeapTupleGetOid(tuple);
-		}
-	}
+	/* There can be at most one matching row */
+	if (HeapTupleIsValid(tuple = systable_getnext(scan)))
+		conOid = HeapTupleGetOid(tuple);
 
 	systable_endscan(scan);
 
@@ -1102,67 +1113,62 @@ get_relation_constraint_attnos(Oid relid, const char *conname,
 	Relation	pg_constraint;
 	HeapTuple	tuple;
 	SysScanDesc scan;
-	ScanKeyData skey[1];
+	ScanKeyData skey[3];
 
 	/* Set *constraintOid, to avoid complaints about uninitialized vars */
 	*constraintOid = InvalidOid;
 
-	/*
-	 * Fetch the constraint tuple from pg_constraint.  There may be more than
-	 * one match, because constraints are not required to have unique names;
-	 * if so, error out.
-	 */
 	pg_constraint = heap_open(ConstraintRelationId, AccessShareLock);
 
 	ScanKeyInit(&skey[0],
 				Anum_pg_constraint_conrelid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(relid));
+	ScanKeyInit(&skey[1],
+				Anum_pg_constraint_contypid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(InvalidOid));
+	ScanKeyInit(&skey[2],
+				Anum_pg_constraint_conname,
+				BTEqualStrategyNumber, F_NAMEEQ,
+				CStringGetDatum(conname));
 
-	scan = systable_beginscan(pg_constraint, ConstraintRelidIndexId, true,
-							  NULL, 1, skey);
+	scan = systable_beginscan(pg_constraint, ConstraintRelidTypidNameIndexId, true,
+							  NULL, 3, skey);
 
-	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
+	/* There can be at most one matching row */
+	if (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		Form_pg_constraint con = (Form_pg_constraint) GETSTRUCT(tuple);
 		Datum		adatum;
 		bool		isNull;
-		ArrayType  *arr;
-		int16	   *attnums;
-		int			numcols;
-		int			i;
-
-		/* Check the constraint name */
-		if (strcmp(NameStr(con->conname), conname) != 0)
-			continue;
-		if (OidIsValid(*constraintOid))
-			ereport(ERROR,
-					(errcode(ERRCODE_DUPLICATE_OBJECT),
-					 errmsg("table \"%s\" has multiple constraints named \"%s\"",
-							get_rel_name(relid), conname)));
 
 		*constraintOid = HeapTupleGetOid(tuple);
 
 		/* Extract the conkey array, ie, attnums of constrained columns */
 		adatum = heap_getattr(tuple, Anum_pg_constraint_conkey,
 							  RelationGetDescr(pg_constraint), &isNull);
-		if (isNull)
-			continue;			/* no constrained columns */
-
-		arr = DatumGetArrayTypeP(adatum);	/* ensure not toasted */
-		numcols = ARR_DIMS(arr)[0];
-		if (ARR_NDIM(arr) != 1 ||
-			numcols < 0 ||
-			ARR_HASNULL(arr) ||
-			ARR_ELEMTYPE(arr) != INT2OID)
-			elog(ERROR, "conkey is not a 1-D smallint array");
-		attnums = (int16 *) ARR_DATA_PTR(arr);
-
-		/* Construct the result value */
-		for (i = 0; i < numcols; i++)
+		if (!isNull)
 		{
-			conattnos = bms_add_member(conattnos,
-									   attnums[i] - FirstLowInvalidHeapAttributeNumber);
+			ArrayType  *arr;
+			int			numcols;
+			int16	   *attnums;
+			int			i;
+
+			arr = DatumGetArrayTypeP(adatum);	/* ensure not toasted */
+			numcols = ARR_DIMS(arr)[0];
+			if (ARR_NDIM(arr) != 1 ||
+				numcols < 0 ||
+				ARR_HASNULL(arr) ||
+				ARR_ELEMTYPE(arr) != INT2OID)
+				elog(ERROR, "conkey is not a 1-D smallint array");
+			attnums = (int16 *) ARR_DATA_PTR(arr);
+
+			/* Construct the result value */
+			for (i = 0; i < numcols; i++)
+			{
+				conattnos = bms_add_member(conattnos,
+										   attnums[i] - FirstLowInvalidHeapAttributeNumber);
+			}
 		}
 	}
 
@@ -1188,8 +1194,8 @@ Oid
 get_relation_idx_constraint_oid(Oid relationId, Oid indexId)
 {
 	Relation	pg_constraint;
-	SysScanDesc	scan;
-	ScanKeyData	key;
+	SysScanDesc scan;
+	ScanKeyData key;
 	HeapTuple	tuple;
 	Oid			constraintId = InvalidOid;
 
@@ -1200,11 +1206,11 @@ get_relation_idx_constraint_oid(Oid relationId, Oid indexId)
 				BTEqualStrategyNumber,
 				F_OIDEQ,
 				ObjectIdGetDatum(relationId));
-	scan = systable_beginscan(pg_constraint, ConstraintRelidIndexId,
+	scan = systable_beginscan(pg_constraint, ConstraintRelidTypidNameIndexId,
 							  true, NULL, 1, &key);
 	while ((tuple = systable_getnext(scan)) != NULL)
 	{
-		Form_pg_constraint	constrForm;
+		Form_pg_constraint constrForm;
 
 		constrForm = (Form_pg_constraint) GETSTRUCT(tuple);
 		if (constrForm->conindid == indexId)
@@ -1230,38 +1236,30 @@ get_domain_constraint_oid(Oid typid, const char *conname, bool missing_ok)
 	Relation	pg_constraint;
 	HeapTuple	tuple;
 	SysScanDesc scan;
-	ScanKeyData skey[1];
+	ScanKeyData skey[3];
 	Oid			conOid = InvalidOid;
 
-	/*
-	 * Fetch the constraint tuple from pg_constraint.  There may be more than
-	 * one match, because constraints are not required to have unique names;
-	 * if so, error out.
-	 */
 	pg_constraint = heap_open(ConstraintRelationId, AccessShareLock);
 
 	ScanKeyInit(&skey[0],
+				Anum_pg_constraint_conrelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(InvalidOid));
+	ScanKeyInit(&skey[1],
 				Anum_pg_constraint_contypid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(typid));
+	ScanKeyInit(&skey[2],
+				Anum_pg_constraint_conname,
+				BTEqualStrategyNumber, F_NAMEEQ,
+				CStringGetDatum(conname));
 
-	scan = systable_beginscan(pg_constraint, ConstraintTypidIndexId, true,
-							  NULL, 1, skey);
+	scan = systable_beginscan(pg_constraint, ConstraintRelidTypidNameIndexId, true,
+							  NULL, 3, skey);
 
-	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
-	{
-		Form_pg_constraint con = (Form_pg_constraint) GETSTRUCT(tuple);
-
-		if (strcmp(NameStr(con->conname), conname) == 0)
-		{
-			if (OidIsValid(conOid))
-				ereport(ERROR,
-						(errcode(ERRCODE_DUPLICATE_OBJECT),
-						 errmsg("domain %s has multiple constraints named \"%s\"",
-								format_type_be(typid), conname)));
-			conOid = HeapTupleGetOid(tuple);
-		}
-	}
+	/* There can be at most one matching row */
+	if (HeapTupleIsValid(tuple = systable_getnext(scan)))
+		conOid = HeapTupleGetOid(tuple);
 
 	systable_endscan(scan);
 
@@ -1311,7 +1309,7 @@ get_primary_key_attnos(Oid relid, bool deferrableOk, Oid *constraintOid)
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(relid));
 
-	scan = systable_beginscan(pg_constraint, ConstraintRelidIndexId, true,
+	scan = systable_beginscan(pg_constraint, ConstraintRelidTypidNameIndexId, true,
 							  NULL, 1, skey);
 
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))

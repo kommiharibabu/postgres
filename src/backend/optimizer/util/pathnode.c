@@ -770,6 +770,12 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path)
 	/* Check for query cancel. */
 	CHECK_FOR_INTERRUPTS();
 
+	/* Path to be added must be parallel safe. */
+	Assert(new_path->parallel_safe);
+
+	/* Relation should be OK for parallelism, too. */
+	Assert(parent_rel->consider_parallel);
+
 	/*
 	 * As in add_path, throw out any paths which are dominated by the new
 	 * path, but throw out the new path if some existing path dominates it.
@@ -1210,7 +1216,8 @@ create_tidscan_path(PlannerInfo *root, RelOptInfo *rel, List *tidquals,
  * Note that we must handle subpaths = NIL, representing a dummy access path.
  */
 AppendPath *
-create_append_path(RelOptInfo *rel,
+create_append_path(PlannerInfo *root,
+				   RelOptInfo *rel,
 				   List *subpaths, List *partial_subpaths,
 				   Relids required_outer,
 				   int parallel_workers, bool parallel_aware,
@@ -1224,8 +1231,25 @@ create_append_path(RelOptInfo *rel,
 	pathnode->path.pathtype = T_Append;
 	pathnode->path.parent = rel;
 	pathnode->path.pathtarget = rel->reltarget;
-	pathnode->path.param_info = get_appendrel_parampathinfo(rel,
-															required_outer);
+
+	/*
+	 * When generating an Append path for a partitioned table, there may be
+	 * parameters that are useful so we can eliminate certain partitions
+	 * during execution.  Here we'll go all the way and fully populate the
+	 * parameter info data as we do for normal base relations.  However, we
+	 * need only bother doing this for RELOPT_BASEREL rels, as
+	 * RELOPT_OTHER_MEMBER_REL's Append paths are merged into the base rel's
+	 * Append subpaths.  It would do no harm to do this, we just avoid it to
+	 * save wasting effort.
+	 */
+	if (partitioned_rels != NIL && root && rel->reloptkind == RELOPT_BASEREL)
+		pathnode->path.param_info = get_baserel_parampathinfo(root,
+															  rel,
+															  required_outer);
+	else
+		pathnode->path.param_info = get_appendrel_parampathinfo(rel,
+																required_outer);
+
 	pathnode->path.parallel_aware = parallel_aware;
 	pathnode->path.parallel_safe = rel->consider_parallel;
 	pathnode->path.parallel_workers = parallel_workers;
@@ -1250,7 +1274,7 @@ create_append_path(RelOptInfo *rel,
 	pathnode->first_partial_path = list_length(subpaths);
 	pathnode->subpaths = list_concat(subpaths, partial_subpaths);
 
-	foreach(l, subpaths)
+	foreach(l, pathnode->subpaths)
 	{
 		Path	   *subpath = (Path *) lfirst(l);
 
@@ -3048,10 +3072,9 @@ create_minmaxagg_path(PlannerInfo *root,
  * 'target' is the PathTarget to be computed
  * 'windowFuncs' is a list of WindowFunc structs
  * 'winclause' is a WindowClause that is common to all the WindowFuncs
- * 'winpathkeys' is the pathkeys for the PARTITION keys + ORDER keys
  *
- * The actual sort order of the input must match winpathkeys, but might
- * have additional keys after those.
+ * The input must be sorted according to the WindowClause's PARTITION keys
+ * plus ORDER BY keys.
  */
 WindowAggPath *
 create_windowagg_path(PlannerInfo *root,
@@ -3059,8 +3082,7 @@ create_windowagg_path(PlannerInfo *root,
 					  Path *subpath,
 					  PathTarget *target,
 					  List *windowFuncs,
-					  WindowClause *winclause,
-					  List *winpathkeys)
+					  WindowClause *winclause)
 {
 	WindowAggPath *pathnode = makeNode(WindowAggPath);
 
@@ -3078,7 +3100,6 @@ create_windowagg_path(PlannerInfo *root,
 
 	pathnode->subpath = subpath;
 	pathnode->winclause = winclause;
-	pathnode->winpathkeys = winpathkeys;
 
 	/*
 	 * For costing purposes, assume that there are no redundant partitioning
@@ -3271,9 +3292,7 @@ create_lockrows_path(PlannerInfo *root, RelOptInfo *rel,
  * 'operation' is the operation type
  * 'canSetTag' is true if we set the command tag/es_processed
  * 'nominalRelation' is the parent RT index for use of EXPLAIN
- * 'partitioned_rels' is an integer list of RT indexes of non-leaf tables in
- *		the partition tree, if this is an UPDATE/DELETE to a partitioned table.
- *		Otherwise NIL.
+ * 'rootRelation' is the partitioned table root RT index, or 0 if none
  * 'partColsUpdated' is true if any partitioning columns are being updated,
  *		either from the target relation or a descendent partitioned table.
  * 'resultRelations' is an integer list of actual RT indexes of target rel(s)
@@ -3284,21 +3303,17 @@ create_lockrows_path(PlannerInfo *root, RelOptInfo *rel,
  * 'rowMarks' is a list of PlanRowMarks (non-locking only)
  * 'onconflict' is the ON CONFLICT clause, or NULL
  * 'epqParam' is the ID of Param for EvalPlanQual re-eval
- * 'mergeActionList' is a list of MERGE actions
  */
 ModifyTablePath *
 create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
 						CmdType operation, bool canSetTag,
-						Index nominalRelation, List *partitioned_rels,
+						Index nominalRelation, Index rootRelation,
 						bool partColsUpdated,
-						List *resultRelations,
-						Index mergeTargetRelation,
-						List *subpaths,
+						List *resultRelations, List *subpaths,
 						List *subroots,
 						List *withCheckOptionLists, List *returningLists,
 						List *rowMarks, OnConflictExpr *onconflict,
-						List *mergeSourceTargetList,
-						List *mergeActionList, int epqParam)
+						int epqParam)
 {
 	ModifyTablePath *pathnode = makeNode(ModifyTablePath);
 	double		total_size;
@@ -3360,10 +3375,9 @@ create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->operation = operation;
 	pathnode->canSetTag = canSetTag;
 	pathnode->nominalRelation = nominalRelation;
-	pathnode->partitioned_rels = list_copy(partitioned_rels);
+	pathnode->rootRelation = rootRelation;
 	pathnode->partColsUpdated = partColsUpdated;
 	pathnode->resultRelations = resultRelations;
-	pathnode->mergeTargetRelation = mergeTargetRelation;
 	pathnode->subpaths = subpaths;
 	pathnode->subroots = subroots;
 	pathnode->withCheckOptionLists = withCheckOptionLists;
@@ -3371,8 +3385,6 @@ create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->rowMarks = rowMarks;
 	pathnode->onconflict = onconflict;
 	pathnode->epqParam = epqParam;
-	pathnode->mergeSourceTargetList = mergeSourceTargetList;
-	pathnode->mergeActionList = mergeActionList;
 
 	return pathnode;
 }
@@ -3574,7 +3586,7 @@ reparameterize_path(PlannerInfo *root, Path *path,
 					i++;
 				}
 				return (Path *)
-					create_append_path(rel, childpaths, partialpaths,
+					create_append_path(root, rel, childpaths, partialpaths,
 									   required_outer,
 									   apath->path.parallel_workers,
 									   apath->path.parallel_aware,
@@ -3803,7 +3815,7 @@ do { \
 			}
 			break;
 
-		case T_MergeAppend:
+		case T_MergeAppendPath:
 			{
 				MergeAppendPath *mapath;
 

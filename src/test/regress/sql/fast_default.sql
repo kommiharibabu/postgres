@@ -347,7 +347,133 @@ SELECT c_text FROM T WHERE c_int = -1;
 
 SELECT comp();
 
+-- query to exercise expand_tuple function
+CREATE TABLE t1 AS
+SELECT 1::int AS a , 2::int AS b
+FROM generate_series(1,20) q;
+
+ALTER TABLE t1 ADD COLUMN c text;
+
+SELECT a,
+       stddev(cast((SELECT sum(1) FROM generate_series(1,20) x) AS float4))
+          OVER (PARTITION BY a,b,c ORDER BY b)
+       AS z
+FROM t1;
+
 DROP TABLE T;
+
+-- test that we account for missing columns without defaults correctly
+-- in expand_tuple, and that rows are correctly expanded for triggers
+
+CREATE FUNCTION test_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+
+begin
+    raise notice 'old tuple: %', to_json(OLD)::text;
+    if TG_OP = 'DELETE'
+    then
+       return OLD;
+    else
+       return NEW;
+    end if;
+end;
+
+$$;
+
+-- 2 new columns, both have defaults
+CREATE TABLE t (id serial PRIMARY KEY, a int, b int, c int);
+INSERT INTO t (a,b,c) VALUES (1,2,3);
+ALTER TABLE t ADD COLUMN x int NOT NULL DEFAULT 4;
+ALTER TABLE t ADD COLUMN y int NOT NULL DEFAULT 5;
+CREATE TRIGGER a BEFORE UPDATE ON t FOR EACH ROW EXECUTE PROCEDURE test_trigger();
+SELECT * FROM t;
+UPDATE t SET y = 2;
+SELECT * FROM t;
+DROP TABLE t;
+
+-- 2 new columns, first has default
+CREATE TABLE t (id serial PRIMARY KEY, a int, b int, c int);
+INSERT INTO t (a,b,c) VALUES (1,2,3);
+ALTER TABLE t ADD COLUMN x int NOT NULL DEFAULT 4;
+ALTER TABLE t ADD COLUMN y int;
+CREATE TRIGGER a BEFORE UPDATE ON t FOR EACH ROW EXECUTE PROCEDURE test_trigger();
+SELECT * FROM t;
+UPDATE t SET y = 2;
+SELECT * FROM t;
+DROP TABLE t;
+
+-- 2 new columns, second has default
+CREATE TABLE t (id serial PRIMARY KEY, a int, b int, c int);
+INSERT INTO t (a,b,c) VALUES (1,2,3);
+ALTER TABLE t ADD COLUMN x int;
+ALTER TABLE t ADD COLUMN y int NOT NULL DEFAULT 5;
+CREATE TRIGGER a BEFORE UPDATE ON t FOR EACH ROW EXECUTE PROCEDURE test_trigger();
+SELECT * FROM t;
+UPDATE t SET y = 2;
+SELECT * FROM t;
+DROP TABLE t;
+
+-- 2 new columns, neither has default
+CREATE TABLE t (id serial PRIMARY KEY, a int, b int, c int);
+INSERT INTO t (a,b,c) VALUES (1,2,3);
+ALTER TABLE t ADD COLUMN x int;
+ALTER TABLE t ADD COLUMN y int;
+CREATE TRIGGER a BEFORE UPDATE ON t FOR EACH ROW EXECUTE PROCEDURE test_trigger();
+SELECT * FROM t;
+UPDATE t SET y = 2;
+SELECT * FROM t;
+DROP TABLE t;
+
+-- same as last 4 tests but here the last original column has a NULL value
+-- 2 new columns, both have defaults
+CREATE TABLE t (id serial PRIMARY KEY, a int, b int, c int);
+INSERT INTO t (a,b,c) VALUES (1,2,NULL);
+ALTER TABLE t ADD COLUMN x int NOT NULL DEFAULT 4;
+ALTER TABLE t ADD COLUMN y int NOT NULL DEFAULT 5;
+CREATE TRIGGER a BEFORE UPDATE ON t FOR EACH ROW EXECUTE PROCEDURE test_trigger();
+SELECT * FROM t;
+UPDATE t SET y = 2;
+SELECT * FROM t;
+DROP TABLE t;
+
+-- 2 new columns, first has default
+CREATE TABLE t (id serial PRIMARY KEY, a int, b int, c int);
+INSERT INTO t (a,b,c) VALUES (1,2,NULL);
+ALTER TABLE t ADD COLUMN x int NOT NULL DEFAULT 4;
+ALTER TABLE t ADD COLUMN y int;
+CREATE TRIGGER a BEFORE UPDATE ON t FOR EACH ROW EXECUTE PROCEDURE test_trigger();
+SELECT * FROM t;
+UPDATE t SET y = 2;
+SELECT * FROM t;
+DROP TABLE t;
+
+-- 2 new columns, second has default
+CREATE TABLE t (id serial PRIMARY KEY, a int, b int, c int);
+INSERT INTO t (a,b,c) VALUES (1,2,NULL);
+ALTER TABLE t ADD COLUMN x int;
+ALTER TABLE t ADD COLUMN y int NOT NULL DEFAULT 5;
+CREATE TRIGGER a BEFORE UPDATE ON t FOR EACH ROW EXECUTE PROCEDURE test_trigger();
+SELECT * FROM t;
+UPDATE t SET y = 2;
+SELECT * FROM t;
+DROP TABLE t;
+
+-- 2 new columns, neither has default
+CREATE TABLE t (id serial PRIMARY KEY, a int, b int, c int);
+INSERT INTO t (a,b,c) VALUES (1,2,NULL);
+ALTER TABLE t ADD COLUMN x int;
+ALTER TABLE t ADD COLUMN y int;
+CREATE TRIGGER a BEFORE UPDATE ON t FOR EACH ROW EXECUTE PROCEDURE test_trigger();
+SELECT * FROM t;
+UPDATE t SET y = 2;
+SELECT * FROM t;
+DROP TABLE t;
+
+-- cleanup
+DROP FUNCTION test_trigger();
+DROP TABLE t1;
 DROP FUNCTION set(name);
 DROP FUNCTION comp();
 DROP TABLE m;
@@ -355,3 +481,10 @@ DROP TABLE has_volatile;
 DROP EVENT TRIGGER has_volatile_rewrite;
 DROP FUNCTION log_rewrite;
 DROP SCHEMA fast_default;
+
+-- Leave a table with an active fast default in place, for pg_upgrade testing
+set search_path = public;
+create table has_fast_default(f1 int);
+insert into has_fast_default values(1);
+alter table has_fast_default add column f2 int default 42;
+table has_fast_default;

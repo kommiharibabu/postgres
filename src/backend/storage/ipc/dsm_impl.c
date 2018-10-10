@@ -47,6 +47,7 @@
  */
 
 #include "postgres.h"
+#include "miscadmin.h"
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -60,6 +61,7 @@
 #ifdef HAVE_SYS_SHM_H
 #include <sys/shm.h>
 #endif
+#include "common/file_perm.h"
 #include "pgstat.h"
 
 #include "portability/mem.h"
@@ -105,7 +107,6 @@ const struct config_enum_entry dynamic_shared_memory_options[] = {
 #ifdef USE_DSM_MMAP
 	{"mmap", DSM_IMPL_MMAP, false},
 #endif
-	{"none", DSM_IMPL_NONE, false},
 	{NULL, 0, false}
 };
 
@@ -209,8 +210,6 @@ dsm_impl_can_resize(void)
 {
 	switch (dynamic_shared_memory_type)
 	{
-		case DSM_IMPL_NONE:
-			return false;
 		case DSM_IMPL_POSIX:
 			return true;
 		case DSM_IMPL_SYSV:
@@ -285,7 +284,7 @@ dsm_impl_posix(dsm_op op, dsm_handle handle, Size request_size,
 	 * returning.
 	 */
 	flags = O_RDWR | (op == DSM_OP_CREATE ? O_CREAT | O_EXCL : 0);
-	if ((fd = shm_open(name, flags, 0600)) == -1)
+	if ((fd = shm_open(name, flags, PG_FILE_MODE_OWNER)) == -1)
 	{
 		if (errno != EEXIST)
 			ereport(elevel,
@@ -331,6 +330,14 @@ dsm_impl_posix(dsm_op op, dsm_handle handle, Size request_size,
 		if (op == DSM_OP_CREATE)
 			shm_unlink(name);
 		errno = save_errno;
+
+		/*
+		 * If we received a query cancel or termination signal, we will have
+		 * EINTR set here.  If the caller said that errors are OK here, check
+		 * for interrupts immediately.
+		 */
+		if (errno == EINTR && elevel >= ERROR)
+			CHECK_FOR_INTERRUPTS();
 
 		ereport(elevel,
 				(errcode_for_dynamic_shared_memory(),
@@ -421,11 +428,15 @@ dsm_impl_posix_resize(int fd, off_t size)
 #if defined(HAVE_POSIX_FALLOCATE) && defined(__linux__)
 	if (rc == 0)
 	{
-		/* We may get interrupted, if so just retry. */
+		/*
+		 * We may get interrupted.  If so, just retry unless there is an
+		 * interrupt pending.  This avoids the possibility of looping forever
+		 * if another backend is repeatedly trying to interrupt us.
+		 */
 		do
 		{
 			rc = posix_fallocate(fd, 0, size);
-		} while (rc == EINTR);
+		} while (rc == EINTR && !(ProcDiePending || QueryCancelPending));
 
 		/*
 		 * The caller expects errno to be set, but posix_fallocate() doesn't
@@ -923,7 +934,7 @@ dsm_impl_mmap(dsm_op op, dsm_handle handle, Size request_size,
 
 		/* Back out what's already been done. */
 		save_errno = errno;
-		close(fd);
+		CloseTransientFile(fd);
 		if (op == DSM_OP_CREATE)
 			unlink(name);
 		errno = save_errno;

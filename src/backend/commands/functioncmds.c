@@ -44,22 +44,23 @@
 #include "catalog/pg_language.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_proc.h"
-#include "catalog/pg_proc_fn.h"
 #include "catalog/pg_transform.h"
 #include "catalog/pg_type.h"
-#include "catalog/pg_type_fn.h"
 #include "commands/alter.h"
 #include "commands/defrem.h"
 #include "commands/proclang.h"
 #include "executor/execdesc.h"
 #include "executor/executor.h"
+#include "funcapi.h"
 #include "miscadmin.h"
+#include "optimizer/clauses.h"
 #include "optimizer/var.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_collate.h"
 #include "parser/parse_expr.h"
 #include "parser/parse_func.h"
 #include "parser/parse_type.h"
+#include "pgstat.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -306,7 +307,7 @@ interpret_function_parameter_list(ParseState *pstate,
 		{
 			if (objtype == OBJECT_PROCEDURE)
 				*requiredResultType = RECORDOID;
-			else if (outCount == 0)	/* save first output param's type */
+			else if (outCount == 0) /* save first output param's type */
 				*requiredResultType = toid;
 			outCount++;
 		}
@@ -935,7 +936,7 @@ CreateFunction(ParseState *pstate, CreateFunctionStmt *stmt)
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("language \"%s\" does not exist", language),
 				 (PLTemplateExists(language) ?
-				  errhint("Use CREATE LANGUAGE to load the language into the database.") : 0)));
+				  errhint("Use CREATE EXTENSION to load the language into the database.") : 0)));
 
 	languageOid = HeapTupleGetOid(languageTuple);
 	languageStruct = (Form_pg_language) GETSTRUCT(languageTuple);
@@ -2137,7 +2138,7 @@ ExecuteDoStmt(DoStmt *stmt, bool atomic)
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("language \"%s\" does not exist", language),
 				 (PLTemplateExists(language) ?
-				  errhint("Use CREATE LANGUAGE to load the language into the database.") : 0)));
+				  errhint("Use CREATE EXTENSION to load the language into the database.") : 0)));
 
 	codeblock->langOid = HeapTupleGetOid(languageTuple);
 	languageStruct = (Form_pg_language) GETSTRUCT(languageTuple);
@@ -2219,6 +2220,7 @@ ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver 
 	EState	   *estate;
 	ExprContext *econtext;
 	HeapTuple	tp;
+	PgStat_FunctionCallUsage fcusage;
 	Datum		retval;
 
 	fexpr = stmt->funcexpr;
@@ -2228,7 +2230,39 @@ ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver 
 	if (aclresult != ACLCHECK_OK)
 		aclcheck_error(aclresult, OBJECT_PROCEDURE, get_func_name(fexpr->funcid));
 
+	/* Prep the context object we'll pass to the procedure */
+	callcontext = makeNode(CallContext);
+	callcontext->atomic = atomic;
+
+	tp = SearchSysCache1(PROCOID, ObjectIdGetDatum(fexpr->funcid));
+	if (!HeapTupleIsValid(tp))
+		elog(ERROR, "cache lookup failed for function %u", fexpr->funcid);
+
+	/*
+	 * If proconfig is set we can't allow transaction commands because of the
+	 * way the GUC stacking works: The transaction boundary would have to pop
+	 * the proconfig setting off the stack.  That restriction could be lifted
+	 * by redesigning the GUC nesting mechanism a bit.
+	 */
+	if (!heap_attisnull(tp, Anum_pg_proc_proconfig, NULL))
+		callcontext->atomic = true;
+
+	/*
+	 * In security definer procedures, we can't allow transaction commands.
+	 * StartTransaction() insists that the security context stack is empty,
+	 * and AbortTransaction() resets the security context.  This could be
+	 * reorganized, but right now it doesn't work.
+	 */
+	if (((Form_pg_proc )GETSTRUCT(tp))->prosecdef)
+		callcontext->atomic = true;
+
+	/*
+	 * Expand named arguments, defaults, etc.
+	 */
+	fexpr->args = expand_function_arguments(fexpr->args, fexpr->funcresulttype, tp);
 	nargs = list_length(fexpr->args);
+
+	ReleaseSysCache(tp);
 
 	/* safety check; see ExecInitFunc() */
 	if (nargs > FUNC_MAX_ARGS)
@@ -2239,26 +2273,10 @@ ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver 
 							   FUNC_MAX_ARGS,
 							   FUNC_MAX_ARGS)));
 
-	/* Prep the context object we'll pass to the procedure */
-	callcontext = makeNode(CallContext);
-	callcontext->atomic = atomic;
-
-	/*
-	 * If proconfig is set we can't allow transaction commands because of the
-	 * way the GUC stacking works: The transaction boundary would have to pop
-	 * the proconfig setting off the stack.  That restriction could be lifted
-	 * by redesigning the GUC nesting mechanism a bit.
-	 */
-	tp = SearchSysCache1(PROCOID, ObjectIdGetDatum(fexpr->funcid));
-	if (!HeapTupleIsValid(tp))
-		elog(ERROR, "cache lookup failed for function %u", fexpr->funcid);
-	if (!heap_attisnull(tp, Anum_pg_proc_proconfig, NULL))
-		callcontext->atomic = true;
-	ReleaseSysCache(tp);
-
 	/* Initialize function call structure */
 	InvokeFunctionExecuteHook(fexpr->funcid);
 	fmgr_info(fexpr->funcid, &flinfo);
+	fmgr_info_set_expr((Node *) fexpr, &flinfo);
 	InitFunctionCallInfoData(fcinfo, &flinfo, nargs, fexpr->inputcollid, (Node *) callcontext, NULL);
 
 	/*
@@ -2286,7 +2304,9 @@ ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver 
 		i++;
 	}
 
+	pgstat_init_function_usage(&fcinfo, &fcusage);
 	retval = FunctionCallInvoke(&fcinfo);
+	pgstat_end_function_usage(&fcusage, true);
 
 	if (fexpr->funcresulttype == VOIDOID)
 	{
@@ -2321,7 +2341,7 @@ ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver 
 		rettupdata.t_tableOid = InvalidOid;
 		rettupdata.t_data = td;
 
-		slot = ExecStoreTuple(&rettupdata, tstate->slot, InvalidBuffer, false);
+		slot = ExecStoreHeapTuple(&rettupdata, tstate->slot, false);
 		tstate->dest->receiveSlot(slot, tstate->dest);
 
 		end_tup_output(tstate);
@@ -2333,4 +2353,27 @@ ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver 
 			 fexpr->funcresulttype);
 
 	FreeExecutorState(estate);
+}
+
+/*
+ * Construct the tuple descriptor for a CALL statement return
+ */
+TupleDesc
+CallStmtResultDesc(CallStmt *stmt)
+{
+	FuncExpr   *fexpr;
+	HeapTuple   tuple;
+	TupleDesc   tupdesc;
+
+	fexpr = stmt->funcexpr;
+
+	tuple = SearchSysCache1(PROCOID, ObjectIdGetDatum(fexpr->funcid));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for procedure %u", fexpr->funcid);
+
+	tupdesc = build_function_result_tupdesc_t(tuple);
+
+	ReleaseSysCache(tuple);
+
+	return tupdesc;
 }

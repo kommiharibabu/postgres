@@ -241,7 +241,6 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	PartitionSpec		*partspec;
 	PartitionBoundSpec	*partboundspec;
 	RoleSpec			*rolespec;
-	MergeWhenClause		*mergewhen;
 }
 
 %type <node>	stmt schema_stmt
@@ -260,11 +259,11 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		CreateOpFamilyStmt AlterOpFamilyStmt CreatePLangStmt
 		CreateSchemaStmt CreateSeqStmt CreateStmt CreateStatsStmt CreateTableSpaceStmt
 		CreateFdwStmt CreateForeignServerStmt CreateForeignTableStmt
-		CreateAssertStmt CreateTransformStmt CreateTrigStmt CreateEventTrigStmt
+		CreateAssertionStmt CreateTransformStmt CreateTrigStmt CreateEventTrigStmt
 		CreateUserStmt CreateUserMappingStmt CreateRoleStmt CreatePolicyStmt
 		CreatedbStmt DeclareCursorStmt DefineStmt DeleteStmt DiscardStmt DoStmt
 		DropOpClassStmt DropOpFamilyStmt DropPLangStmt DropStmt
-		DropAssertStmt DropCastStmt DropRoleStmt
+		DropCastStmt DropRoleStmt
 		DropdbStmt DropTableSpaceStmt
 		DropTransformStmt
 		DropUserMappingStmt ExplainStmt FetchStmt
@@ -283,7 +282,6 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		CreateMatViewStmt RefreshMatViewStmt CreateAmStmt
 		CreatePublicationStmt AlterPublicationStmt
 		CreateSubscriptionStmt AlterSubscriptionStmt DropSubscriptionStmt
-		MergeStmt
 
 %type <node>	select_no_parens select_with_parens select_clause
 				simple_select values_clause
@@ -382,6 +380,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 				oper_argtypes RuleActionList RuleActionMulti
 				opt_column_list columnList opt_name_list
 				sort_clause opt_sort_clause sortby_list index_params
+				opt_include opt_c_include index_including_params
 				name_list role_list from_clause from_list opt_array_bounds
 				qualified_name_list any_name any_name_list type_name_list
 				any_operator expr_list attrs
@@ -401,7 +400,6 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 				TriggerTransitions TriggerReferencing
 				publication_name_list
 				vacuum_relation_list opt_vacuum_relation_list
-				merge_values_clause
 
 %type <list>	group_by_list
 %type <node>	group_by_item empty_grouping_set rollup_clause cube_clause
@@ -453,7 +451,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 %type <node>	fetch_args limit_clause select_limit_value
 				offset_clause select_offset_value
-				select_offset_value2 opt_select_fetch_first_value
+				select_fetch_first_value I_or_F_const
 %type <ival>	row_or_rows first_or_next
 
 %type <list>	OptSeqOptList SeqOptList OptParenthesizedSeqOptList
@@ -462,7 +460,6 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <istmt>	insert_rest
 %type <infer>	opt_conf_expr
 %type <onconflict> opt_on_conflict
-%type <mergewhen>	merge_insert merge_update merge_delete
 
 %type <vsetstmt> generic_set set_rest set_rest_more generic_reset reset_rest
 				 SetResetClause FunctionSetResetClause
@@ -588,9 +585,6 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <list>		hash_partbound partbound_datum_list range_datum_list
 %type <defelt>		hash_partbound_elem
 
-%type <node>	merge_when_clause opt_merge_when_and_condition
-%type <list>	merge_when_list
-
 /*
  * Non-keyword token types.  These are hard-wired into the "flex" lexer.
  * They must be listed first so that their numeric codes do not depend on
@@ -645,7 +639,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 	HANDLER HAVING HEADER_P HOLD HOUR_P
 
-	IDENTITY_P IF_P ILIKE IMMEDIATE IMMUTABLE IMPLICIT_P IMPORT_P IN_P
+	IDENTITY_P IF_P ILIKE IMMEDIATE IMMUTABLE IMPLICIT_P IMPORT_P IN_P INCLUDE
 	INCLUDING INCREMENT INDEX INDEXES INHERIT INHERITS INITIALLY INLINE_P
 	INNER_P INOUT INPUT_P INSENSITIVE INSERT INSTEAD INT_P INTEGER
 	INTERSECT INTERVAL INTO INVOKER IS ISNULL ISOLATION
@@ -658,8 +652,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	LEADING LEAKPROOF LEAST LEFT LEVEL LIKE LIMIT LISTEN LOAD LOCAL
 	LOCALTIME LOCALTIMESTAMP LOCATION LOCK_P LOCKED LOGGED
 
-	MAPPING MATCH MATCHED MATERIALIZED MAXVALUE MERGE METHOD
-	MINUTE_P MINVALUE MODE MONTH_P MOVE
+	MAPPING MATCH MATERIALIZED MAXVALUE METHOD MINUTE_P MINVALUE MODE MONTH_P MOVE
 
 	NAME_P NAMES NATIONAL NATURAL NCHAR NEW NEXT NO NONE
 	NOT NOTHING NOTIFY NOTNULL NOWAIT NULL_P NULLIF
@@ -867,7 +860,7 @@ stmt :
 			| CopyStmt
 			| CreateAmStmt
 			| CreateAsStmt
-			| CreateAssertStmt
+			| CreateAssertionStmt
 			| CreateCastStmt
 			| CreateConversionStmt
 			| CreateDomainStmt
@@ -903,7 +896,6 @@ stmt :
 			| DeleteStmt
 			| DiscardStmt
 			| DoStmt
-			| DropAssertStmt
 			| DropCastStmt
 			| DropOpClassStmt
 			| DropOpFamilyStmt
@@ -928,7 +920,6 @@ stmt :
 			| RefreshMatViewStmt
 			| LoadStmt
 			| LockStmt
-			| MergeStmt
 			| NotifyStmt
 			| PrepareStmt
 			| ReassignOwnedStmt
@@ -2806,6 +2797,8 @@ hash_partbound:
 partbound_datum:
 			Sconst			{ $$ = makeStringConst($1, @1); }
 			| NumericOnly	{ $$ = makeAConst($1, @1); }
+			| TRUE_P		{ $$ = makeStringConst(pstrdup("true"), @1); }
+			| FALSE_P		{ $$ = makeStringConst(pstrdup("false"), @1); }
 			| NULL_P		{ $$ = makeNullAConst(@1); }
 		;
 
@@ -3686,17 +3679,18 @@ ConstraintElem:
 					n->initially_valid = !n->skip_validation;
 					$$ = (Node *)n;
 				}
-			| UNIQUE '(' columnList ')' opt_definition OptConsTableSpace
+			| UNIQUE '(' columnList ')' opt_c_include opt_definition OptConsTableSpace
 				ConstraintAttributeSpec
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_UNIQUE;
 					n->location = @1;
 					n->keys = $3;
-					n->options = $5;
+					n->including = $5;
+					n->options = $6;
 					n->indexname = NULL;
-					n->indexspace = $6;
-					processCASbits($7, @7, "UNIQUE",
+					n->indexspace = $7;
+					processCASbits($8, @8, "UNIQUE",
 								   &n->deferrable, &n->initdeferred, NULL,
 								   NULL, yyscanner);
 					$$ = (Node *)n;
@@ -3707,6 +3701,7 @@ ConstraintElem:
 					n->contype = CONSTR_UNIQUE;
 					n->location = @1;
 					n->keys = NIL;
+					n->including = NIL;
 					n->options = NIL;
 					n->indexname = $2;
 					n->indexspace = NULL;
@@ -3715,17 +3710,18 @@ ConstraintElem:
 								   NULL, yyscanner);
 					$$ = (Node *)n;
 				}
-			| PRIMARY KEY '(' columnList ')' opt_definition OptConsTableSpace
+			| PRIMARY KEY '(' columnList ')' opt_c_include opt_definition OptConsTableSpace
 				ConstraintAttributeSpec
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_PRIMARY;
 					n->location = @1;
 					n->keys = $4;
-					n->options = $6;
+					n->including = $6;
+					n->options = $7;
 					n->indexname = NULL;
-					n->indexspace = $7;
-					processCASbits($8, @8, "PRIMARY KEY",
+					n->indexspace = $8;
+					processCASbits($9, @9, "PRIMARY KEY",
 								   &n->deferrable, &n->initdeferred, NULL,
 								   NULL, yyscanner);
 					$$ = (Node *)n;
@@ -3736,6 +3732,7 @@ ConstraintElem:
 					n->contype = CONSTR_PRIMARY;
 					n->location = @1;
 					n->keys = NIL;
+					n->including = NIL;
 					n->options = NIL;
 					n->indexname = $3;
 					n->indexspace = NULL;
@@ -3745,7 +3742,7 @@ ConstraintElem:
 					$$ = (Node *)n;
 				}
 			| EXCLUDE access_method_clause '(' ExclusionConstraintList ')'
-				opt_definition OptConsTableSpace ExclusionWhereClause
+				opt_c_include opt_definition OptConsTableSpace  ExclusionWhereClause
 				ConstraintAttributeSpec
 				{
 					Constraint *n = makeNode(Constraint);
@@ -3753,11 +3750,12 @@ ConstraintElem:
 					n->location = @1;
 					n->access_method	= $2;
 					n->exclusions		= $4;
-					n->options			= $6;
+					n->including		= $6;
+					n->options			= $7;
 					n->indexname		= NULL;
-					n->indexspace		= $7;
-					n->where_clause		= $8;
-					processCASbits($9, @9, "EXCLUDE",
+					n->indexspace		= $8;
+					n->where_clause		= $9;
+					processCASbits($10, @10, "EXCLUDE",
 								   &n->deferrable, &n->initdeferred, NULL,
 								   NULL, yyscanner);
 					$$ = (Node *)n;
@@ -3801,6 +3799,10 @@ columnElem: ColId
 				{
 					$$ = (Node *) makeString($1);
 				}
+		;
+
+opt_c_include:	INCLUDE '(' columnList ')'			{ $$ = $3; }
+			 |		/* EMPTY */						{ $$ = NIL; }
 		;
 
 key_match:  MATCH FULL
@@ -5341,7 +5343,7 @@ CreateAmStmt: CREATE ACCESS METHOD name TYPE_P INDEX HANDLER handler_name
 CreateTrigStmt:
 			CREATE TRIGGER name TriggerActionTime TriggerEvents ON
 			qualified_name TriggerReferencing TriggerForSpec TriggerWhen
-			EXECUTE PROCEDURE func_name '(' TriggerFuncArgs ')'
+			EXECUTE FUNCTION_or_PROCEDURE func_name '(' TriggerFuncArgs ')'
 				{
 					CreateTrigStmt *n = makeNode(CreateTrigStmt);
 					n->trigname = $3;
@@ -5363,7 +5365,7 @@ CreateTrigStmt:
 			| CREATE CONSTRAINT TRIGGER name AFTER TriggerEvents ON
 			qualified_name OptConstrFromTable ConstraintAttributeSpec
 			FOR EACH ROW TriggerWhen
-			EXECUTE PROCEDURE func_name '(' TriggerFuncArgs ')'
+			EXECUTE FUNCTION_or_PROCEDURE func_name '(' TriggerFuncArgs ')'
 				{
 					CreateTrigStmt *n = makeNode(CreateTrigStmt);
 					n->trigname = $4;
@@ -5501,6 +5503,11 @@ TriggerWhen:
 			| /*EMPTY*/								{ $$ = NULL; }
 		;
 
+FUNCTION_or_PROCEDURE:
+			FUNCTION
+		|	PROCEDURE
+		;
+
 TriggerFuncArgs:
 			TriggerFuncArg							{ $$ = list_make1($1); }
 			| TriggerFuncArgs ',' TriggerFuncArg	{ $$ = lappend($1, $3); }
@@ -5571,7 +5578,7 @@ ConstraintAttributeElem:
 
 CreateEventTrigStmt:
 			CREATE EVENT TRIGGER name ON ColLabel
-			EXECUTE PROCEDURE func_name '(' ')'
+			EXECUTE FUNCTION_or_PROCEDURE func_name '(' ')'
 				{
 					CreateEventTrigStmt *n = makeNode(CreateEventTrigStmt);
 					n->trigname = $4;
@@ -5582,7 +5589,7 @@ CreateEventTrigStmt:
 				}
 		  | CREATE EVENT TRIGGER name ON ColLabel
 			WHEN event_trigger_when_list
-			EXECUTE PROCEDURE func_name '(' ')'
+			EXECUTE FUNCTION_or_PROCEDURE func_name '(' ')'
 				{
 					CreateEventTrigStmt *n = makeNode(CreateEventTrigStmt);
 					n->trigname = $4;
@@ -5631,43 +5638,19 @@ enable_trigger:
 
 /*****************************************************************************
  *
- *		QUERIES :
+ *		QUERY :
  *				CREATE ASSERTION ...
- *				DROP ASSERTION ...
  *
  *****************************************************************************/
 
-CreateAssertStmt:
-			CREATE ASSERTION name CHECK '(' a_expr ')'
-			ConstraintAttributeSpec
+CreateAssertionStmt:
+			CREATE ASSERTION any_name CHECK '(' a_expr ')' ConstraintAttributeSpec
 				{
-					CreateTrigStmt *n = makeNode(CreateTrigStmt);
-					n->trigname = $3;
-					n->args = list_make1($6);
-					n->isconstraint  = true;
-					processCASbits($8, @8, "ASSERTION",
-								   &n->deferrable, &n->initdeferred, NULL,
-								   NULL, yyscanner);
-
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("CREATE ASSERTION is not yet implemented")));
 
-					$$ = (Node *)n;
-				}
-		;
-
-DropAssertStmt:
-			DROP ASSERTION name opt_drop_behavior
-				{
-					DropStmt *n = makeNode(DropStmt);
-					n->objects = NIL;
-					n->behavior = $4;
-					n->removeType = OBJECT_TRIGGER; /* XXX */
-					ereport(ERROR,
-							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("DROP ASSERTION is not yet implemented")));
-					$$ = (Node *) n;
+					$$ = NULL;
 				}
 		;
 
@@ -7373,7 +7356,7 @@ defacl_privilege_target:
 
 IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_index_name
 			ON relation_expr access_method_clause '(' index_params ')'
-			opt_reloptions OptTableSpace where_clause
+			opt_include opt_reloptions OptTableSpace where_clause
 				{
 					IndexStmt *n = makeNode(IndexStmt);
 					n->unique = $2;
@@ -7383,9 +7366,10 @@ IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_index_name
 					n->relationId = InvalidOid;
 					n->accessMethod = $8;
 					n->indexParams = $10;
-					n->options = $12;
-					n->tableSpace = $13;
-					n->whereClause = $14;
+					n->indexIncludingParams = $12;
+					n->options = $13;
+					n->tableSpace = $14;
+					n->whereClause = $15;
 					n->excludeOpNames = NIL;
 					n->idxcomment = NULL;
 					n->indexOid = InvalidOid;
@@ -7400,7 +7384,7 @@ IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_index_name
 				}
 			| CREATE opt_unique INDEX opt_concurrently IF_P NOT EXISTS index_name
 			ON relation_expr access_method_clause '(' index_params ')'
-			opt_reloptions OptTableSpace where_clause
+			opt_include opt_reloptions OptTableSpace where_clause
 				{
 					IndexStmt *n = makeNode(IndexStmt);
 					n->unique = $2;
@@ -7410,9 +7394,10 @@ IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_index_name
 					n->relationId = InvalidOid;
 					n->accessMethod = $11;
 					n->indexParams = $13;
-					n->options = $15;
-					n->tableSpace = $16;
-					n->whereClause = $17;
+					n->indexIncludingParams = $15;
+					n->options = $16;
+					n->tableSpace = $17;
+					n->whereClause = $18;
 					n->excludeOpNames = NIL;
 					n->idxcomment = NULL;
 					n->indexOid = InvalidOid;
@@ -7489,6 +7474,14 @@ index_elem:	ColId opt_collate opt_class opt_asc_desc opt_nulls_order
 					$$->ordering = $6;
 					$$->nulls_ordering = $7;
 				}
+		;
+
+opt_include:		INCLUDE '(' index_including_params ')'			{ $$ = $3; }
+			 |		/* EMPTY */						{ $$ = NIL; }
+		;
+
+index_including_params:	index_elem						{ $$ = list_make1($1); }
+			| index_including_params ',' index_elem		{ $$ = lappend($1, $3); }
 		;
 
 opt_collate: COLLATE any_name						{ $$ = $2; }
@@ -10465,7 +10458,9 @@ ClusterStmt:
 					ClusterStmt *n = makeNode(ClusterStmt);
 					n->relation = $3;
 					n->indexname = $4;
-					n->verbose = $2;
+					n->options = 0;
+					if ($2)
+						n->options |= CLUOPT_VERBOSE;
 					$$ = (Node*)n;
 				}
 			| CLUSTER opt_verbose
@@ -10473,7 +10468,9 @@ ClusterStmt:
 					ClusterStmt *n = makeNode(ClusterStmt);
 					n->relation = NULL;
 					n->indexname = NULL;
-					n->verbose = $2;
+					n->options = 0;
+					if ($2)
+						n->options |= CLUOPT_VERBOSE;
 					$$ = (Node*)n;
 				}
 			/* kept for pre-8.3 compatibility */
@@ -10482,7 +10479,9 @@ ClusterStmt:
 					ClusterStmt *n = makeNode(ClusterStmt);
 					n->relation = $5;
 					n->indexname = $3;
-					n->verbose = $2;
+					n->options = 0;
+					if ($2)
+						n->options |= CLUOPT_VERBOSE;
 					$$ = (Node*)n;
 				}
 		;
@@ -10539,6 +10538,8 @@ vacuum_option_elem:
 				{
 					if (strcmp($1, "disable_page_skipping") == 0)
 						$$ = VACOPT_DISABLE_PAGE_SKIPPING;
+					else if (strcmp($1, "skip_locked") == 0)
+						$$ = VACOPT_SKIP_LOCKED;
 					else
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
@@ -10572,6 +10573,16 @@ analyze_option_list:
 
 analyze_option_elem:
 			VERBOSE				{ $$ = VACOPT_VERBOSE; }
+			| IDENT
+				{
+					if (strcmp($1, "skip_locked") == 0)
+						$$ = VACOPT_SKIP_LOCKED;
+					else
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("unrecognized ANALYZE option \"%s\"", $1),
+									 parser_errposition(@1)));
+				}
 		;
 
 analyze_keyword:
@@ -10669,7 +10680,6 @@ ExplainableStmt:
 			| InsertStmt
 			| UpdateStmt
 			| DeleteStmt
-			| MergeStmt
 			| DeclareCursorStmt
 			| CreateAsStmt
 			| CreateMatViewStmt
@@ -10732,7 +10742,6 @@ PreparableStmt:
 			| InsertStmt
 			| UpdateStmt
 			| DeleteStmt					/* by default all are $$=$1 */
-			| MergeStmt
 		;
 
 /*****************************************************************************
@@ -11098,142 +11107,6 @@ set_target_list:
 			| set_target_list ',' set_target		{ $$ = lappend($1,$3); }
 		;
 
-
-/*****************************************************************************
- *
- *		QUERY:
- *				MERGE STATEMENTS
- *
- *****************************************************************************/
-
-MergeStmt:
-			opt_with_clause MERGE INTO relation_expr_opt_alias
-			USING table_ref
-			ON a_expr
-			merge_when_list
-				{
-					MergeStmt *m = makeNode(MergeStmt);
-
-					m->withClause = $1;
-					m->relation = $4;
-					m->source_relation = $6;
-					m->join_condition = $8;
-					m->mergeWhenClauses = $9;
-
-					$$ = (Node *)m;
-				}
-			;
-
-
-merge_when_list:
-			merge_when_clause						{ $$ = list_make1($1); }
-			| merge_when_list merge_when_clause		{ $$ = lappend($1,$2); }
-			;
-
-merge_when_clause:
-			WHEN MATCHED opt_merge_when_and_condition THEN merge_update
-				{
-					$5->matched = true;
-					$5->commandType = CMD_UPDATE;
-					$5->condition = $3;
-
-					$$ = (Node *) $5;
-				}
-			| WHEN MATCHED opt_merge_when_and_condition THEN merge_delete
-				{
-					MergeWhenClause *m = makeNode(MergeWhenClause);
-
-					m->matched = true;
-					m->commandType = CMD_DELETE;
-					m->condition = $3;
-
-					$$ = (Node *)m;
-				}
-			| WHEN NOT MATCHED opt_merge_when_and_condition THEN merge_insert
-				{
-					$6->matched = false;
-					$6->commandType = CMD_INSERT;
-					$6->condition = $4;
-
-					$$ = (Node *) $6;
-				}
-			| WHEN NOT MATCHED opt_merge_when_and_condition THEN DO NOTHING
-				{
-					MergeWhenClause *m = makeNode(MergeWhenClause);
-
-					m->matched = false;
-					m->commandType = CMD_NOTHING;
-					m->condition = $4;
-
-					$$ = (Node *)m;
-				}
-			;
-
-opt_merge_when_and_condition:
-			AND a_expr 				{ $$ = $2; }
-			| 			 			{ $$ = NULL; }
-			;
-
-merge_delete:
-			DELETE_P 				{ $$ = NULL; }
-			;
-
-merge_update:
-			UPDATE SET set_clause_list
-				{
-					MergeWhenClause *n = makeNode(MergeWhenClause);
-					n->targetList = $3;
-
-					$$ = n;
-				}
-			;
-
-merge_insert:
-			INSERT merge_values_clause
-				{
-					MergeWhenClause *n = makeNode(MergeWhenClause);
-					n->cols = NIL;
-					n->values = $2;
-					$$ = n;
-				}
-			| INSERT OVERRIDING override_kind VALUE_P merge_values_clause
-				{
-					MergeWhenClause *n = makeNode(MergeWhenClause);
-					n->cols = NIL;
-					n->override = $3;
-					n->values = $5;
-					$$ = n;
-				}
-			| INSERT '(' insert_column_list ')' merge_values_clause
-				{
-					MergeWhenClause *n = makeNode(MergeWhenClause);
-					n->cols = $3;
-					n->values = $5;
-					$$ = n;
-				}
-			| INSERT '(' insert_column_list ')' OVERRIDING override_kind VALUE_P merge_values_clause
-				{
-					MergeWhenClause *n = makeNode(MergeWhenClause);
-					n->cols = $3;
-					n->override = $6;
-					n->values = $8;
-					$$ = n;
-				}
-			| INSERT DEFAULT VALUES
-				{
-					MergeWhenClause *n = makeNode(MergeWhenClause);
-					n->cols = NIL;
-					n->values = NIL;
-					$$ = n;
-				}
-			;
-
-merge_values_clause:
-			VALUES '(' expr_list ')'
-				{
-					$$ = $3;
-				}
-			;
 
 /*****************************************************************************
  *
@@ -11695,15 +11568,23 @@ limit_clause:
 							 parser_errposition(@1)));
 				}
 			/* SQL:2008 syntax */
-			| FETCH first_or_next opt_select_fetch_first_value row_or_rows ONLY
+			/* to avoid shift/reduce conflicts, handle the optional value with
+			 * a separate production rather than an opt_ expression.  The fact
+			 * that ONLY is fully reserved means that this way, we defer any
+			 * decision about what rule reduces ROW or ROWS to the point where
+			 * we can see the ONLY token in the lookahead slot.
+			 */
+			| FETCH first_or_next select_fetch_first_value row_or_rows ONLY
 				{ $$ = $3; }
+			| FETCH first_or_next row_or_rows ONLY
+				{ $$ = makeIntConst(1, -1); }
 		;
 
 offset_clause:
 			OFFSET select_offset_value
 				{ $$ = $2; }
 			/* SQL:2008 syntax */
-			| OFFSET select_offset_value2 row_or_rows
+			| OFFSET select_fetch_first_value row_or_rows
 				{ $$ = $2; }
 		;
 
@@ -11722,22 +11603,31 @@ select_offset_value:
 
 /*
  * Allowing full expressions without parentheses causes various parsing
- * problems with the trailing ROW/ROWS key words.  SQL only calls for
- * constants, so we allow the rest only with parentheses.  If omitted,
- * default to 1.
+ * problems with the trailing ROW/ROWS key words.  SQL spec only calls for
+ * <simple value specification>, which is either a literal or a parameter (but
+ * an <SQL parameter reference> could be an identifier, bringing up conflicts
+ * with ROW/ROWS). We solve this by leveraging the presence of ONLY (see above)
+ * to determine whether the expression is missing rather than trying to make it
+ * optional in this rule.
+ *
+ * c_expr covers almost all the spec-required cases (and more), but it doesn't
+ * cover signed numeric literals, which are allowed by the spec. So we include
+ * those here explicitly. We need FCONST as well as ICONST because values that
+ * don't fit in the platform's "long", but do fit in bigint, should still be
+ * accepted here. (This is possible in 64-bit Windows as well as all 32-bit
+ * builds.)
  */
-opt_select_fetch_first_value:
-			SignedIconst						{ $$ = makeIntConst($1, @1); }
-			| '(' a_expr ')'					{ $$ = $2; }
-			| /*EMPTY*/							{ $$ = makeIntConst(1, -1); }
+select_fetch_first_value:
+			c_expr									{ $$ = $1; }
+			| '+' I_or_F_const
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "+", NULL, $2, @1); }
+			| '-' I_or_F_const
+				{ $$ = doNegate($2, @1); }
 		;
 
-/*
- * Again, the trailing ROW/ROWS in this case prevent the full expression
- * syntax.  c_expr is the best we can do.
- */
-select_offset_value2:
-			c_expr									{ $$ = $1; }
+I_or_F_const:
+			Iconst									{ $$ = makeIntConst($1,@1); }
+			| FCONST								{ $$ = makeFloatConst($1,@1); }
 		;
 
 /* noise words */
@@ -14980,18 +14870,21 @@ RoleId:		RoleSpec
 									 errmsg("role name \"%s\" is reserved",
 											"public"),
 									 parser_errposition(@1)));
+							break;
 						case ROLESPEC_SESSION_USER:
 							ereport(ERROR,
 									(errcode(ERRCODE_RESERVED_NAME),
 									 errmsg("%s cannot be used as a role name here",
 											"SESSION_USER"),
 									 parser_errposition(@1)));
+							break;
 						case ROLESPEC_CURRENT_USER:
 							ereport(ERROR,
 									(errcode(ERRCODE_RESERVED_NAME),
 									 errmsg("%s cannot be used as a role name here",
 											"CURRENT_USER"),
 									 parser_errposition(@1)));
+							break;
 					}
 				}
 			;
@@ -15206,6 +15099,7 @@ unreserved_keyword:
 			| IMMUTABLE
 			| IMPLICIT_P
 			| IMPORT_P
+			| INCLUDE
 			| INCLUDING
 			| INCREMENT
 			| INDEX
@@ -15235,10 +15129,8 @@ unreserved_keyword:
 			| LOGGED
 			| MAPPING
 			| MATCH
-			| MATCHED
 			| MATERIALIZED
 			| MAXVALUE
-			| MERGE
 			| METHOD
 			| MINUTE_P
 			| MINVALUE

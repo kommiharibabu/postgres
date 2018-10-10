@@ -98,7 +98,6 @@
 #include "postgres.h"
 
 #include <ctype.h>
-#include <float.h>
 #include <math.h>
 
 #include "access/brin.h"
@@ -4902,7 +4901,7 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 						 * should match has_unique_index().
 						 */
 						if (index->unique &&
-							index->ncolumns == 1 &&
+							index->nkeycolumns == 1 &&
 							(index->indpred == NIL || index->predOK))
 							vardata->isunique = true;
 
@@ -5608,7 +5607,7 @@ get_actual_variable_range(PlannerInfo *root, VariableStatData *vardata,
 										 indexscandir)) != NULL)
 				{
 					/* Extract the index column values from the heap tuple */
-					ExecStoreTuple(tup, slot, InvalidBuffer, false);
+					ExecStoreHeapTuple(tup, slot, false);
 					FormIndexDatum(indexInfo, slot, estate,
 								   values, isnull);
 
@@ -5641,7 +5640,7 @@ get_actual_variable_range(PlannerInfo *root, VariableStatData *vardata,
 										 -indexscandir)) != NULL)
 				{
 					/* Extract the index column values from the heap tuple */
-					ExecStoreTuple(tup, slot, InvalidBuffer, false);
+					ExecStoreHeapTuple(tup, slot, false);
 					FormIndexDatum(indexInfo, slot, estate,
 								   values, isnull);
 
@@ -7053,7 +7052,7 @@ btcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	 * NullTest invalidates that theory, even though it sets eqQualHere.
 	 */
 	if (index->unique &&
-		indexcol == index->ncolumns - 1 &&
+		indexcol == index->nkeycolumns - 1 &&
 		eqQualHere &&
 		!found_saop &&
 		!found_is_null_op)
@@ -7436,6 +7435,8 @@ gincost_pattern(IndexOptInfo *index, int indexcol,
 	bool	   *nullFlags = NULL;
 	int32		searchMode = GIN_SEARCH_MODE_DEFAULT;
 	int32		i;
+
+	Assert(indexcol < index->nkeycolumns);
 
 	/*
 	 * Get the operator's strategy number and declared input data types within

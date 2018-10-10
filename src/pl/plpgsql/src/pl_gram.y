@@ -304,7 +304,6 @@ static	void			check_raise_parameters(PLpgSQL_stmt_raise *stmt);
 %token <keyword>	K_LAST
 %token <keyword>	K_LOG
 %token <keyword>	K_LOOP
-%token <keyword>	K_MERGE
 %token <keyword>	K_MESSAGE
 %token <keyword>	K_MESSAGE_TEXT
 %token <keyword>	K_MOVE
@@ -614,6 +613,7 @@ decl_cursor_args :
 
 						new = palloc0(sizeof(PLpgSQL_row));
 						new->dtype = PLPGSQL_DTYPE_ROW;
+						new->refname = "(unnamed row)";
 						new->lineno = plpgsql_location_to_lineno(@1);
 						new->rowtupdesc = NULL;
 						new->nfields = list_length($2);
@@ -1952,10 +1952,6 @@ stmt_execsql	: K_IMPORT
 					{
 						$$ = make_execsql_stmt(K_INSERT, @1);
 					}
-				| K_MERGE
-					{
-						$$ = make_execsql_stmt(K_MERGE, @1);
-					}
 				| T_WORD
 					{
 						int			tok;
@@ -2502,7 +2498,6 @@ unreserved_keyword	:
 				| K_IS
 				| K_LAST
 				| K_LOG
-				| K_MERGE
 				| K_MESSAGE
 				| K_MESSAGE_TEXT
 				| K_MOVE
@@ -2966,8 +2961,6 @@ make_execsql_stmt(int firsttoken, int location)
 		{
 			if (prev_tok == K_INSERT)
 				continue;		/* INSERT INTO is not an INTO-target */
-			if (prev_tok == K_MERGE)
-				continue;		/* MERGE INTO is not an INTO-target */
 			if (firsttoken == K_IMPORT)
 				continue;		/* IMPORT ... INTO is not an INTO-target */
 			if (have_into)
@@ -3534,6 +3527,7 @@ read_into_scalar_list(char *initial_name,
 
 	row = palloc0(sizeof(PLpgSQL_row));
 	row->dtype = PLPGSQL_DTYPE_ROW;
+	row->refname = "(unnamed row)";
 	row->lineno = plpgsql_location_to_lineno(initial_location);
 	row->rowtupdesc = NULL;
 	row->nfields = nfields;
@@ -3568,6 +3562,7 @@ make_scalar_list1(char *initial_name,
 
 	row = palloc0(sizeof(PLpgSQL_row));
 	row->dtype = PLPGSQL_DTYPE_ROW;
+	row->refname = "(unnamed row)";
 	row->lineno = lineno;
 	row->rowtupdesc = NULL;
 	row->nfields = 1;

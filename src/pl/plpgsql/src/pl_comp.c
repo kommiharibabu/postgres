@@ -20,7 +20,6 @@
 #include "access/htup_details.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_proc.h"
-#include "catalog/pg_proc_fn.h"
 #include "catalog/pg_type.h"
 #include "funcapi.h"
 #include "nodes/makefuncs.h"
@@ -546,7 +545,7 @@ do_compile(FunctionCallInfo fcinfo,
 			{
 				if (rettypeid == VOIDOID ||
 					rettypeid == RECORDOID)
-					/* okay */ ;
+					 /* okay */ ;
 				else if (rettypeid == TRIGGEROID || rettypeid == EVTTRIGGEROID)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -564,9 +563,9 @@ do_compile(FunctionCallInfo fcinfo,
 			function->fn_rettyplen = typeStruct->typlen;
 
 			/*
-			 * install $0 reference, but only for polymorphic return
-			 * types, and not when the return is specified through an
-			 * output parameter.
+			 * install $0 reference, but only for polymorphic return types,
+			 * and not when the return is specified through an output
+			 * parameter.
 			 */
 			if (IsPolymorphicType(procStruct->prorettype) &&
 				num_out_args == 0)
@@ -1897,6 +1896,8 @@ build_row_from_vars(PLpgSQL_variable **vars, int numvars)
 
 	row = palloc0(sizeof(PLpgSQL_row));
 	row->dtype = PLPGSQL_DTYPE_ROW;
+	row->refname = "(unnamed row)";
+	row->lineno = -1;
 	row->rowtupdesc = CreateTemplateTupleDesc(numvars, false);
 	row->nfields = numvars;
 	row->fieldnames = palloc(numvars * sizeof(char *));

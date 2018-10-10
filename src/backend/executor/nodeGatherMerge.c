@@ -628,7 +628,7 @@ gather_merge_readnext(GatherMergeState *gm_state, int reader, bool nowait)
 		{
 			PlanState  *outerPlan = outerPlanState(gm_state);
 			TupleTableSlot *outerTupleSlot;
-			EState *estate = gm_state->ps.state;
+			EState	   *estate = gm_state->ps.state;
 
 			/* Install our DSA area while executing the plan. */
 			estate->es_query_dsa = gm_state->pei ? gm_state->pei->area : NULL;
@@ -679,11 +679,10 @@ gather_merge_readnext(GatherMergeState *gm_state, int reader, bool nowait)
 	Assert(HeapTupleIsValid(tup));
 
 	/* Build the TupleTableSlot for the given tuple */
-	ExecStoreTuple(tup,			/* tuple to store */
-				   gm_state->gm_slots[reader],	/* slot in which to store the
-												 * tuple */
-				   InvalidBuffer,	/* no buffer associated with tuple */
-				   true);		/* pfree tuple when done with it */
+	ExecStoreHeapTuple(tup,			/* tuple to store */
+					   gm_state->gm_slots[reader],	/* slot in which to store
+													 * the tuple */
+					   true);		/* pfree tuple when done with it */
 
 	return true;
 }
@@ -756,7 +755,10 @@ heap_compare_slots(Datum a, Datum b, void *arg)
 									  datum2, isNull2,
 									  sortKey);
 		if (compare != 0)
-			return -compare;
+		{
+			INVERT_COMPARE_RESULT(compare);
+			return compare;
+		}
 	}
 	return 0;
 }

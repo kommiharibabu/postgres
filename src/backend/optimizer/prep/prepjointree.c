@@ -586,10 +586,13 @@ inline_set_returning_functions(PlannerInfo *root)
 			funcquery = inline_set_returning_function(root, rte);
 			if (funcquery)
 			{
-				/* Successful expansion, replace the rtable entry */
+				/* Successful expansion, convert the RTE to a subquery */
 				rte->rtekind = RTE_SUBQUERY;
 				rte->subquery = funcquery;
+				rte->security_barrier = false;
+				/* Clear fields that should not be set in a subquery RTE */
 				rte->functions = NIL;
+				rte->funcordinality = false;
 			}
 		}
 	}
@@ -914,7 +917,7 @@ pull_up_simple_subquery(PlannerInfo *root, Node *jtnode, RangeTblEntry *rte,
 	subroot->grouping_map = NULL;
 	subroot->minmax_aggs = NIL;
 	subroot->qual_security_level = 0;
-	subroot->hasInheritedTarget = false;
+	subroot->inhTargetKind = INHKIND_NONE;
 	subroot->hasRecursion = false;
 	subroot->wt_param_id = -1;
 	subroot->non_recursive_path = NULL;

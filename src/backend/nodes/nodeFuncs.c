@@ -30,7 +30,7 @@ static int	leftmostLoc(int loc1, int loc2);
 static bool fix_opfuncids_walker(Node *node, void *context);
 static bool planstate_walk_subplans(List *plans, bool (*walker) (),
 									void *context);
-static bool planstate_walk_members(List *plans, PlanState **planstates,
+static bool planstate_walk_members(PlanState **planstates, int nplans,
 					   bool (*walker) (), void *context);
 
 
@@ -2146,15 +2146,16 @@ expression_tree_walker(Node *node,
 					return true;
 			}
 			break;
-		case T_MergeAction:
+		case T_PartitionPruneStepOp:
 			{
-				MergeAction *action = (MergeAction *) node;
+				PartitionPruneStepOp *opstep = (PartitionPruneStepOp *) node;
 
-				if (walker(action->targetList, context))
-					return true;
-				if (walker(action->qual, context))
+				if (walker((Node *) opstep->exprs, context))
 					return true;
 			}
+			break;
+		case T_PartitionPruneStepCombine:
+			/* no expression subnodes */
 			break;
 		case T_JoinExpr:
 			{
@@ -2264,10 +2265,6 @@ query_tree_walker(Query *query,
 	if (walker((Node *) query->withCheckOptions, context))
 		return true;
 	if (walker((Node *) query->onConflict, context))
-		return true;
-	if (walker((Node *) query->mergeSourceTargetList, context))
-		return true;
-	if (walker((Node *) query->mergeActionList, context))
 		return true;
 	if (walker((Node *) query->returningList, context))
 		return true;
@@ -2946,18 +2943,20 @@ expression_tree_mutator(Node *node,
 				return (Node *) newnode;
 			}
 			break;
-		case T_MergeAction:
+		case T_PartitionPruneStepOp:
 			{
-				MergeAction *action = (MergeAction *) node;
-				MergeAction *newnode;
+				PartitionPruneStepOp *opstep = (PartitionPruneStepOp *) node;
+				PartitionPruneStepOp *newnode;
 
-				FLATCOPY(newnode, action, MergeAction);
-				MUTATE(newnode->qual, action->qual, Node *);
-				MUTATE(newnode->targetList, action->targetList, List *);
+				FLATCOPY(newnode, opstep, PartitionPruneStepOp);
+				MUTATE(newnode->exprs, opstep->exprs, List *);
 
 				return (Node *) newnode;
 			}
 			break;
+		case T_PartitionPruneStepCombine:
+			/* no expression sub-nodes */
+			return (Node *) copyObject(node);
 		case T_JoinExpr:
 			{
 				JoinExpr   *join = (JoinExpr *) node;
@@ -3109,8 +3108,6 @@ query_tree_mutator(Query *query,
 	MUTATE(query->targetList, query->targetList, List *);
 	MUTATE(query->withCheckOptions, query->withCheckOptions, List *);
 	MUTATE(query->onConflict, query->onConflict, OnConflictExpr *);
-	MUTATE(query->mergeSourceTargetList, query->mergeSourceTargetList, List *);
-	MUTATE(query->mergeActionList, query->mergeActionList, List *);
 	MUTATE(query->returningList, query->returningList, List *);
 	MUTATE(query->jointree, query->jointree, FromExpr *);
 	MUTATE(query->setOperations, query->setOperations, Node *);
@@ -3252,9 +3249,9 @@ query_or_expression_tree_mutator(Node *node,
  * boundaries: we descend to everything that's possibly interesting.
  *
  * Currently, the node type coverage here extends only to DML statements
- * (SELECT/INSERT/UPDATE/DELETE/MERGE) and nodes that can appear in them,
- * because this is used mainly during analysis of CTEs, and only DML
- * statements can appear in CTEs.
+ * (SELECT/INSERT/UPDATE/DELETE) and nodes that can appear in them, because
+ * this is used mainly during analysis of CTEs, and only DML statements can
+ * appear in CTEs.
  */
 bool
 raw_expression_tree_walker(Node *node,
@@ -3431,36 +3428,6 @@ raw_expression_tree_walker(Node *node,
 				if (walker(stmt->returningList, context))
 					return true;
 				if (walker(stmt->withClause, context))
-					return true;
-			}
-			break;
-		case T_MergeStmt:
-			{
-				MergeStmt  *stmt = (MergeStmt *) node;
-
-				if (walker(stmt->relation, context))
-					return true;
-				if (walker(stmt->source_relation, context))
-					return true;
-				if (walker(stmt->join_condition, context))
-					return true;
-				if (walker(stmt->mergeWhenClauses, context))
-					return true;
-				if (walker(stmt->withClause, context))
-					return true;
-			}
-			break;
-		case T_MergeWhenClause:
-			{
-				MergeWhenClause *mergeWhenClause = (MergeWhenClause *) node;
-
-				if (walker(mergeWhenClause->condition, context))
-					return true;
-				if (walker(mergeWhenClause->targetList, context))
-					return true;
-				if (walker(mergeWhenClause->cols, context))
-					return true;
-				if (walker(mergeWhenClause->values, context))
 					return true;
 			}
 			break;
@@ -3781,32 +3748,32 @@ planstate_tree_walker(PlanState *planstate,
 	switch (nodeTag(plan))
 	{
 		case T_ModifyTable:
-			if (planstate_walk_members(((ModifyTable *) plan)->plans,
-									   ((ModifyTableState *) planstate)->mt_plans,
+			if (planstate_walk_members(((ModifyTableState *) planstate)->mt_plans,
+									   ((ModifyTableState *) planstate)->mt_nplans,
 									   walker, context))
 				return true;
 			break;
 		case T_Append:
-			if (planstate_walk_members(((Append *) plan)->appendplans,
-									   ((AppendState *) planstate)->appendplans,
+			if (planstate_walk_members(((AppendState *) planstate)->appendplans,
+									   ((AppendState *) planstate)->as_nplans,
 									   walker, context))
 				return true;
 			break;
 		case T_MergeAppend:
-			if (planstate_walk_members(((MergeAppend *) plan)->mergeplans,
-									   ((MergeAppendState *) planstate)->mergeplans,
+			if (planstate_walk_members(((MergeAppendState *) planstate)->mergeplans,
+									   ((MergeAppendState *) planstate)->ms_nplans,
 									   walker, context))
 				return true;
 			break;
 		case T_BitmapAnd:
-			if (planstate_walk_members(((BitmapAnd *) plan)->bitmapplans,
-									   ((BitmapAndState *) planstate)->bitmapplans,
+			if (planstate_walk_members(((BitmapAndState *) planstate)->bitmapplans,
+									   ((BitmapAndState *) planstate)->nplans,
 									   walker, context))
 				return true;
 			break;
 		case T_BitmapOr:
-			if (planstate_walk_members(((BitmapOr *) plan)->bitmapplans,
-									   ((BitmapOrState *) planstate)->bitmapplans,
+			if (planstate_walk_members(((BitmapOrState *) planstate)->bitmapplans,
+									   ((BitmapOrState *) planstate)->nplans,
 									   walker, context))
 				return true;
 			break;
@@ -3856,15 +3823,11 @@ planstate_walk_subplans(List *plans,
 /*
  * Walk the constituent plans of a ModifyTable, Append, MergeAppend,
  * BitmapAnd, or BitmapOr node.
- *
- * Note: we don't actually need to examine the Plan list members, but
- * we need the list in order to determine the length of the PlanState array.
  */
 static bool
-planstate_walk_members(List *plans, PlanState **planstates,
+planstate_walk_members(PlanState **planstates, int nplans,
 					   bool (*walker) (), void *context)
 {
-	int			nplans = list_length(plans);
 	int			j;
 
 	for (j = 0; j < nplans; j++)

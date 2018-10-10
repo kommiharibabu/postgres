@@ -322,8 +322,8 @@ extern int	pgwin32_safestat(const char *path, struct stat *buf);
  * Supplement to <errno.h>.
  *
  * We redefine network-related Berkeley error symbols as the corresponding WSA
- * constants.  This allows elog.c to recognize them as being in the Winsock
- * error code range and pass them off to pgwin32_socket_strerror(), since
+ * constants. This allows strerror.c to recognize them as being in the Winsock
+ * error code range and pass them off to win32_socket_strerror(), since
  * Windows' version of plain strerror() won't cope.  Note that this will break
  * if these names are used for anything else besides Windows Sockets errors.
  * See TranslateSocketError() when changing this list.
@@ -456,8 +456,6 @@ int			pgwin32_connect(SOCKET s, const struct sockaddr *name, int namelen);
 int			pgwin32_select(int nfds, fd_set *readfs, fd_set *writefds, fd_set *exceptfds, const struct timeval *timeout);
 int			pgwin32_recv(SOCKET s, char *buf, int len, int flags);
 int			pgwin32_send(SOCKET s, const void *buf, int len, int flags);
-
-const char *pgwin32_socket_strerror(int err);
 int			pgwin32_waitforsinglesocket(SOCKET s, int what, int timeout);
 
 extern int	pgwin32_noblock;
@@ -502,7 +500,14 @@ typedef unsigned short mode_t;
 #define W_OK 2
 #define R_OK 4
 
+/*
+ * isinf() and isnan() should per spec be in <math.h>, but MSVC older than
+ * 2013 does not have them there.  It does have _fpclass() and _isnan(), but
+ * they're in <float.h>, so include that here even though it means float.h
+ * percolates to our whole tree.  Recent versions don't require any of this.
+ */
 #if (_MSC_VER < 1800)
+#include <float.h>
 #define isinf(x) ((_fpclass(x) == _FPCLASS_PINF) || (_fpclass(x) == _FPCLASS_NINF))
 #define isnan(x) _isnan(x)
 #endif

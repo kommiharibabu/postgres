@@ -16,7 +16,7 @@ endif
 # probably because it sometimes contains some header files with names
 # that clash with some of ours, or with some that we include, notably on
 # Windows.
-override CPPFLAGS := -I. -I$(srcdir) $(CPPFLAGS) $(perl_embed_ccflags) -I$(perl_archlibexp)/CORE
+override CPPFLAGS := -I. -I$(srcdir) $(CPPFLAGS) $(perl_embed_ccflags) -I$(perl_includedir)/CORE
 
 rpathdir = $(perl_archlibexp)/CORE
 
@@ -100,7 +100,7 @@ uninstall: uninstall-lib uninstall-data
 
 install-data: installdirs
 	$(INSTALL_DATA) $(addprefix $(srcdir)/, $(DATA)) '$(DESTDIR)$(datadir)/extension/'
-	$(INSTALL_DATA) $(srcdir)/plperl.h $(srcdir)/ppport.h '$(DESTDIR)$(includedir_server)'
+	$(INSTALL_DATA) $(srcdir)/plperl.h $(srcdir)/ppport.h $(srcdir)/plperl_helpers.h '$(DESTDIR)$(includedir_server)'
 
 uninstall-data:
 	rm -f $(addprefix '$(DESTDIR)$(datadir)/extension'/, $(notdir $(DATA)))

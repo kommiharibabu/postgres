@@ -349,114 +349,6 @@ UPDATE atest5 SET one = 1; -- fail
 SELECT atest6 FROM atest6; -- ok
 COPY atest6 TO stdout; -- ok
 
--- test column privileges with MERGE
-SET SESSION AUTHORIZATION regress_priv_user1;
-CREATE TABLE mtarget (a int, b text);
-CREATE TABLE msource (a int, b text);
-INSERT INTO mtarget VALUES (1, 'init1'), (2, 'init2');
-INSERT INTO msource VALUES (1, 'source1'), (2, 'source2'), (3, 'source3');
-
-GRANT SELECT (a) ON msource TO regress_priv_user4;
-GRANT SELECT (a) ON mtarget TO regress_priv_user4;
-GRANT INSERT (a,b) ON mtarget TO regress_priv_user4;
-GRANT UPDATE (b) ON mtarget TO regress_priv_user4;
-
-SET SESSION AUTHORIZATION regress_priv_user4;
-
---
--- test source privileges
---
-
--- fail (no SELECT priv on s.b)
-MERGE INTO mtarget t USING msource s ON t.a = s.a
-WHEN MATCHED THEN
-	UPDATE SET b = s.b
-WHEN NOT MATCHED THEN
-	INSERT VALUES (a, NULL);
-
--- fail (s.b used in the INSERTed values)
-MERGE INTO mtarget t USING msource s ON t.a = s.a
-WHEN MATCHED THEN
-	UPDATE SET b = 'x'
-WHEN NOT MATCHED THEN
-	INSERT VALUES (a, b);
-
--- fail (s.b used in the WHEN quals)
-MERGE INTO mtarget t USING msource s ON t.a = s.a
-WHEN MATCHED AND s.b = 'x' THEN
-	UPDATE SET b = 'x'
-WHEN NOT MATCHED THEN
-	INSERT VALUES (a, NULL);
-
--- this should be ok since only s.a is accessed
-BEGIN;
-MERGE INTO mtarget t USING msource s ON t.a = s.a
-WHEN MATCHED THEN
-	UPDATE SET b = 'ok'
-WHEN NOT MATCHED THEN
-	INSERT VALUES (a, NULL);
-ROLLBACK;
-
-SET SESSION AUTHORIZATION regress_priv_user1;
-GRANT SELECT (b) ON msource TO regress_priv_user4;
-SET SESSION AUTHORIZATION regress_priv_user4;
-
--- should now be ok
-BEGIN;
-MERGE INTO mtarget t USING msource s ON t.a = s.a
-WHEN MATCHED THEN
-	UPDATE SET b = s.b
-WHEN NOT MATCHED THEN
-	INSERT VALUES (a, b);
-ROLLBACK;
-
---
--- test target privileges
---
-
--- fail (no SELECT priv on t.b)
-MERGE INTO mtarget t USING msource s ON t.a = s.a
-WHEN MATCHED THEN
-	UPDATE SET b = t.b
-WHEN NOT MATCHED THEN
-	INSERT VALUES (a, NULL);
-
--- fail (no UPDATE on t.a)
-MERGE INTO mtarget t USING msource s ON t.a = s.a
-WHEN MATCHED THEN
-	UPDATE SET b = s.b, a = t.a + 1
-WHEN NOT MATCHED THEN
-	INSERT VALUES (a, b);
-
--- fail (no SELECT on t.b)
-MERGE INTO mtarget t USING msource s ON t.a = s.a
-WHEN MATCHED AND t.b IS NOT NULL THEN
-	UPDATE SET b = s.b
-WHEN NOT MATCHED THEN
-	INSERT VALUES (a, b);
-
--- ok
-BEGIN;
-MERGE INTO mtarget t USING msource s ON t.a = s.a
-WHEN MATCHED THEN
-	UPDATE SET b = s.b;
-ROLLBACK;
-
--- fail (no DELETE)
-MERGE INTO mtarget t USING msource s ON t.a = s.a
-WHEN MATCHED AND t.b IS NOT NULL THEN
-	DELETE;
-
--- grant delete privileges
-SET SESSION AUTHORIZATION regress_priv_user1;
-GRANT DELETE ON mtarget TO regress_priv_user4;
--- should be ok now
-BEGIN;
-MERGE INTO mtarget t USING msource s ON t.a = s.a
-WHEN MATCHED AND t.b IS NOT NULL THEN
-	DELETE;
-ROLLBACK;
-
 -- check error reporting with column privs
 SET SESSION AUTHORIZATION regress_priv_user1;
 CREATE TABLE t1 (c1 int, c2 int, c3 int check (c3 < 5), primary key (c1, c2));
@@ -823,6 +715,23 @@ from (select oid from pg_class where relname = 'atest1') as t1;
 select has_table_privilege(t1.oid,'trigger')
 from (select oid from pg_class where relname = 'atest1') as t1;
 
+-- has_column_privilege function
+
+-- bad-input checks (as non-super-user)
+select has_column_privilege('pg_authid',NULL,'select');
+select has_column_privilege('pg_authid','nosuchcol','select');
+select has_column_privilege(9999,'nosuchcol','select');
+select has_column_privilege(9999,99::int2,'select');
+select has_column_privilege('pg_authid',99::int2,'select');
+select has_column_privilege(9999,99::int2,'select');
+
+create temp table mytable(f1 int, f2 int, f3 int);
+alter table mytable drop column f2;
+select has_column_privilege('mytable','f2','select');
+select has_column_privilege('mytable','........pg.dropped.2........','select');
+select has_column_privilege('mytable',2::int2,'select');
+revoke select on table mytable from regress_priv_user3;
+select has_column_privilege('mytable',2::int2,'select');
 
 -- Grant options
 

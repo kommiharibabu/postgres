@@ -15,9 +15,13 @@
  *	  have an output function defined here (as well as an input function
  *	  in readfuncs.c).  In addition, plan nodes should have input and
  *	  output functions so that they can be sent to parallel workers.
+ *
  *	  For use in debugging, we also provide output functions for nodes
- *	  that appear in raw parsetrees and path.  These nodes however need
- *	  not have input functions.
+ *	  that appear in raw parsetrees and planner Paths.  These node types
+ *	  need not have input functions.  Output support for raw parsetrees
+ *	  is somewhat incomplete, too; in particular, utility statements are
+ *	  almost entirely unsupported.  We try to support everything that can
+ *	  appear in a raw SELECT, though.
  *
  *-------------------------------------------------------------------------
  */
@@ -272,11 +276,10 @@ _outPlannedStmt(StringInfo str, const PlannedStmt *node)
 	WRITE_BOOL_FIELD(transientPlan);
 	WRITE_BOOL_FIELD(dependsOnRole);
 	WRITE_BOOL_FIELD(parallelModeNeeded);
-	WRITE_BOOL_FIELD(jitFlags);
+	WRITE_INT_FIELD(jitFlags);
 	WRITE_NODE_FIELD(planTree);
 	WRITE_NODE_FIELD(rtable);
 	WRITE_NODE_FIELD(resultRelations);
-	WRITE_NODE_FIELD(nonleafResultRelations);
 	WRITE_NODE_FIELD(rootResultRelations);
 	WRITE_NODE_FIELD(subplans);
 	WRITE_BITMAPSET_FIELD(rewindPlanIDs);
@@ -372,10 +375,9 @@ _outModifyTable(StringInfo str, const ModifyTable *node)
 	WRITE_ENUM_FIELD(operation, CmdType);
 	WRITE_BOOL_FIELD(canSetTag);
 	WRITE_UINT_FIELD(nominalRelation);
-	WRITE_NODE_FIELD(partitioned_rels);
+	WRITE_UINT_FIELD(rootRelation);
 	WRITE_BOOL_FIELD(partColsUpdated);
 	WRITE_NODE_FIELD(resultRelations);
-	WRITE_INT_FIELD(mergeTargetRelation);
 	WRITE_INT_FIELD(resultRelIndex);
 	WRITE_INT_FIELD(rootResultRelIndex);
 	WRITE_NODE_FIELD(plans);
@@ -391,22 +393,6 @@ _outModifyTable(StringInfo str, const ModifyTable *node)
 	WRITE_NODE_FIELD(onConflictWhere);
 	WRITE_UINT_FIELD(exclRelRTI);
 	WRITE_NODE_FIELD(exclRelTlist);
-	WRITE_NODE_FIELD(mergeSourceTargetList);
-	WRITE_NODE_FIELD(mergeActionList);
-}
-
-static void
-_outMergeWhenClause(StringInfo str, const MergeWhenClause *node)
-{
-	WRITE_NODE_TYPE("MERGEWHENCLAUSE");
-
-	WRITE_BOOL_FIELD(matched);
-	WRITE_ENUM_FIELD(commandType, CmdType);
-	WRITE_NODE_FIELD(condition);
-	WRITE_NODE_FIELD(targetList);
-	WRITE_NODE_FIELD(cols);
-	WRITE_NODE_FIELD(values);
-	WRITE_ENUM_FIELD(override, OverridingKind);
 }
 
 static void
@@ -416,9 +402,9 @@ _outAppend(StringInfo str, const Append *node)
 
 	_outPlanInfo(str, (const Plan *) node);
 
-	WRITE_NODE_FIELD(partitioned_rels);
 	WRITE_NODE_FIELD(appendplans);
 	WRITE_INT_FIELD(first_partial_plan);
+	WRITE_NODE_FIELD(part_prune_info);
 }
 
 static void
@@ -430,7 +416,6 @@ _outMergeAppend(StringInfo str, const MergeAppend *node)
 
 	_outPlanInfo(str, (const Plan *) node);
 
-	WRITE_NODE_FIELD(partitioned_rels);
 	WRITE_NODE_FIELD(mergeplans);
 
 	WRITE_INT_FIELD(numCols);
@@ -450,6 +435,8 @@ _outMergeAppend(StringInfo str, const MergeAppend *node)
 	appendStringInfoString(str, " :nullsFirst");
 	for (i = 0; i < node->numCols; i++)
 		appendStringInfo(str, " %s", booltostr(node->nullsFirst[i]));
+
+	WRITE_NODE_FIELD(part_prune_info);
 }
 
 static void
@@ -1024,6 +1011,67 @@ _outPlanRowMark(StringInfo str, const PlanRowMark *node)
 	WRITE_ENUM_FIELD(strength, LockClauseStrength);
 	WRITE_ENUM_FIELD(waitPolicy, LockWaitPolicy);
 	WRITE_BOOL_FIELD(isParent);
+}
+
+static void
+_outPartitionPruneInfo(StringInfo str, const PartitionPruneInfo *node)
+{
+	WRITE_NODE_TYPE("PARTITIONPRUNEINFO");
+
+	WRITE_NODE_FIELD(prune_infos);
+	WRITE_BITMAPSET_FIELD(other_subplans);
+}
+
+static void
+_outPartitionedRelPruneInfo(StringInfo str, const PartitionedRelPruneInfo *node)
+{
+	int			i;
+
+	WRITE_NODE_TYPE("PARTITIONEDRELPRUNEINFO");
+
+	WRITE_UINT_FIELD(rtindex);
+	WRITE_NODE_FIELD(pruning_steps);
+	WRITE_BITMAPSET_FIELD(present_parts);
+	WRITE_INT_FIELD(nparts);
+	WRITE_INT_FIELD(nexprs);
+
+	appendStringInfoString(str, " :subplan_map");
+	for (i = 0; i < node->nparts; i++)
+		appendStringInfo(str, " %d", node->subplan_map[i]);
+
+	appendStringInfoString(str, " :subpart_map");
+	for (i = 0; i < node->nparts; i++)
+		appendStringInfo(str, " %d", node->subpart_map[i]);
+
+	appendStringInfoString(str, " :hasexecparam");
+	for (i = 0; i < node->nexprs; i++)
+		appendStringInfo(str, " %s", booltostr(node->hasexecparam[i]));
+
+	WRITE_BOOL_FIELD(do_initial_prune);
+	WRITE_BOOL_FIELD(do_exec_prune);
+	WRITE_BITMAPSET_FIELD(execparamids);
+}
+
+static void
+_outPartitionPruneStepOp(StringInfo str, const PartitionPruneStepOp *node)
+{
+	WRITE_NODE_TYPE("PARTITIONPRUNESTEPOP");
+
+	WRITE_INT_FIELD(step.step_id);
+	WRITE_INT_FIELD(opstrategy);
+	WRITE_NODE_FIELD(exprs);
+	WRITE_NODE_FIELD(cmpfns);
+	WRITE_BITMAPSET_FIELD(nullkeys);
+}
+
+static void
+_outPartitionPruneStepCombine(StringInfo str, const PartitionPruneStepCombine *node)
+{
+	WRITE_NODE_TYPE("PARTITIONPRUNESTEPCOMBINE");
+
+	WRITE_INT_FIELD(step.step_id);
+	WRITE_ENUM_FIELD(combineOp, PartitionPruneCombineOp);
+	WRITE_NODE_FIELD(source_stepids);
 }
 
 static void
@@ -1725,17 +1773,6 @@ _outOnConflictExpr(StringInfo str, const OnConflictExpr *node)
 	WRITE_NODE_FIELD(exclRelTlist);
 }
 
-static void
-_outMergeAction(StringInfo str, const MergeAction *node)
-{
-	WRITE_NODE_TYPE("MERGEACTION");
-
-	WRITE_BOOL_FIELD(matched);
-	WRITE_ENUM_FIELD(commandType, CmdType);
-	WRITE_NODE_FIELD(qual);
-	WRITE_NODE_FIELD(targetList);
-}
-
 /*****************************************************************************
  *
  *	Stuff from relation.h.
@@ -1901,6 +1938,7 @@ _outAppendPath(StringInfo str, const AppendPath *node)
 
 	WRITE_NODE_FIELD(partitioned_rels);
 	WRITE_NODE_FIELD(subpaths);
+	WRITE_INT_FIELD(first_partial_path);
 }
 
 static void
@@ -2084,7 +2122,6 @@ _outWindowAggPath(StringInfo str, const WindowAggPath *node)
 
 	WRITE_NODE_FIELD(subpath);
 	WRITE_NODE_FIELD(winclause);
-	WRITE_NODE_FIELD(winpathkeys);
 }
 
 static void
@@ -2139,10 +2176,9 @@ _outModifyTablePath(StringInfo str, const ModifyTablePath *node)
 	WRITE_ENUM_FIELD(operation, CmdType);
 	WRITE_BOOL_FIELD(canSetTag);
 	WRITE_UINT_FIELD(nominalRelation);
-	WRITE_NODE_FIELD(partitioned_rels);
+	WRITE_UINT_FIELD(rootRelation);
 	WRITE_BOOL_FIELD(partColsUpdated);
 	WRITE_NODE_FIELD(resultRelations);
-	WRITE_INT_FIELD(mergeTargetRelation);
 	WRITE_NODE_FIELD(subpaths);
 	WRITE_NODE_FIELD(subroots);
 	WRITE_NODE_FIELD(withCheckOptionLists);
@@ -2150,8 +2186,6 @@ _outModifyTablePath(StringInfo str, const ModifyTablePath *node)
 	WRITE_NODE_FIELD(rowMarks);
 	WRITE_NODE_FIELD(onconflict);
 	WRITE_INT_FIELD(epqParam);
-	WRITE_NODE_FIELD(mergeSourceTargetList);
-	WRITE_NODE_FIELD(mergeActionList);
 }
 
 static void
@@ -2208,6 +2242,7 @@ _outHashPath(StringInfo str, const HashPath *node)
 
 	WRITE_NODE_FIELD(path_hashclauses);
 	WRITE_INT_FIELD(num_batches);
+	WRITE_FLOAT_FIELD(inner_rows_total, "%.0f");
 }
 
 static void
@@ -2221,7 +2256,6 @@ _outPlannerGlobal(StringInfo str, const PlannerGlobal *node)
 	WRITE_NODE_FIELD(finalrtable);
 	WRITE_NODE_FIELD(finalrowmarks);
 	WRITE_NODE_FIELD(resultRelations);
-	WRITE_NODE_FIELD(nonleafResultRelations);
 	WRITE_NODE_FIELD(rootResultRelations);
 	WRITE_NODE_FIELD(relationOids);
 	WRITE_NODE_FIELD(invalItems);
@@ -2261,7 +2295,6 @@ _outPlannerInfo(StringInfo str, const PlannerInfo *node)
 	WRITE_NODE_FIELD(full_join_clauses);
 	WRITE_NODE_FIELD(join_info_list);
 	WRITE_NODE_FIELD(append_rel_list);
-	WRITE_NODE_FIELD(pcinfo_list);
 	WRITE_NODE_FIELD(rowMarks);
 	WRITE_NODE_FIELD(placeholder_list);
 	WRITE_NODE_FIELD(fkey_list);
@@ -2276,7 +2309,7 @@ _outPlannerInfo(StringInfo str, const PlannerInfo *node)
 	WRITE_FLOAT_FIELD(tuple_fraction, "%.4f");
 	WRITE_FLOAT_FIELD(limit_tuples, "%.0f");
 	WRITE_UINT_FIELD(qual_security_level);
-	WRITE_BOOL_FIELD(hasInheritedTarget);
+	WRITE_ENUM_FIELD(inhTargetKind, InheritanceKind);
 	WRITE_BOOL_FIELD(hasJoinRTEs);
 	WRITE_BOOL_FIELD(hasLateralRTEs);
 	WRITE_BOOL_FIELD(hasDeletedRTEs);
@@ -2286,6 +2319,7 @@ _outPlannerInfo(StringInfo str, const PlannerInfo *node)
 	WRITE_INT_FIELD(wt_param_id);
 	WRITE_BITMAPSET_FIELD(curOuterRels);
 	WRITE_NODE_FIELD(curOuterParams);
+	WRITE_BOOL_FIELD(partColsUpdated);
 }
 
 static void
@@ -2334,7 +2368,9 @@ _outRelOptInfo(StringInfo str, const RelOptInfo *node)
 	WRITE_UINT_FIELD(baserestrict_min_security);
 	WRITE_NODE_FIELD(joininfo);
 	WRITE_BOOL_FIELD(has_eclass_joins);
+	WRITE_BOOL_FIELD(consider_partitionwise_join);
 	WRITE_BITMAPSET_FIELD(top_parent_relids);
+	WRITE_NODE_FIELD(partitioned_child_rels);
 }
 
 static void
@@ -2560,16 +2596,6 @@ _outAppendRelInfo(StringInfo str, const AppendRelInfo *node)
 }
 
 static void
-_outPartitionedChildRelInfo(StringInfo str, const PartitionedChildRelInfo *node)
-{
-	WRITE_NODE_TYPE("PARTITIONEDCHILDRELINFO");
-
-	WRITE_UINT_FIELD(parent_relid);
-	WRITE_NODE_FIELD(child_rels);
-	WRITE_BOOL_FIELD(part_cols_updated);
-}
-
-static void
 _outPlaceHolderInfo(StringInfo str, const PlaceHolderInfo *node)
 {
 	WRITE_NODE_TYPE("PLACEHOLDERINFO");
@@ -2694,6 +2720,7 @@ _outIndexStmt(StringInfo str, const IndexStmt *node)
 	WRITE_STRING_FIELD(accessMethod);
 	WRITE_STRING_FIELD(tableSpace);
 	WRITE_NODE_FIELD(indexParams);
+	WRITE_NODE_FIELD(indexIncludingParams);
 	WRITE_NODE_FIELD(options);
 	WRITE_NODE_FIELD(whereClause);
 	WRITE_NODE_FIELD(excludeOpNames);
@@ -2972,10 +2999,7 @@ _outQuery(StringInfo str, const Query *node)
 	WRITE_NODE_FIELD(rowMarks);
 	WRITE_NODE_FIELD(setOperations);
 	WRITE_NODE_FIELD(constraintDeps);
-	/* withCheckOptions intentionally omitted, see comment in parsenodes.h */
-	WRITE_INT_FIELD(mergeTarget_relation);
-	WRITE_NODE_FIELD(mergeSourceTargetList);
-	WRITE_NODE_FIELD(mergeActionList);
+	WRITE_NODE_FIELD(withCheckOptions);
 	WRITE_LOCATION_FIELD(stmt_location);
 	WRITE_LOCATION_FIELD(stmt_len);
 }
@@ -3103,6 +3127,7 @@ _outRangeTblEntry(StringInfo str, const RangeTblEntry *node)
 		case RTE_RELATION:
 			WRITE_OID_FIELD(relid);
 			WRITE_CHAR_FIELD(relkind);
+			WRITE_INT_FIELD(rellockmode);
 			WRITE_NODE_FIELD(tablesample);
 			break;
 		case RTE_SUBQUERY:
@@ -3323,6 +3348,20 @@ _outParamRef(StringInfo str, const ParamRef *node)
 	WRITE_LOCATION_FIELD(location);
 }
 
+/*
+ * Node types found in raw parse trees (supported for debug purposes)
+ */
+
+static void
+_outRawStmt(StringInfo str, const RawStmt *node)
+{
+	WRITE_NODE_TYPE("RAWSTMT");
+
+	WRITE_NODE_FIELD(stmt);
+	WRITE_LOCATION_FIELD(stmt_location);
+	WRITE_INT_FIELD(stmt_len);
+}
+
 static void
 _outAConst(StringInfo str, const A_Const *node)
 {
@@ -3522,6 +3561,7 @@ _outConstraint(StringInfo str, const Constraint *node)
 		case CONSTR_PRIMARY:
 			appendStringInfoString(str, "PRIMARY_KEY");
 			WRITE_NODE_FIELD(keys);
+			WRITE_NODE_FIELD(including);
 			WRITE_NODE_FIELD(options);
 			WRITE_STRING_FIELD(indexname);
 			WRITE_STRING_FIELD(indexspace);
@@ -3531,6 +3571,7 @@ _outConstraint(StringInfo str, const Constraint *node)
 		case CONSTR_UNIQUE:
 			appendStringInfoString(str, "UNIQUE");
 			WRITE_NODE_FIELD(keys);
+			WRITE_NODE_FIELD(including);
 			WRITE_NODE_FIELD(options);
 			WRITE_STRING_FIELD(indexname);
 			WRITE_STRING_FIELD(indexspace);
@@ -3540,6 +3581,7 @@ _outConstraint(StringInfo str, const Constraint *node)
 		case CONSTR_EXCLUSION:
 			appendStringInfoString(str, "EXCLUSION");
 			WRITE_NODE_FIELD(exclusions);
+			WRITE_NODE_FIELD(including);
 			WRITE_NODE_FIELD(options);
 			WRITE_STRING_FIELD(indexname);
 			WRITE_STRING_FIELD(indexspace);
@@ -3691,9 +3733,6 @@ outNode(StringInfo str, const void *obj)
 			case T_ModifyTable:
 				_outModifyTable(str, obj);
 				break;
-			case T_MergeWhenClause:
-				_outMergeWhenClause(str, obj);
-				break;
 			case T_Append:
 				_outAppend(str, obj);
 				break;
@@ -3813,6 +3852,18 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_PlanRowMark:
 				_outPlanRowMark(str, obj);
+				break;
+			case T_PartitionPruneInfo:
+				_outPartitionPruneInfo(str, obj);
+				break;
+			case T_PartitionedRelPruneInfo:
+				_outPartitionedRelPruneInfo(str, obj);
+				break;
+			case T_PartitionPruneStepOp:
+				_outPartitionPruneStepOp(str, obj);
+				break;
+			case T_PartitionPruneStepCombine:
+				_outPartitionPruneStepCombine(str, obj);
 				break;
 			case T_PlanInvalItem:
 				_outPlanInvalItem(str, obj);
@@ -3970,9 +4021,6 @@ outNode(StringInfo str, const void *obj)
 			case T_OnConflictExpr:
 				_outOnConflictExpr(str, obj);
 				break;
-			case T_MergeAction:
-				_outMergeAction(str, obj);
-				break;
 			case T_Path:
 				_outPath(str, obj);
 				break;
@@ -4114,9 +4162,6 @@ outNode(StringInfo str, const void *obj)
 			case T_AppendRelInfo:
 				_outAppendRelInfo(str, obj);
 				break;
-			case T_PartitionedChildRelInfo:
-				_outPartitionedChildRelInfo(str, obj);
-				break;
 			case T_PlaceHolderInfo:
 				_outPlaceHolderInfo(str, obj);
 				break;
@@ -4221,6 +4266,9 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_ParamRef:
 				_outParamRef(str, obj);
+				break;
+			case T_RawStmt:
+				_outRawStmt(str, obj);
 				break;
 			case T_A_Const:
 				_outAConst(str, obj);

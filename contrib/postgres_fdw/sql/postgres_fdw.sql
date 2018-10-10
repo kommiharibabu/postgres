@@ -1099,14 +1099,14 @@ DELETE FROM ft2 USING ft1 WHERE ft1.c1 = ft2.c2 AND ft1.c1 % 10 = 2;            
 DELETE FROM ft2 USING ft1 WHERE ft1.c1 = ft2.c2 AND ft1.c1 % 10 = 2;
 SELECT c1,c2,c3,c4 FROM ft2 ORDER BY c1;
 EXPLAIN (verbose, costs off)
-INSERT INTO ft2 (c1,c2,c3) VALUES (9999,999,'foo') RETURNING tableoid::regclass;
-INSERT INTO ft2 (c1,c2,c3) VALUES (9999,999,'foo') RETURNING tableoid::regclass;
+INSERT INTO ft2 (c1,c2,c3) VALUES (1200,999,'foo') RETURNING tableoid::regclass;
+INSERT INTO ft2 (c1,c2,c3) VALUES (1200,999,'foo') RETURNING tableoid::regclass;
 EXPLAIN (verbose, costs off)
-UPDATE ft2 SET c3 = 'bar' WHERE c1 = 9999 RETURNING tableoid::regclass;             -- can be pushed down
-UPDATE ft2 SET c3 = 'bar' WHERE c1 = 9999 RETURNING tableoid::regclass;
+UPDATE ft2 SET c3 = 'bar' WHERE c1 = 1200 RETURNING tableoid::regclass;             -- can be pushed down
+UPDATE ft2 SET c3 = 'bar' WHERE c1 = 1200 RETURNING tableoid::regclass;
 EXPLAIN (verbose, costs off)
-DELETE FROM ft2 WHERE c1 = 9999 RETURNING tableoid::regclass;                       -- can be pushed down
-DELETE FROM ft2 WHERE c1 = 9999 RETURNING tableoid::regclass;
+DELETE FROM ft2 WHERE c1 = 1200 RETURNING tableoid::regclass;                       -- can be pushed down
+DELETE FROM ft2 WHERE c1 = 1200 RETURNING tableoid::regclass;
 
 -- Test UPDATE/DELETE with RETURNING on a three-table join
 INSERT INTO ft2 (c1,c2,c3)
@@ -1262,26 +1262,73 @@ ALTER FOREIGN TABLE ft1 DROP CONSTRAINT ft1_c2negative;
 -- test WITH CHECK OPTION constraints
 -- ===================================================================
 
+CREATE FUNCTION row_before_insupd_trigfunc() RETURNS trigger AS $$BEGIN NEW.a := NEW.a + 10; RETURN NEW; END$$ LANGUAGE plpgsql;
+
 CREATE TABLE base_tbl (a int, b int);
 ALTER TABLE base_tbl SET (autovacuum_enabled = 'false');
+CREATE TRIGGER row_before_insupd_trigger BEFORE INSERT OR UPDATE ON base_tbl FOR EACH ROW EXECUTE PROCEDURE row_before_insupd_trigfunc();
 CREATE FOREIGN TABLE foreign_tbl (a int, b int)
-  SERVER loopback OPTIONS(table_name 'base_tbl');
+  SERVER loopback OPTIONS (table_name 'base_tbl');
 CREATE VIEW rw_view AS SELECT * FROM foreign_tbl
   WHERE a < b WITH CHECK OPTION;
 \d+ rw_view
 
-INSERT INTO rw_view VALUES (0, 10); -- ok
-INSERT INTO rw_view VALUES (10, 0); -- should fail
 EXPLAIN (VERBOSE, COSTS OFF)
-UPDATE rw_view SET b = 20 WHERE a = 0; -- not pushed down
-UPDATE rw_view SET b = 20 WHERE a = 0; -- ok
+INSERT INTO rw_view VALUES (0, 5);
+INSERT INTO rw_view VALUES (0, 5); -- should fail
 EXPLAIN (VERBOSE, COSTS OFF)
-UPDATE rw_view SET b = -20 WHERE a = 0; -- not pushed down
-UPDATE rw_view SET b = -20 WHERE a = 0; -- should fail
+INSERT INTO rw_view VALUES (0, 15);
+INSERT INTO rw_view VALUES (0, 15); -- ok
+SELECT * FROM foreign_tbl;
+
+EXPLAIN (VERBOSE, COSTS OFF)
+UPDATE rw_view SET b = b + 5;
+UPDATE rw_view SET b = b + 5; -- should fail
+EXPLAIN (VERBOSE, COSTS OFF)
+UPDATE rw_view SET b = b + 15;
+UPDATE rw_view SET b = b + 15; -- ok
 SELECT * FROM foreign_tbl;
 
 DROP FOREIGN TABLE foreign_tbl CASCADE;
+DROP TRIGGER row_before_insupd_trigger ON base_tbl;
 DROP TABLE base_tbl;
+
+-- test WCO for partitions
+
+CREATE TABLE child_tbl (a int, b int);
+ALTER TABLE child_tbl SET (autovacuum_enabled = 'false');
+CREATE TRIGGER row_before_insupd_trigger BEFORE INSERT OR UPDATE ON child_tbl FOR EACH ROW EXECUTE PROCEDURE row_before_insupd_trigfunc();
+CREATE FOREIGN TABLE foreign_tbl (a int, b int)
+  SERVER loopback OPTIONS (table_name 'child_tbl');
+
+CREATE TABLE parent_tbl (a int, b int) PARTITION BY RANGE(a);
+ALTER TABLE parent_tbl ATTACH PARTITION foreign_tbl FOR VALUES FROM (0) TO (100);
+
+CREATE VIEW rw_view AS SELECT * FROM parent_tbl
+  WHERE a < b WITH CHECK OPTION;
+\d+ rw_view
+
+EXPLAIN (VERBOSE, COSTS OFF)
+INSERT INTO rw_view VALUES (0, 5);
+INSERT INTO rw_view VALUES (0, 5); -- should fail
+EXPLAIN (VERBOSE, COSTS OFF)
+INSERT INTO rw_view VALUES (0, 15);
+INSERT INTO rw_view VALUES (0, 15); -- ok
+SELECT * FROM foreign_tbl;
+
+EXPLAIN (VERBOSE, COSTS OFF)
+UPDATE rw_view SET b = b + 5;
+UPDATE rw_view SET b = b + 5; -- should fail
+EXPLAIN (VERBOSE, COSTS OFF)
+UPDATE rw_view SET b = b + 15;
+UPDATE rw_view SET b = b + 15; -- ok
+SELECT * FROM foreign_tbl;
+
+DROP FOREIGN TABLE foreign_tbl CASCADE;
+DROP TRIGGER row_before_insupd_trigger ON child_tbl;
+DROP TABLE parent_tbl CASCADE;
+
+DROP FUNCTION row_before_insupd_trigfunc;
 
 -- ===================================================================
 -- test serial columns (ie, sequence-based defaults)
@@ -1767,6 +1814,324 @@ drop table bar cascade;
 drop table loct1;
 drop table loct2;
 
+-- Test pushing down UPDATE/DELETE joins to the remote server
+create table parent (a int, b text);
+create table loct1 (a int, b text);
+create table loct2 (a int, b text);
+create foreign table remt1 (a int, b text)
+  server loopback options (table_name 'loct1');
+create foreign table remt2 (a int, b text)
+  server loopback options (table_name 'loct2');
+alter foreign table remt1 inherit parent;
+
+insert into remt1 values (1, 'foo');
+insert into remt1 values (2, 'bar');
+insert into remt2 values (1, 'foo');
+insert into remt2 values (2, 'bar');
+
+analyze remt1;
+analyze remt2;
+
+explain (verbose, costs off)
+update parent set b = parent.b || remt2.b from remt2 where parent.a = remt2.a returning *;
+update parent set b = parent.b || remt2.b from remt2 where parent.a = remt2.a returning *;
+explain (verbose, costs off)
+delete from parent using remt2 where parent.a = remt2.a returning parent;
+delete from parent using remt2 where parent.a = remt2.a returning parent;
+
+-- cleanup
+drop foreign table remt1;
+drop foreign table remt2;
+drop table loct1;
+drop table loct2;
+drop table parent;
+
+-- ===================================================================
+-- test tuple routing for foreign-table partitions
+-- ===================================================================
+
+-- Test insert tuple routing
+create table itrtest (a int, b text) partition by list (a);
+create table loct1 (a int check (a in (1)), b text);
+create foreign table remp1 (a int check (a in (1)), b text) server loopback options (table_name 'loct1');
+create table loct2 (a int check (a in (2)), b text);
+create foreign table remp2 (b text, a int check (a in (2))) server loopback options (table_name 'loct2');
+alter table itrtest attach partition remp1 for values in (1);
+alter table itrtest attach partition remp2 for values in (2);
+
+insert into itrtest values (1, 'foo');
+insert into itrtest values (1, 'bar') returning *;
+insert into itrtest values (2, 'baz');
+insert into itrtest values (2, 'qux') returning *;
+insert into itrtest values (1, 'test1'), (2, 'test2') returning *;
+
+select tableoid::regclass, * FROM itrtest;
+select tableoid::regclass, * FROM remp1;
+select tableoid::regclass, * FROM remp2;
+
+delete from itrtest;
+
+create unique index loct1_idx on loct1 (a);
+
+-- DO NOTHING without an inference specification is supported
+insert into itrtest values (1, 'foo') on conflict do nothing returning *;
+insert into itrtest values (1, 'foo') on conflict do nothing returning *;
+
+-- But other cases are not supported
+insert into itrtest values (1, 'bar') on conflict (a) do nothing;
+insert into itrtest values (1, 'bar') on conflict (a) do update set b = excluded.b;
+
+select tableoid::regclass, * FROM itrtest;
+
+delete from itrtest;
+
+drop index loct1_idx;
+
+-- Test that remote triggers work with insert tuple routing
+create function br_insert_trigfunc() returns trigger as $$
+begin
+	new.b := new.b || ' triggered !';
+	return new;
+end
+$$ language plpgsql;
+create trigger loct1_br_insert_trigger before insert on loct1
+	for each row execute procedure br_insert_trigfunc();
+create trigger loct2_br_insert_trigger before insert on loct2
+	for each row execute procedure br_insert_trigfunc();
+
+-- The new values are concatenated with ' triggered !'
+insert into itrtest values (1, 'foo') returning *;
+insert into itrtest values (2, 'qux') returning *;
+insert into itrtest values (1, 'test1'), (2, 'test2') returning *;
+with result as (insert into itrtest values (1, 'test1'), (2, 'test2') returning *) select * from result;
+
+drop trigger loct1_br_insert_trigger on loct1;
+drop trigger loct2_br_insert_trigger on loct2;
+
+drop table itrtest;
+drop table loct1;
+drop table loct2;
+
+-- Test update tuple routing
+create table utrtest (a int, b text) partition by list (a);
+create table loct (a int check (a in (1)), b text);
+create foreign table remp (a int check (a in (1)), b text) server loopback options (table_name 'loct');
+create table locp (a int check (a in (2)), b text);
+alter table utrtest attach partition remp for values in (1);
+alter table utrtest attach partition locp for values in (2);
+
+insert into utrtest values (1, 'foo');
+insert into utrtest values (2, 'qux');
+
+select tableoid::regclass, * FROM utrtest;
+select tableoid::regclass, * FROM remp;
+select tableoid::regclass, * FROM locp;
+
+-- It's not allowed to move a row from a partition that is foreign to another
+update utrtest set a = 2 where b = 'foo' returning *;
+
+-- But the reverse is allowed
+update utrtest set a = 1 where b = 'qux' returning *;
+
+select tableoid::regclass, * FROM utrtest;
+select tableoid::regclass, * FROM remp;
+select tableoid::regclass, * FROM locp;
+
+-- The executor should not let unexercised FDWs shut down
+update utrtest set a = 1 where b = 'foo';
+
+-- Test that remote triggers work with update tuple routing
+create trigger loct_br_insert_trigger before insert on loct
+	for each row execute procedure br_insert_trigfunc();
+
+delete from utrtest;
+insert into utrtest values (2, 'qux');
+
+-- Check case where the foreign partition is a subplan target rel
+explain (verbose, costs off)
+update utrtest set a = 1 where a = 1 or a = 2 returning *;
+-- The new values are concatenated with ' triggered !'
+update utrtest set a = 1 where a = 1 or a = 2 returning *;
+
+delete from utrtest;
+insert into utrtest values (2, 'qux');
+
+-- Check case where the foreign partition isn't a subplan target rel
+explain (verbose, costs off)
+update utrtest set a = 1 where a = 2 returning *;
+-- The new values are concatenated with ' triggered !'
+update utrtest set a = 1 where a = 2 returning *;
+
+drop trigger loct_br_insert_trigger on loct;
+
+drop table utrtest;
+drop table loct;
+
+-- Test copy tuple routing
+create table ctrtest (a int, b text) partition by list (a);
+create table loct1 (a int check (a in (1)), b text);
+create foreign table remp1 (a int check (a in (1)), b text) server loopback options (table_name 'loct1');
+create table loct2 (a int check (a in (2)), b text);
+create foreign table remp2 (b text, a int check (a in (2))) server loopback options (table_name 'loct2');
+alter table ctrtest attach partition remp1 for values in (1);
+alter table ctrtest attach partition remp2 for values in (2);
+
+copy ctrtest from stdin;
+1	foo
+2	qux
+\.
+
+select tableoid::regclass, * FROM ctrtest;
+select tableoid::regclass, * FROM remp1;
+select tableoid::regclass, * FROM remp2;
+
+-- Copying into foreign partitions directly should work as well
+copy remp1 from stdin;
+1	bar
+\.
+
+select tableoid::regclass, * FROM remp1;
+
+drop table ctrtest;
+drop table loct1;
+drop table loct2;
+
+-- ===================================================================
+-- test COPY FROM
+-- ===================================================================
+
+create table loc2 (f1 int, f2 text);
+alter table loc2 set (autovacuum_enabled = 'false');
+create foreign table rem2 (f1 int, f2 text) server loopback options(table_name 'loc2');
+
+-- Test basic functionality
+copy rem2 from stdin;
+1	foo
+2	bar
+\.
+select * from rem2;
+
+delete from rem2;
+
+-- Test check constraints
+alter table loc2 add constraint loc2_f1positive check (f1 >= 0);
+alter foreign table rem2 add constraint rem2_f1positive check (f1 >= 0);
+
+-- check constraint is enforced on the remote side, not locally
+copy rem2 from stdin;
+1	foo
+2	bar
+\.
+copy rem2 from stdin; -- ERROR
+-1	xyzzy
+\.
+select * from rem2;
+
+alter foreign table rem2 drop constraint rem2_f1positive;
+alter table loc2 drop constraint loc2_f1positive;
+
+delete from rem2;
+
+-- Test local triggers
+create trigger trig_stmt_before before insert on rem2
+	for each statement execute procedure trigger_func();
+create trigger trig_stmt_after after insert on rem2
+	for each statement execute procedure trigger_func();
+create trigger trig_row_before before insert on rem2
+	for each row execute procedure trigger_data(23,'skidoo');
+create trigger trig_row_after after insert on rem2
+	for each row execute procedure trigger_data(23,'skidoo');
+
+copy rem2 from stdin;
+1	foo
+2	bar
+\.
+select * from rem2;
+
+drop trigger trig_row_before on rem2;
+drop trigger trig_row_after on rem2;
+drop trigger trig_stmt_before on rem2;
+drop trigger trig_stmt_after on rem2;
+
+delete from rem2;
+
+create trigger trig_row_before_insert before insert on rem2
+	for each row execute procedure trig_row_before_insupdate();
+
+-- The new values are concatenated with ' triggered !'
+copy rem2 from stdin;
+1	foo
+2	bar
+\.
+select * from rem2;
+
+drop trigger trig_row_before_insert on rem2;
+
+delete from rem2;
+
+create trigger trig_null before insert on rem2
+	for each row execute procedure trig_null();
+
+-- Nothing happens
+copy rem2 from stdin;
+1	foo
+2	bar
+\.
+select * from rem2;
+
+drop trigger trig_null on rem2;
+
+delete from rem2;
+
+-- Test remote triggers
+create trigger trig_row_before_insert before insert on loc2
+	for each row execute procedure trig_row_before_insupdate();
+
+-- The new values are concatenated with ' triggered !'
+copy rem2 from stdin;
+1	foo
+2	bar
+\.
+select * from rem2;
+
+drop trigger trig_row_before_insert on loc2;
+
+delete from rem2;
+
+create trigger trig_null before insert on loc2
+	for each row execute procedure trig_null();
+
+-- Nothing happens
+copy rem2 from stdin;
+1	foo
+2	bar
+\.
+select * from rem2;
+
+drop trigger trig_null on loc2;
+
+delete from rem2;
+
+-- Test a combination of local and remote triggers
+create trigger rem2_trig_row_before before insert on rem2
+	for each row execute procedure trigger_data(23,'skidoo');
+create trigger rem2_trig_row_after after insert on rem2
+	for each row execute procedure trigger_data(23,'skidoo');
+create trigger loc2_trig_row_before_insert before insert on loc2
+	for each row execute procedure trig_row_before_insupdate();
+
+copy rem2 from stdin;
+1	foo
+2	bar
+\.
+select * from rem2;
+
+drop trigger rem2_trig_row_before on rem2;
+drop trigger rem2_trig_row_after on rem2;
+drop trigger loc2_trig_row_before_insert on loc2;
+
+delete from rem2;
+
 -- ===================================================================
 -- test IMPORT FOREIGN SCHEMA
 -- ===================================================================
@@ -1898,8 +2263,9 @@ ALTER TABLE fprt2_p1 SET (autovacuum_enabled = 'false');
 ALTER TABLE fprt2_p2 SET (autovacuum_enabled = 'false');
 INSERT INTO fprt2_p1 SELECT i, i, to_char(i/50, 'FM0000') FROM generate_series(0, 249, 3) i;
 INSERT INTO fprt2_p2 SELECT i, i, to_char(i/50, 'FM0000') FROM generate_series(250, 499, 3) i;
-CREATE FOREIGN TABLE ftprt2_p1 PARTITION OF fprt2 FOR VALUES FROM (0) TO (250)
+CREATE FOREIGN TABLE ftprt2_p1 (b int, c varchar, a int)
 	SERVER loopback OPTIONS (table_name 'fprt2_p1', use_remote_estimate 'true');
+ALTER TABLE fprt2 ATTACH PARTITION ftprt2_p1 FOR VALUES FROM (0) TO (250);
 CREATE FOREIGN TABLE ftprt2_p2 PARTITION OF fprt2 FOR VALUES FROM (250) TO (500)
 	SERVER loopback OPTIONS (table_name 'fprt2_p2', use_remote_estimate 'true');
 ANALYZE fprt2;
@@ -1916,20 +2282,25 @@ EXPLAIN (COSTS OFF)
 SELECT t1.a,t2.b,t2.c FROM fprt1 t1 LEFT JOIN (SELECT * FROM fprt2 WHERE a < 10) t2 ON (t1.a = t2.b and t1.b = t2.a) WHERE t1.a < 10 ORDER BY 1,2,3;
 SELECT t1.a,t2.b,t2.c FROM fprt1 t1 LEFT JOIN (SELECT * FROM fprt2 WHERE a < 10) t2 ON (t1.a = t2.b and t1.b = t2.a) WHERE t1.a < 10 ORDER BY 1,2,3;
 
--- with whole-row reference
+-- with whole-row reference; partitionwise join does not apply
 EXPLAIN (COSTS OFF)
-SELECT t1,t2 FROM fprt1 t1 JOIN fprt2 t2 ON (t1.a = t2.b and t1.b = t2.a) WHERE t1.a % 25 =0 ORDER BY 1,2;
-SELECT t1,t2 FROM fprt1 t1 JOIN fprt2 t2 ON (t1.a = t2.b and t1.b = t2.a) WHERE t1.a % 25 =0 ORDER BY 1,2;
+SELECT t1.wr, t2.wr FROM (SELECT t1 wr, a FROM fprt1 t1 WHERE t1.a % 25 = 0) t1 FULL JOIN (SELECT t2 wr, b FROM fprt2 t2 WHERE t2.b % 25 = 0) t2 ON (t1.a = t2.b) ORDER BY 1,2;
+SELECT t1.wr, t2.wr FROM (SELECT t1 wr, a FROM fprt1 t1 WHERE t1.a % 25 = 0) t1 FULL JOIN (SELECT t2 wr, b FROM fprt2 t2 WHERE t2.b % 25 = 0) t2 ON (t1.a = t2.b) ORDER BY 1,2;
 
 -- join with lateral reference
 EXPLAIN (COSTS OFF)
 SELECT t1.a,t1.b FROM fprt1 t1, LATERAL (SELECT t2.a, t2.b FROM fprt2 t2 WHERE t1.a = t2.b AND t1.b = t2.a) q WHERE t1.a%25 = 0 ORDER BY 1,2;
 SELECT t1.a,t1.b FROM fprt1 t1, LATERAL (SELECT t2.a, t2.b FROM fprt2 t2 WHERE t1.a = t2.b AND t1.b = t2.a) q WHERE t1.a%25 = 0 ORDER BY 1,2;
 
--- with PHVs, partition-wise join selected but no join pushdown
+-- with PHVs, partitionwise join selected but no join pushdown
 EXPLAIN (COSTS OFF)
 SELECT t1.a, t1.phv, t2.b, t2.phv FROM (SELECT 't1_phv' phv, * FROM fprt1 WHERE a % 25 = 0) t1 FULL JOIN (SELECT 't2_phv' phv, * FROM fprt2 WHERE b % 25 = 0) t2 ON (t1.a = t2.b) ORDER BY t1.a, t2.b;
 SELECT t1.a, t1.phv, t2.b, t2.phv FROM (SELECT 't1_phv' phv, * FROM fprt1 WHERE a % 25 = 0) t1 FULL JOIN (SELECT 't2_phv' phv, * FROM fprt2 WHERE b % 25 = 0) t2 ON (t1.a = t2.b) ORDER BY t1.a, t2.b;
+
+-- test FOR UPDATE; partitionwise join does not apply
+EXPLAIN (COSTS OFF)
+SELECT t1.a, t2.b FROM fprt1 t1 INNER JOIN fprt2 t2 ON (t1.a = t2.b) WHERE t1.a % 25 = 0 ORDER BY 1,2 FOR UPDATE OF t1;
+SELECT t1.a, t2.b FROM fprt1 t1 INNER JOIN fprt2 t2 ON (t1.a = t2.b) WHERE t1.a % 25 = 0 ORDER BY 1,2 FOR UPDATE OF t1;
 
 RESET enable_partitionwise_join;
 

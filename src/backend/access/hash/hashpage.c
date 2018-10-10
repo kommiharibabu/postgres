@@ -33,6 +33,7 @@
 #include "miscadmin.h"
 #include "storage/lmgr.h"
 #include "storage/smgr.h"
+#include "storage/predicate.h"
 
 
 static bool _hash_alloc_buckets(Relation rel, BlockNumber firstblock,
@@ -999,7 +1000,7 @@ static bool
 _hash_alloc_buckets(Relation rel, BlockNumber firstblock, uint32 nblocks)
 {
 	BlockNumber lastblock;
-	char		zerobuf[BLCKSZ];
+	PGAlignedBlock zerobuf;
 	Page		page;
 	HashPageOpaque ovflopaque;
 
@@ -1012,7 +1013,7 @@ _hash_alloc_buckets(Relation rel, BlockNumber firstblock, uint32 nblocks)
 	if (lastblock < firstblock || lastblock == InvalidBlockNumber)
 		return false;
 
-	page = (Page) zerobuf;
+	page = (Page) zerobuf.data;
 
 	/*
 	 * Initialize the page.  Just zeroing the page won't work; see
@@ -1033,11 +1034,12 @@ _hash_alloc_buckets(Relation rel, BlockNumber firstblock, uint32 nblocks)
 		log_newpage(&rel->rd_node,
 					MAIN_FORKNUM,
 					lastblock,
-					zerobuf,
+					zerobuf.data,
 					true);
 
 	RelationOpenSmgr(rel);
-	smgrextend(rel->rd_smgr, MAIN_FORKNUM, lastblock, zerobuf, false);
+	PageSetChecksumInplace(page, lastblock);
+	smgrextend(rel->rd_smgr, MAIN_FORKNUM, lastblock, zerobuf.data, false);
 
 	return true;
 }
@@ -1106,6 +1108,11 @@ _hash_splitbucket(Relation rel,
 	bucket_nbuf = nbuf;
 	npage = BufferGetPage(nbuf);
 	nopaque = (HashPageOpaque) PageGetSpecialPointer(npage);
+
+	/* Copy the predicate locks from old bucket to new bucket. */
+	PredicateLockPageSplit(rel,
+						   BufferGetBlockNumber(bucket_obuf),
+						   BufferGetBlockNumber(bucket_nbuf));
 
 	/*
 	 * Partition the tuples in the old bucket between the old bucket and the

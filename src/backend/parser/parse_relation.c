@@ -28,6 +28,7 @@
 #include "parser/parse_enr.h"
 #include "parser/parse_relation.h"
 #include "parser/parse_type.h"
+#include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -728,16 +729,6 @@ scanRTEForColumn(ParseState *pstate, RangeTblEntry *rte, const char *colname,
 							colname),
 					 parser_errposition(pstate, location)));
 
-		/* In MERGE WHEN AND condition, no system column is allowed except tableOid or OID */
-		if (pstate->p_expr_kind == EXPR_KIND_MERGE_WHEN_AND &&
-			attnum < InvalidAttrNumber &&
-			!(attnum == TableOidAttributeNumber || attnum == ObjectIdAttributeNumber))
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
-					 errmsg("system column \"%s\" reference in WHEN AND condition is invalid",
-							colname),
-					 parser_errposition(pstate, location)));
-
 		if (attnum != InvalidAttrNumber)
 		{
 			/* now check to see if column actually is defined */
@@ -1218,15 +1209,22 @@ addRangeTableEntry(ParseState *pstate,
 	rte->alias = alias;
 
 	/*
-	 * Get the rel's OID.  This access also ensures that we have an up-to-date
-	 * relcache entry for the rel.  Since this is typically the first access
-	 * to a rel in a statement, be careful to get the right access level
-	 * depending on whether we're doing SELECT FOR UPDATE/SHARE.
+	 * Identify the type of lock we'll need on this relation.  It's not the
+	 * query's target table (that case is handled elsewhere), so we need
+	 * either RowShareLock if it's locked by FOR UPDATE/SHARE, or plain
+	 * AccessShareLock otherwise.
 	 */
 	lockmode = isLockedRefname(pstate, refname) ? RowShareLock : AccessShareLock;
+
+	/*
+	 * Get the rel's OID.  This access also ensures that we have an up-to-date
+	 * relcache entry for the rel.  Since this is typically the first access
+	 * to a rel in a statement, we must open the rel with the proper lockmode.
+	 */
 	rel = parserOpenTable(pstate, relation, lockmode);
 	rte->relid = RelationGetRelid(rel);
 	rte->relkind = rel->rd_rel->relkind;
+	rte->rellockmode = lockmode;
 
 	/*
 	 * Build the list of effective column names using user-supplied aliases
@@ -1272,10 +1270,20 @@ addRangeTableEntry(ParseState *pstate,
  *
  * This is just like addRangeTableEntry() except that it makes an RTE
  * given an already-open relation instead of a RangeVar reference.
+ *
+ * lockmode is the lock type required for query execution; it must be one
+ * of AccessShareLock, RowShareLock, or RowExclusiveLock depending on the
+ * RTE's role within the query.  The caller must hold that lock mode
+ * or a stronger one.
+ *
+ * Note: properly, lockmode should be declared LOCKMODE not int, but that
+ * would require importing storage/lock.h into parse_relation.h.  Since
+ * LOCKMODE is typedef'd as int anyway, that seems like overkill.
  */
 RangeTblEntry *
 addRangeTableEntryForRelation(ParseState *pstate,
 							  Relation rel,
+							  int lockmode,
 							  Alias *alias,
 							  bool inh,
 							  bool inFromCl)
@@ -1285,10 +1293,16 @@ addRangeTableEntryForRelation(ParseState *pstate,
 
 	Assert(pstate != NULL);
 
+	Assert(lockmode == AccessShareLock ||
+		   lockmode == RowShareLock ||
+		   lockmode == RowExclusiveLock);
+	Assert(CheckRelationLockedByMe(rel, lockmode, true));
+
 	rte->rtekind = RTE_RELATION;
 	rte->alias = alias;
 	rte->relid = RelationGetRelid(rel);
 	rte->relkind = rel->rd_rel->relkind;
+	rte->rellockmode = lockmode;
 
 	/*
 	 * Build the list of effective column names using user-supplied aliases
@@ -1345,7 +1359,6 @@ addRangeTableEntryForSubquery(ParseState *pstate,
 	Assert(pstate != NULL);
 
 	rte->rtekind = RTE_SUBQUERY;
-	rte->relid = InvalidOid;
 	rte->subquery = subquery;
 	rte->alias = alias;
 
@@ -3089,7 +3102,7 @@ attnameAttNum(Relation rd, const char *attname, bool sysColOK)
 {
 	int			i;
 
-	for (i = 0; i < rd->rd_rel->relnatts; i++)
+	for (i = 0; i < RelationGetNumberOfAttributes(rd); i++)
 	{
 		Form_pg_attribute att = TupleDescAttr(rd->rd_att, i);
 

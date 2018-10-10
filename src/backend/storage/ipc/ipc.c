@@ -137,6 +137,10 @@ proc_exit(int code)
 		else
 			snprintf(gprofDirName, 32, "gprof/%d", (int) getpid());
 
+		/*
+		 * Use mkdir() instead of MakePGDirectory() since we aren't making a
+		 * PG directory here.
+		 */
 		mkdir("gprof", S_IRWXU | S_IRWXG | S_IRWXO);
 		mkdir(gprofDirName, S_IRWXU | S_IRWXG | S_IRWXO);
 		chdir(gprofDirName);
@@ -268,6 +272,8 @@ shmem_exit(int code)
 		on_shmem_exit_list[on_shmem_exit_index].function(code,
 														 on_shmem_exit_list[on_shmem_exit_index].arg);
 	on_shmem_exit_index = 0;
+
+	shmem_exit_inprogress = false;
 }
 
 /* ----------------------------------------------------------------

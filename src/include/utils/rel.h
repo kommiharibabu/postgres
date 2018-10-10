@@ -47,36 +47,6 @@ typedef struct LockInfoData
 typedef LockInfoData *LockInfo;
 
 /*
- * Information about the partition key of a relation
- */
-typedef struct PartitionKeyData
-{
-	char		strategy;		/* partitioning strategy */
-	int16		partnatts;		/* number of columns in the partition key */
-	AttrNumber *partattrs;		/* attribute numbers of columns in the
-								 * partition key */
-	List	   *partexprs;		/* list of expressions in the partitioning
-								 * key, or NIL */
-
-	Oid		   *partopfamily;	/* OIDs of operator families */
-	Oid		   *partopcintype;	/* OIDs of opclass declared input data types */
-	FmgrInfo   *partsupfunc;	/* lookup info for support funcs */
-
-	/* Partitioning collation per attribute */
-	Oid		   *partcollation;
-
-	/* Type information per attribute */
-	Oid		   *parttypid;
-	int32	   *parttypmod;
-	int16	   *parttyplen;
-	bool	   *parttypbyval;
-	char	   *parttypalign;
-	Oid		   *parttypcoll;
-}			PartitionKeyData;
-
-typedef struct PartitionKeyData *PartitionKey;
-
-/*
  * Here are the contents of a relation cache entry.
  */
 
@@ -146,7 +116,7 @@ typedef struct RelationData
 	Bitmapset  *rd_keyattr;		/* cols that can be ref'd by foreign keys */
 	Bitmapset  *rd_pkattr;		/* cols included in primary key */
 	Bitmapset  *rd_idattr;		/* included in replica identity index */
-	Bitmapset  *rd_projidx;     /* Oids of projection indexes */
+	Bitmapset  *rd_projidx;		/* Oids of projection indexes */
 
 	PublicationActions *rd_pubactions;	/* publication actions */
 
@@ -248,12 +218,12 @@ typedef struct ForeignKeyCacheInfo
 } ForeignKeyCacheInfo;
 
 /*
- * Options common for all all indexes
+ * Options common for all indexes
  */
 typedef struct GenericIndexOpts
 {
 	int32		vl_len_;
-	bool        recheck_on_update;
+	bool		recheck_on_update;
 } GenericIndexOpts;
 
 /*
@@ -438,9 +408,23 @@ typedef struct ViewOptions
 
 /*
  * RelationGetNumberOfAttributes
- *		Returns the number of attributes in a relation.
+ *		Returns the total number of attributes in a relation.
  */
 #define RelationGetNumberOfAttributes(relation) ((relation)->rd_rel->relnatts)
+
+/*
+ * IndexRelationGetNumberOfAttributes
+ *		Returns the number of attributes in an index.
+ */
+#define IndexRelationGetNumberOfAttributes(relation) \
+		((relation)->rd_index->indnatts)
+
+/*
+ * IndexRelationGetNumberOfKeyAttributes
+ *		Returns the number of key attributes in an index.
+ */
+#define IndexRelationGetNumberOfKeyAttributes(relation) \
+		((relation)->rd_index->indnkeyatts)
 
 /*
  * RelationGetDescr
@@ -603,48 +587,6 @@ typedef struct ViewOptions
  *		Returns the PartitionKey of a relation
  */
 #define RelationGetPartitionKey(relation) ((relation)->rd_partkey)
-
-/*
- * PartitionKey inquiry functions
- */
-static inline int
-get_partition_strategy(PartitionKey key)
-{
-	return key->strategy;
-}
-
-static inline int
-get_partition_natts(PartitionKey key)
-{
-	return key->partnatts;
-}
-
-static inline List *
-get_partition_exprs(PartitionKey key)
-{
-	return key->partexprs;
-}
-
-/*
- * PartitionKey inquiry functions - one column
- */
-static inline int16
-get_partition_col_attnum(PartitionKey key, int col)
-{
-	return key->partattrs[col];
-}
-
-static inline Oid
-get_partition_col_typid(PartitionKey key, int col)
-{
-	return key->parttypid[col];
-}
-
-static inline int32
-get_partition_col_typmod(PartitionKey key, int col)
-{
-	return key->parttypmod[col];
-}
 
 /*
  * RelationGetPartitionDesc

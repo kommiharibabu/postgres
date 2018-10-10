@@ -26,13 +26,13 @@ create unique index pkeys_i on pkeys (pkey1, pkey2);
 create trigger check_fkeys_pkey_exist
 	before insert or update on fkeys
 	for each row
-	execute procedure
+	execute function
 	check_primary_key ('fkey1', 'fkey2', 'pkeys', 'pkey1', 'pkey2');
 
 create trigger check_fkeys_pkey2_exist
 	before insert or update on fkeys
 	for each row
-	execute procedure check_primary_key ('fkey3', 'fkeys2', 'pkey23');
+	execute function check_primary_key ('fkey3', 'fkeys2', 'pkey23');
 
 --
 -- For fkeys2:
@@ -290,6 +290,16 @@ DROP TRIGGER insert_a ON main_table;
 DROP TRIGGER delete_a ON main_table;
 DROP TRIGGER insert_when ON main_table;
 DROP TRIGGER delete_when ON main_table;
+
+-- Test WHEN condition accessing system columns.
+create table table_with_oids(a int) with oids;
+insert into table_with_oids values (1);
+create trigger oid_unchanged_trig after update on table_with_oids
+	for each row
+	when (new.oid = old.oid AND new.oid <> 0)
+	execute procedure trigger_func('after_upd_oid_unchanged');
+update table_with_oids set a = a + 1;
+drop table table_with_oids;
 
 -- Test column-level triggers
 DROP TRIGGER after_upd_row_trig ON main_table;
@@ -2124,53 +2134,6 @@ insert into self_ref values (1, null), (2, 1), (3, 2), (4, 3);
 delete from self_ref where a = 1;
 
 drop table self_ref;
-
---
--- test transition tables with MERGE
---
-create table merge_target_table (a int primary key, b text);
-create trigger merge_target_table_insert_trig
-  after insert on merge_target_table referencing new table as new_table
-  for each statement execute procedure dump_insert();
-create trigger merge_target_table_update_trig
-  after update on merge_target_table referencing old table as old_table new table as new_table
-  for each statement execute procedure dump_update();
-create trigger merge_target_table_delete_trig
-  after delete on merge_target_table referencing old table as old_table
-  for each statement execute procedure dump_delete();
-
-create table merge_source_table (a int, b text);
-insert into merge_source_table
-  values (1, 'initial1'), (2, 'initial2'),
-		 (3, 'initial3'), (4, 'initial4');
-
-merge into merge_target_table t
-using merge_source_table s
-on t.a = s.a
-when not matched then
-  insert values (a, b);
-
-merge into merge_target_table t
-using merge_source_table s
-on t.a = s.a
-when matched and s.a <= 2 then
-	update set b = t.b || ' updated by merge'
-when matched and s.a > 2 then
-	delete
-when not matched then
-  insert values (a, b);
-
-merge into merge_target_table t
-using merge_source_table s
-on t.a = s.a
-when matched and s.a <= 2 then
-	update set b = t.b || ' updated again by merge'
-when matched and s.a > 2 then
-	delete
-when not matched then
-  insert values (a, b);
-
-drop table merge_source_table, merge_target_table;
 
 -- cleanup
 drop function dump_insert();

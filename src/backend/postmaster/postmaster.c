@@ -97,7 +97,9 @@
 #include "access/xlog.h"
 #include "bootstrap/bootstrap.h"
 #include "catalog/pg_control.h"
+#include "common/file_perm.h"
 #include "common/ip.h"
+#include "common/string.h"
 #include "lib/ilist.h"
 #include "libpq/auth.h"
 #include "libpq/libpq.h"
@@ -123,7 +125,6 @@
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
 #include "utils/datetime.h"
-#include "utils/dynamic_loader.h"
 #include "utils/memutils.h"
 #include "utils/pidfile.h"
 #include "utils/ps_status.h"
@@ -390,7 +391,7 @@ static DNSServiceRef bonjour_sdref = NULL;
 static void CloseServerPorts(int status, Datum arg);
 static void unlink_external_pid_file(int status, Datum arg);
 static void getInstallationPaths(const char *argv0);
-static void checkDataDir(void);
+static void checkControlFile(void);
 static Port *ConnCreate(int serverFd);
 static void ConnFree(Port *port);
 static void reset_shared(int port);
@@ -587,9 +588,14 @@ PostmasterMain(int argc, char *argv[])
 	IsPostmasterEnvironment = true;
 
 	/*
-	 * for security, no dir or file created can be group or other accessible
+	 * We should not be creating any files or directories before we check the
+	 * data directory (see checkDataDir()), but just in case set the umask to
+	 * the most restrictive (owner-only) permissions.
+	 *
+	 * checkDataDir() will reset the umask based on the data directory
+	 * permissions.
 	 */
-	umask(S_IRWXG | S_IRWXO);
+	umask(PG_MODE_MASK_OWNER);
 
 	/*
 	 * Initialize random(3) so we don't get the same values in every run.
@@ -876,6 +882,9 @@ PostmasterMain(int argc, char *argv[])
 	/* Verify that DataDir looks reasonable */
 	checkDataDir();
 
+	/* Check that pg_control exists */
+	checkControlFile();
+
 	/* And switch working directory into it */
 	ChangeToDataDir();
 
@@ -948,7 +957,15 @@ PostmasterMain(int argc, char *argv[])
 	 */
 	CreateDataDirLockFile(true);
 
-	/* read control file (error checking and contains config) */
+	/*
+	 * Read the control file (for error checking and config info).
+	 *
+	 * Since we verify the control file's CRC, this has a useful side effect
+	 * on machines where we need a run-time test for CRC support instructions.
+	 * The postmaster will do the test once at startup, and then its child
+	 * processes will inherit the correct function pointer and not need to
+	 * repeat the test.
+	 */
 	LocalProcessControlFile(false);
 
 	/*
@@ -1251,6 +1268,9 @@ PostmasterMain(int argc, char *argv[])
 	 */
 	RemovePromoteSignalFiles();
 
+	/* Do the same for logrotate signal file */
+	RemoveLogrotateSignalFiles();
+
 	/* Remove any outdated file holding the current log filenames. */
 	if (unlink(LOG_METAINFO_DATAFILE) < 0 && errno != ENOENT)
 		ereport(LOG,
@@ -1468,82 +1488,17 @@ getInstallationPaths(const char *argv0)
 	 */
 }
 
-
 /*
- * Validate the proposed data directory
+ * Check that pg_control exists in the correct location in the data directory.
+ *
+ * No attempt is made to validate the contents of pg_control here.  This is
+ * just a sanity check to see if we are looking at a real data directory.
  */
 static void
-checkDataDir(void)
+checkControlFile(void)
 {
 	char		path[MAXPGPATH];
 	FILE	   *fp;
-	struct stat stat_buf;
-
-	Assert(DataDir);
-
-	if (stat(DataDir, &stat_buf) != 0)
-	{
-		if (errno == ENOENT)
-			ereport(FATAL,
-					(errcode_for_file_access(),
-					 errmsg("data directory \"%s\" does not exist",
-							DataDir)));
-		else
-			ereport(FATAL,
-					(errcode_for_file_access(),
-					 errmsg("could not read permissions of directory \"%s\": %m",
-							DataDir)));
-	}
-
-	/* eventual chdir would fail anyway, but let's test ... */
-	if (!S_ISDIR(stat_buf.st_mode))
-		ereport(FATAL,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("specified data directory \"%s\" is not a directory",
-						DataDir)));
-
-	/*
-	 * Check that the directory belongs to my userid; if not, reject.
-	 *
-	 * This check is an essential part of the interlock that prevents two
-	 * postmasters from starting in the same directory (see CreateLockFile()).
-	 * Do not remove or weaken it.
-	 *
-	 * XXX can we safely enable this check on Windows?
-	 */
-#if !defined(WIN32) && !defined(__CYGWIN__)
-	if (stat_buf.st_uid != geteuid())
-		ereport(FATAL,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("data directory \"%s\" has wrong ownership",
-						DataDir),
-				 errhint("The server must be started by the user that owns the data directory.")));
-#endif
-
-	/*
-	 * Check if the directory has group or world access.  If so, reject.
-	 *
-	 * It would be possible to allow weaker constraints (for example, allow
-	 * group access) but we cannot make a general assumption that that is
-	 * okay; for example there are platforms where nearly all users
-	 * customarily belong to the same group.  Perhaps this test should be
-	 * configurable.
-	 *
-	 * XXX temporarily suppress check when on Windows, because there may not
-	 * be proper support for Unix-y file permissions.  Need to think of a
-	 * reasonable check to apply on Windows.
-	 */
-#if !defined(WIN32) && !defined(__CYGWIN__)
-	if (stat_buf.st_mode & (S_IRWXG | S_IRWXO))
-		ereport(FATAL,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("data directory \"%s\" has group or world access",
-						DataDir),
-				 errdetail("Permissions should be u=rwx (0700).")));
-#endif
-
-	/* Look for PG_VERSION before looking for pg_control */
-	ValidatePgVersion(DataDir);
 
 	snprintf(path, sizeof(path), "%s/global/pg_control", DataDir);
 
@@ -2142,6 +2097,21 @@ retry1:
 											pstrdup(nameptr));
 				port->guc_options = lappend(port->guc_options,
 											pstrdup(valptr));
+
+				/*
+				 * Copy application_name to port if we come across it.  This
+				 * is done so we can log the application_name in the
+				 * connection authorization message.  Note that the GUC would
+				 * be used but we haven't gone through GUC setup yet.
+				 */
+				if (strcmp(nameptr, "application_name") == 0)
+				{
+					char	   *tmp_app_name = pstrdup(valptr);
+
+					pg_clean_ascii(tmp_app_name);
+
+					port->application_name = tmp_app_name;
+				}
 			}
 			offset = valoffset + strlen(valptr) + 1;
 		}
@@ -2733,7 +2703,7 @@ pmdie(SIGNAL_ARGS)
 				signal_child(BgWriterPID, SIGTERM);
 			if (WalReceiverPID != 0)
 				signal_child(WalReceiverPID, SIGTERM);
-			if (pmState == PM_RECOVERY)
+			if (pmState == PM_STARTUP || pmState == PM_RECOVERY)
 			{
 				SignalSomeChildren(SIGTERM, BACKEND_TYPE_BGWORKER);
 
@@ -4490,9 +4460,9 @@ internal_forkexec(int argc, char *argv[], Port *port)
 	{
 		/*
 		 * As in OpenTemporaryFileInTablespace, try to make the temp-file
-		 * directory
+		 * directory, ignoring errors.
 		 */
-		mkdir(PG_TEMP_FILES_DIR, S_IRWXU);
+		(void) MakePGDirectory(PG_TEMP_FILES_DIR);
 
 		fp = AllocateFile(tmpfilename, PG_BINARY_W);
 		if (!fp)
@@ -4858,6 +4828,14 @@ SubPostmasterMain(int argc, char *argv[])
 	read_nondefault_variables();
 
 	/*
+	 * Check that the data directory looks valid, which will also check the
+	 * privileges on the data directory and update our umask and file/group
+	 * variables for creating files later.  Note: this should really be done
+	 * before we create any files or directories.
+	 */
+	checkDataDir();
+
+	/*
 	 * (re-)read control file, as it contains config. The postmaster will
 	 * already have read this, but this process doesn't know about that.
 	 */
@@ -5140,11 +5118,18 @@ sigusr1_handler(SIGNAL_ARGS)
 		signal_child(PgArchPID, SIGUSR1);
 	}
 
-	if (CheckPostmasterSignal(PMSIGNAL_ROTATE_LOGFILE) &&
-		SysLoggerPID != 0)
+	/* Tell syslogger to rotate logfile if requested */
+	if (SysLoggerPID != 0)
 	{
-		/* Tell syslogger to rotate logfile */
-		signal_child(SysLoggerPID, SIGUSR1);
+		if (CheckLogrotateSignal())
+		{
+			signal_child(SysLoggerPID, SIGUSR1);
+			RemoveLogrotateSignalFiles();
+		}
+		else if (CheckPostmasterSignal(PMSIGNAL_ROTATE_LOGFILE))
+		{
+			signal_child(SysLoggerPID, SIGUSR1);
+		}
 	}
 
 	if (CheckPostmasterSignal(PMSIGNAL_START_AUTOVAC_LAUNCHER) &&

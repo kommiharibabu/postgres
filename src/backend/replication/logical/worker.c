@@ -30,10 +30,12 @@
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 
+#include "catalog/catalog.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_subscription.h"
 #include "catalog/pg_subscription_rel.h"
 
+#include "commands/tablecmds.h"
 #include "commands/trigger.h"
 
 #include "executor/executor.h"
@@ -83,6 +85,7 @@
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/rel.h"
 #include "utils/timeout.h"
 #include "utils/tqual.h"
 #include "utils/syscache.h"
@@ -196,7 +199,8 @@ create_estate_for_relation(LogicalRepRelMapEntry *rel)
 	rte->rtekind = RTE_RELATION;
 	rte->relid = RelationGetRelid(rel->localrel);
 	rte->relkind = rel->localrel->rd_rel->relkind;
-	estate->es_range_table = list_make1(rte);
+	rte->rellockmode = AccessShareLock;
+	ExecInitRangeTable(estate, list_make1(rte));
 
 	resultRelInfo = makeNode(ResultRelInfo);
 	InitResultRelInfo(resultRelInfo, rel->localrel, 1, NULL, 0);
@@ -607,13 +611,15 @@ apply_handle_insert(StringInfo s)
 	remoteslot = ExecInitExtraTupleSlot(estate,
 										RelationGetDescr(rel->localrel));
 
+	/* Input functions may need an active snapshot, so get one */
+	PushActiveSnapshot(GetTransactionSnapshot());
+
 	/* Process and store remote tuple in the slot */
 	oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 	slot_store_cstrings(remoteslot, rel, newtup.values);
 	slot_fill_defaults(rel, estate, remoteslot);
 	MemoryContextSwitchTo(oldctx);
 
-	PushActiveSnapshot(GetTransactionSnapshot());
 	ExecOpenIndices(estate->es_result_relation_info, false);
 
 	/* Do the insert. */
@@ -750,7 +756,7 @@ apply_handle_update(StringInfo s)
 	{
 		/* Process and store remote tuple in the slot */
 		oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
-		ExecStoreTuple(localslot->tts_tuple, remoteslot, InvalidBuffer, false);
+		ExecStoreHeapTuple(localslot->tts_tuple, remoteslot, false);
 		slot_modify_cstrings(remoteslot, rel, newtup.values, newtup.changed);
 		MemoryContextSwitchTo(oldctx);
 
@@ -866,10 +872,10 @@ apply_handle_delete(StringInfo s)
 	else
 	{
 		/* The tuple to be deleted could not be found. */
-		ereport(DEBUG1,
-				(errmsg("logical replication could not find row for delete "
-						"in replication target relation \"%s\"",
-						RelationGetRelationName(rel->localrel))));
+		elog(DEBUG1,
+			 "logical replication could not find row for delete "
+			 "in replication target relation \"%s\"",
+			 RelationGetRelationName(rel->localrel));
 	}
 
 	/* Cleanup. */
@@ -884,6 +890,67 @@ apply_handle_delete(StringInfo s)
 	FreeExecutorState(estate);
 
 	logicalrep_rel_close(rel, NoLock);
+
+	CommandCounterIncrement();
+}
+
+/*
+ * Handle TRUNCATE message.
+ *
+ * TODO: FDW support
+ */
+static void
+apply_handle_truncate(StringInfo s)
+{
+	bool		cascade = false;
+	bool		restart_seqs = false;
+	List	   *remote_relids = NIL;
+	List	   *remote_rels = NIL;
+	List	   *rels = NIL;
+	List	   *relids = NIL;
+	List	   *relids_logged = NIL;
+	ListCell   *lc;
+
+	ensure_transaction();
+
+	remote_relids = logicalrep_read_truncate(s, &cascade, &restart_seqs);
+
+	foreach(lc, remote_relids)
+	{
+		LogicalRepRelId relid = lfirst_oid(lc);
+		LogicalRepRelMapEntry *rel;
+
+		rel = logicalrep_rel_open(relid, RowExclusiveLock);
+		if (!should_apply_changes_for_rel(rel))
+		{
+			/*
+			 * The relation can't become interesting in the middle of the
+			 * transaction so it's safe to unlock it.
+			 */
+			logicalrep_rel_close(rel, RowExclusiveLock);
+			continue;
+		}
+
+		remote_rels = lappend(remote_rels, rel);
+		rels = lappend(rels, rel->localrel);
+		relids = lappend_oid(relids, rel->localreloid);
+		if (RelationIsLogicallyLogged(rel->localrel))
+			relids_logged = lappend_oid(relids_logged, rel->localreloid);
+	}
+
+	/*
+	 * Even if we used CASCADE on the upstream master we explicitly default to
+	 * replaying changes without further cascading. This might be later
+	 * changeable with a user specified option.
+	 */
+	ExecuteTruncateGuts(rels, relids, relids_logged, DROP_RESTRICT, restart_seqs);
+
+	foreach(lc, remote_rels)
+	{
+		LogicalRepRelMapEntry *rel = lfirst(lc);
+
+		logicalrep_rel_close(rel, NoLock);
+	}
 
 	CommandCounterIncrement();
 }
@@ -918,6 +985,10 @@ apply_dispatch(StringInfo s)
 			/* DELETE */
 		case 'D':
 			apply_handle_delete(s);
+			break;
+			/* TRUNCATE */
+		case 'T':
+			apply_handle_truncate(s);
 			break;
 			/* RELATION */
 		case 'R':
@@ -1527,16 +1598,17 @@ ApplyWorkerMain(Datum main_arg)
 	pqsignal(SIGTERM, die);
 	BackgroundWorkerUnblockSignals();
 
+	/*
+	 * We don't currently need any ResourceOwner in a walreceiver process, but
+	 * if we did, we could call CreateAuxProcessResourceOwner here.
+	 */
+
 	/* Initialise stats to a sanish value */
 	MyLogicalRepWorker->last_send_time = MyLogicalRepWorker->last_recv_time =
 		MyLogicalRepWorker->reply_time = GetCurrentTimestamp();
 
 	/* Load the libpq-specific functions */
 	load_file("libpqwalreceiver", false);
-
-	Assert(CurrentResourceOwner == NULL);
-	CurrentResourceOwner = ResourceOwnerCreate(NULL,
-											   "logical replication apply");
 
 	/* Run as replica session replication role. */
 	SetConfigOption("session_replication_role", "replica",
@@ -1553,13 +1625,19 @@ ApplyWorkerMain(Datum main_arg)
 										 ALLOCSET_DEFAULT_SIZES);
 	StartTransactionCommand();
 	oldctx = MemoryContextSwitchTo(ApplyContext);
-	MySubscription = GetSubscription(MyLogicalRepWorker->subid, false);
+
+	MySubscription = GetSubscription(MyLogicalRepWorker->subid, true);
+	if (!MySubscription)
+	{
+		ereport(LOG,
+				(errmsg("logical replication apply worker for subscription %u will not "
+						"start because the subscription was removed during startup",
+						MyLogicalRepWorker->subid)));
+		proc_exit(0);
+	}
+
 	MySubscriptionValid = true;
 	MemoryContextSwitchTo(oldctx);
-
-	/* Setup synchronous commit according to the user's wishes */
-	SetConfigOption("synchronous_commit", MySubscription->synccommit,
-					PGC_BACKEND, PGC_S_OVERRIDE);
 
 	if (!MySubscription->enabled)
 	{
@@ -1570,6 +1648,10 @@ ApplyWorkerMain(Datum main_arg)
 
 		proc_exit(0);
 	}
+
+	/* Setup synchronous commit according to the user's wishes */
+	SetConfigOption("synchronous_commit", MySubscription->synccommit,
+					PGC_BACKEND, PGC_S_OVERRIDE);
 
 	/* Keep us informed about subscription changes. */
 	CacheRegisterSyscacheCallback(SUBSCRIPTIONOID,

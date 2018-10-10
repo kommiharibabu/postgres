@@ -31,6 +31,7 @@
 #include "postmaster/autovacuum.h"
 #include "storage/indexfsm.h"
 #include "storage/lmgr.h"
+#include "storage/predicate.h"
 #include "utils/builtins.h"
 
 /* GUC parameter */
@@ -63,18 +64,15 @@ writeListPage(Relation index, Buffer buffer,
 				size = 0;
 	OffsetNumber l,
 				off;
-	char	   *workspace;
+	PGAlignedBlock workspace;
 	char	   *ptr;
-
-	/* workspace could be a local array; we use palloc for alignment */
-	workspace = palloc(BLCKSZ);
 
 	START_CRIT_SECTION();
 
 	GinInitBuffer(buffer, GIN_LIST);
 
 	off = FirstOffsetNumber;
-	ptr = workspace;
+	ptr = workspace.data;
 
 	for (i = 0; i < ntuples; i++)
 	{
@@ -126,7 +124,7 @@ writeListPage(Relation index, Buffer buffer,
 		XLogRegisterData((char *) &data, sizeof(ginxlogInsertListPage));
 
 		XLogRegisterBuffer(0, buffer, REGBUF_WILL_INIT);
-		XLogRegisterBufData(0, workspace, size);
+		XLogRegisterBufData(0, workspace.data, size);
 
 		recptr = XLogInsert(RM_GIN_ID, XLOG_GIN_INSERT_LISTPAGE);
 		PageSetLSN(page, recptr);
@@ -138,8 +136,6 @@ writeListPage(Relation index, Buffer buffer,
 	UnlockReleaseBuffer(buffer);
 
 	END_CRIT_SECTION();
-
-	pfree(workspace);
 
 	return freesize;
 }
@@ -244,6 +240,13 @@ ginHeapTupleFastInsert(GinState *ginstate, GinTupleCollector *collector)
 
 	metabuffer = ReadBuffer(index, GIN_METAPAGE_BLKNO);
 	metapage = BufferGetPage(metabuffer);
+
+	/*
+	 * An insertion to the pending list could logically belong anywhere in the
+	 * tree, so it conflicts with all serializable scans.  All scans acquire a
+	 * predicate lock on the metabuffer to represent that.
+	 */
+	CheckForSerializableConflictIn(index, NULL, metabuffer);
 
 	if (collector->sumsize + collector->ntuples * sizeof(ItemIdData) > GinListPageSize)
 	{

@@ -2650,7 +2650,7 @@ CreateSharedBackendStatus(void)
 	}
 
 	/* Create or attach to the shared appname buffer */
-	size = mul_size(NAMEDATALEN, MaxBackends);
+	size = mul_size(NAMEDATALEN, NumBackendStatSlots);
 	BackendAppnameBuffer = (char *)
 		ShmemInitStruct("Backend Application Name Buffer", size, &found);
 
@@ -2668,7 +2668,7 @@ CreateSharedBackendStatus(void)
 	}
 
 	/* Create or attach to the shared client hostname buffer */
-	size = mul_size(NAMEDATALEN, MaxBackends);
+	size = mul_size(NAMEDATALEN, NumBackendStatSlots);
 	BackendClientHostnameBuffer = (char *)
 		ShmemInitStruct("Backend Client Host Name Buffer", size, &found);
 
@@ -2695,7 +2695,7 @@ CreateSharedBackendStatus(void)
 
 	if (!found)
 	{
-		MemSet(BackendActivityBuffer, 0, size);
+		MemSet(BackendActivityBuffer, 0, BackendActivityBufferSize);
 
 		/* Initialize st_activity pointers. */
 		buffer = BackendActivityBuffer;
@@ -3224,6 +3224,7 @@ pgstat_read_current_status(void)
 	LocalPgBackendStatus *localtable;
 	LocalPgBackendStatus *localentry;
 	char	   *localappname,
+			   *localclienthostname,
 			   *localactivity;
 #ifdef USE_SSL
 	PgBackendSSLStatus *localsslstatus;
@@ -3240,6 +3241,9 @@ pgstat_read_current_status(void)
 		MemoryContextAlloc(pgStatLocalContext,
 						   sizeof(LocalPgBackendStatus) * NumBackendStatSlots);
 	localappname = (char *)
+		MemoryContextAlloc(pgStatLocalContext,
+						   NAMEDATALEN * NumBackendStatSlots);
+	localclienthostname = (char *)
 		MemoryContextAlloc(pgStatLocalContext,
 						   NAMEDATALEN * NumBackendStatSlots);
 	localactivity = (char *)
@@ -3282,6 +3286,8 @@ pgstat_read_current_status(void)
 				 */
 				strcpy(localappname, (char *) beentry->st_appname);
 				localentry->backendStatus.st_appname = localappname;
+				strcpy(localclienthostname, (char *) beentry->st_clienthostname);
+				localentry->backendStatus.st_clienthostname = localclienthostname;
 				strcpy(localactivity, (char *) beentry->st_activity_raw);
 				localentry->backendStatus.st_activity_raw = localactivity;
 				localentry->backendStatus.st_ssl = beentry->st_ssl;
@@ -3313,6 +3319,7 @@ pgstat_read_current_status(void)
 
 			localentry++;
 			localappname += NAMEDATALEN;
+			localclienthostname += NAMEDATALEN;
 			localactivity += pgstat_track_activity_query_size;
 #ifdef USE_SSL
 			localsslstatus++;
@@ -3918,6 +3925,9 @@ pgstat_get_wait_io(WaitEventIO w)
 		case WAIT_EVENT_WAL_READ:
 			event_name = "WALRead";
 			break;
+		case WAIT_EVENT_WAL_SYNC:
+			event_name = "WALSync";
+			break;
 		case WAIT_EVENT_WAL_SYNC_METHOD_ASSIGN:
 			event_name = "WALSyncMethodAssign";
 			break;
@@ -4125,11 +4135,6 @@ pgstat_get_backend_desc(BackendType backendType)
 		case B_WAL_WRITER:
 			backendDesc = "walwriter";
 			break;
-		case B_CHECKSUMHELPER_LAUNCHER:
-			backendDesc = "checksumhelper launcher";
-			break;
-		case B_CHECKSUMHELPER_WORKER:
-			backendDesc = "checksumhelper worker";
 	}
 
 	return backendDesc;
@@ -4805,7 +4810,7 @@ get_dbstat_filename(bool permanent, bool tempname, Oid databaseid,
 					   pgstat_stat_directory,
 					   databaseid,
 					   tempname ? "tmp" : "stat");
-	if (printed > len)
+	if (printed >= len)
 		elog(ERROR, "overlength pgstat path");
 }
 

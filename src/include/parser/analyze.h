@@ -32,11 +32,6 @@ extern Query *parse_sub_analyze(Node *parseTree, ParseState *parentParseState,
 				  bool locked_from_parent,
 				  bool resolve_unknowns);
 
-extern List *transformInsertRow(ParseState *pstate, List *exprlist,
-				   List *stmtcols, List *icolumns, List *attrnos,
-				   bool strip_indirection);
-extern List *transformUpdateTargetList(ParseState *pstate,
-						  List *targetList);
 extern Query *transformTopLevelStmt(ParseState *pstate, RawStmt *parseTree);
 extern Query *transformStmt(ParseState *pstate, Node *parseTree);
 
@@ -47,5 +42,8 @@ extern void CheckSelectLocking(Query *qry, LockClauseStrength strength);
 extern void applyLockingClause(Query *qry, Index rtindex,
 				   LockClauseStrength strength,
 				   LockWaitPolicy waitPolicy, bool pushedDown);
+
+extern List *BuildOnConflictExcludedTargetlist(Relation targetrel,
+								  Index exclRelIndex);
 
 #endif							/* ANALYZE_H */

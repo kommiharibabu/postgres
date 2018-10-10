@@ -288,11 +288,6 @@ CREATE TABLE partitioned (
 ERROR:  exclusion constraints are not supported on partitioned tables
 LINE 3:  EXCLUDE USING gist (a WITH &&)
          ^
--- prevent column from being used twice in the partition key
-CREATE TABLE partitioned (
-	a int
-) PARTITION BY RANGE (a, a);
-ERROR:  column "a" appears more than once in partition key
 -- prevent using prohibited expressions in the key
 CREATE FUNCTION retset (a int) RETURNS SETOF int AS $$ SELECT 1; $$ LANGUAGE SQL IMMUTABLE;
 CREATE TABLE partitioned (
@@ -333,11 +328,15 @@ CREATE TABLE partitioned (
 	a int
 ) PARTITION BY RANGE (b);
 ERROR:  column "b" named in partition key does not exist
+LINE 3: ) PARTITION BY RANGE (b);
+                              ^
 -- cannot use system columns in partition key
 CREATE TABLE partitioned (
 	a int
 ) PARTITION BY RANGE (xmin);
 ERROR:  cannot use system column "xmin" in partition key
+LINE 3: ) PARTITION BY RANGE (xmin);
+                              ^
 -- functions in key must be immutable
 CREATE FUNCTION immut_func (a int) RETURNS int AS $$ SELECT a + random()::int; $$ LANGUAGE SQL;
 CREATE TABLE partitioned (
@@ -724,6 +723,8 @@ SELECT conislocal, coninhcount FROM pg_constraint WHERE conrelid = 'part_b'::reg
 -- specify PARTITION BY for a partition
 CREATE TABLE fail_part_col_not_found PARTITION OF parted FOR VALUES IN ('c') PARTITION BY RANGE (c);
 ERROR:  column "c" named in partition key does not exist
+LINE 1: ...TITION OF parted FOR VALUES IN ('c') PARTITION BY RANGE (c);
+                                                                    ^
 CREATE TABLE part_c PARTITION OF parted (b WITH OPTIONS NOT NULL DEFAULT 0) FOR VALUES IN ('c') PARTITION BY RANGE ((b));
 -- create a level-2 partition
 CREATE TABLE part_c_1_10 PARTITION OF part_c FOR VALUES FROM (1) TO (10);
@@ -837,10 +838,22 @@ Partition of: range_parted4 FOR VALUES FROM (6, 8, MINVALUE) TO (9, MAXVALUE, MA
 Partition constraint: ((abs(a) IS NOT NULL) AND (abs(b) IS NOT NULL) AND (c IS NOT NULL) AND ((abs(a) > 6) OR ((abs(a) = 6) AND (abs(b) >= 8))) AND (abs(a) <= 9))
 
 DROP TABLE range_parted4;
+-- user-defined operator class in partition key
+CREATE FUNCTION my_int4_sort(int4,int4) RETURNS int LANGUAGE sql
+  AS $$ SELECT CASE WHEN $1 = $2 THEN 0 WHEN $1 > $2 THEN 1 ELSE -1 END; $$;
+CREATE OPERATOR CLASS test_int4_ops FOR TYPE int4 USING btree AS
+  OPERATOR 1 < (int4,int4), OPERATOR 2 <= (int4,int4),
+  OPERATOR 3 = (int4,int4), OPERATOR 4 >= (int4,int4),
+  OPERATOR 5 > (int4,int4), FUNCTION 1 my_int4_sort(int4,int4);
+CREATE TABLE partkey_t (a int4) PARTITION BY RANGE (a test_int4_ops);
+CREATE TABLE partkey_t_1 PARTITION OF partkey_t FOR VALUES FROM (0) TO (1000);
+INSERT INTO partkey_t VALUES (100);
+INSERT INTO partkey_t VALUES (200);
 -- cleanup
 DROP TABLE parted, list_parted, range_parted, list_parted2, range_parted2, range_parted3;
-DROP TABLE hash_parted;
-DROP TABLE hash_parted2;
+DROP TABLE partkey_t, hash_parted, hash_parted2;
+DROP OPERATOR CLASS test_int4_ops USING btree;
+DROP FUNCTION my_int4_sort(int4,int4);
 -- comments on partitioned tables columns
 CREATE TABLE parted_col_comment (a int, b text) PARTITION BY LIST (a);
 COMMENT ON TABLE parted_col_comment IS 'Am partitioned table';
@@ -870,6 +883,30 @@ CREATE TABLE arrlp12 PARTITION OF arrlp FOR VALUES IN ('{1}', '{2}');
 --------+-----------+-----------+----------+---------+----------+--------------+-------------
  a      | integer[] |           |          |         | extended |              | 
 Partition of: arrlp FOR VALUES IN ('{1}', '{2}')
-Partition constraint: ((a IS NOT NULL) AND (((a)::anyarray OPERATOR(pg_catalog.=) '{1}'::integer[]) OR ((a)::anyarray OPERATOR(pg_catalog.=) '{2}'::integer[])))
+Partition constraint: ((a IS NOT NULL) AND ((a = '{1}'::integer[]) OR (a = '{2}'::integer[])))
 
 DROP TABLE arrlp;
+-- partition on boolean column
+create table boolspart (a bool) partition by list (a);
+create table boolspart_t partition of boolspart for values in (true);
+create table boolspart_f partition of boolspart for values in (false);
+\d+ boolspart
+                                 Table "public.boolspart"
+ Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+--------------+-------------
+ a      | boolean |           |          |         | plain   |              | 
+Partition key: LIST (a)
+Partitions: boolspart_f FOR VALUES IN (false),
+            boolspart_t FOR VALUES IN (true)
+
+drop table boolspart;
+-- partitions mixing temporary and permanent relations
+create table perm_parted (a int) partition by list (a);
+create temporary table temp_parted (a int) partition by list (a);
+create table perm_part partition of temp_parted default; -- error
+ERROR:  cannot create a permanent relation as partition of temporary relation "temp_parted"
+create temp table temp_part partition of perm_parted default; -- error
+ERROR:  cannot create a temporary relation as partition of permanent relation "perm_parted"
+create temp table temp_part partition of temp_parted default; -- ok
+drop table perm_parted cascade;
+drop table temp_parted cascade;
