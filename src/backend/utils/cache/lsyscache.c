@@ -822,38 +822,6 @@ get_attnum(Oid relid, const char *attname)
 }
 
 /*
- * get_attidentity
- *
- *		Given the relation id and the attribute name,
- *		return the "attidentity" field from the attribute relation.
- *
- *		Returns '\0' if not found.
- *
- *		Since no identity is represented by '\0', this can also be used as a
- *		Boolean test.
- */
-char
-get_attidentity(Oid relid, AttrNumber attnum)
-{
-	HeapTuple	tp;
-
-	tp = SearchSysCache2(ATTNUM,
-						 ObjectIdGetDatum(relid),
-						 Int16GetDatum(attnum));
-	if (HeapTupleIsValid(tp))
-	{
-		Form_pg_attribute att_tup = (Form_pg_attribute) GETSTRUCT(tp);
-		char		result;
-
-		result = att_tup->attidentity;
-		ReleaseSysCache(tp);
-		return result;
-	}
-	else
-		return '\0';
-}
-
-/*
  * get_atttype
  *
  *		Given the relation OID and the attribute number with the relation,
@@ -881,39 +849,12 @@ get_atttype(Oid relid, AttrNumber attnum)
 }
 
 /*
- * get_atttypmod
- *
- *		Given the relation id and the attribute number,
- *		return the "atttypmod" field from the attribute relation.
- */
-int32
-get_atttypmod(Oid relid, AttrNumber attnum)
-{
-	HeapTuple	tp;
-
-	tp = SearchSysCache2(ATTNUM,
-						 ObjectIdGetDatum(relid),
-						 Int16GetDatum(attnum));
-	if (HeapTupleIsValid(tp))
-	{
-		Form_pg_attribute att_tup = (Form_pg_attribute) GETSTRUCT(tp);
-		int32		result;
-
-		result = att_tup->atttypmod;
-		ReleaseSysCache(tp);
-		return result;
-	}
-	else
-		return -1;
-}
-
-/*
  * get_atttypetypmodcoll
  *
  *		A three-fer: given the relation id and the attribute number,
  *		fetch atttypid, atttypmod, and attcollation in a single cache lookup.
  *
- * Unlike the otherwise-similar get_atttype/get_atttypmod, this routine
+ * Unlike the otherwise-similar get_atttype, this routine
  * raises an error if it can't obtain the information.
  */
 void
