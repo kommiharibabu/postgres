@@ -901,11 +901,11 @@
   </indexterm>
 
   <para>
-   The catalog <structname>pg_attrdef</structname> stores column default values.  The main information
-   about columns is stored in <structname>pg_attribute</structname>
-   (see below).  Only columns that explicitly specify a default value
-   (when the table is created or the column is added) will have an
-   entry here.
+   The catalog <structname>pg_attrdef</structname> stores column default
+   values.  The main information about columns is stored in
+   <link linkend="catalog-pg-attribute"><structname>pg_attribute</structname></link>.
+   Only columns for which a default value has been explicitly set will have
+   an entry here.
   </para>
 
   <table>
@@ -947,27 +947,13 @@
       <entry><structfield>adbin</structfield></entry>
       <entry><type>pg_node_tree</type></entry>
       <entry></entry>
-      <entry>The internal representation of the column default value</entry>
-     </row>
-
-     <row>
-      <entry><structfield>adsrc</structfield></entry>
-      <entry><type>text</type></entry>
-      <entry></entry>
-      <entry>A human-readable representation of the default value</entry>
+      <entry>The column default value, in <function>nodeToString()</function>
+      representation.  Use <literal>pg_get_expr(adbin, adrelid)</literal> to
+      convert it to an SQL expression.</entry>
      </row>
     </tbody>
    </tgroup>
   </table>
-
-   <para>
-    The <structfield>adsrc</structfield> field is historical, and is best
-    not used, because it does not track outside changes that might affect
-    the representation of the default value.  Reverse-compiling the
-    <structfield>adbin</structfield> field (with <function>pg_get_expr</function> for
-    example) is a better way to display the default value.
-   </para>
-
  </sect1>
 
 
@@ -2414,14 +2400,10 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
       <entry><structfield>conbin</structfield></entry>
       <entry><type>pg_node_tree</type></entry>
       <entry></entry>
-      <entry>If a check constraint, an internal representation of the expression</entry>
-     </row>
-
-     <row>
-      <entry><structfield>consrc</structfield></entry>
-      <entry><type>text</type></entry>
-      <entry></entry>
-      <entry>If a check constraint, a human-readable representation of the expression</entry>
+      <entry>If a check constraint, an internal representation of the
+      expression.  (It's recommended to use
+      <function>pg_get_constraintdef()</function> to extract the definition of
+      a check constraint.)</entry>
      </row>
     </tbody>
    </tgroup>
@@ -2436,15 +2418,6 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
    same contents as <structname>pg_index</structname>.<structfield>indkey</structfield> for the
    index.)
   </para>
-
-  <note>
-   <para>
-    <structfield>consrc</structfield> is not updated when referenced objects
-    change; for example, it won't track renaming of columns.  Rather than
-    relying on this field, it's best to use <function>pg_get_constraintdef()</function>
-    to extract the definition of a check constraint.
-   </para>
-  </note>
 
   <note>
    <para>
