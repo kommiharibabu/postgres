@@ -627,6 +627,7 @@ ac_includes_default="\
 
 ac_subst_vars='LTLIBOBJS
 vpath_build
+PG_SYSROOT
 PG_VERSION_NUM
 PROVE
 FOP
@@ -649,7 +650,6 @@ PG_CRC32C_OBJS
 CFLAGS_ARMV8_CRC32C
 CFLAGS_SSE42
 have_win32_dbghelp
-HAVE_IPV6
 LIBOBJS
 UUID_LIBS
 LDAP_LIBS_BE
@@ -12712,7 +12712,7 @@ $as_echo "#define HAVE_STDBOOL_H 1" >>confdefs.h
 fi
 
 
-for ac_header in atomic.h crypt.h fp_class.h getopt.h ieeefp.h ifaddrs.h langinfo.h mbarrier.h poll.h sys/epoll.h sys/ipc.h sys/prctl.h sys/procctl.h sys/pstat.h sys/resource.h sys/select.h sys/sem.h sys/shm.h sys/sockio.h sys/tas.h sys/un.h termios.h ucred.h utime.h wchar.h wctype.h
+for ac_header in atomic.h copyfile.h crypt.h fp_class.h getopt.h ieeefp.h ifaddrs.h langinfo.h mbarrier.h poll.h sys/epoll.h sys/ipc.h sys/prctl.h sys/procctl.h sys/pstat.h sys/resource.h sys/select.h sys/sem.h sys/shm.h sys/sockio.h sys/tas.h sys/un.h termios.h ucred.h utime.h wchar.h wctype.h
 do :
   as_ac_Header=`$as_echo "ac_cv_header_$ac_header" | $as_tr_sh`
 ac_fn_c_check_header_mongrel "$LINENO" "$ac_header" "$as_ac_Header" "$ac_includes_default"
@@ -15130,7 +15130,7 @@ fi
 LIBS_including_readline="$LIBS"
 LIBS=`echo "$LIBS" | sed -e 's/-ledit//g' -e 's/-lreadline//g'`
 
-for ac_func in cbrt clock_gettime fdatasync getifaddrs getpeerucred getrlimit mbstowcs_l memmove poll posix_fallocate ppoll pstat pthread_is_threaded_np readlink setproctitle setproctitle_fast setsid shm_open strchrnul symlink sync_file_range utime utimes wcstombs_l
+for ac_func in cbrt clock_gettime copyfile fdatasync getifaddrs getpeerucred getrlimit mbstowcs_l memmove poll posix_fallocate ppoll pstat pthread_is_threaded_np readlink setproctitle setproctitle_fast setsid shm_open strchrnul symlink sync_file_range utime utimes wcstombs_l
 do :
   as_ac_var=`$as_echo "ac_cv_func_$ac_func" | $as_tr_sh`
 ac_fn_c_check_func "$LINENO" "$ac_func" "$as_ac_var"
@@ -15346,7 +15346,6 @@ cat >>confdefs.h <<_ACEOF
 _ACEOF
 
 
-HAVE_IPV6=no
 ac_fn_c_check_type "$LINENO" "struct sockaddr_in6" "ac_cv_type_struct_sockaddr_in6" "$ac_includes_default
 #include <netinet/in.h>
 "
@@ -15354,9 +15353,7 @@ if test "x$ac_cv_type_struct_sockaddr_in6" = xyes; then :
 
 $as_echo "#define HAVE_IPV6 1" >>confdefs.h
 
-         HAVE_IPV6=yes
 fi
-
 
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for PS_STRINGS" >&5
@@ -15537,6 +15534,32 @@ else
   case " $LIBOBJS " in
   *" mkdtemp.$ac_objext "* ) ;;
   *) LIBOBJS="$LIBOBJS mkdtemp.$ac_objext"
+ ;;
+esac
+
+fi
+
+ac_fn_c_check_func "$LINENO" "pread" "ac_cv_func_pread"
+if test "x$ac_cv_func_pread" = xyes; then :
+  $as_echo "#define HAVE_PREAD 1" >>confdefs.h
+
+else
+  case " $LIBOBJS " in
+  *" pread.$ac_objext "* ) ;;
+  *) LIBOBJS="$LIBOBJS pread.$ac_objext"
+ ;;
+esac
+
+fi
+
+ac_fn_c_check_func "$LINENO" "pwrite" "ac_cv_func_pwrite"
+if test "x$ac_cv_func_pwrite" = xyes; then :
+  $as_echo "#define HAVE_PWRITE 1" >>confdefs.h
+
+else
+  case " $LIBOBJS " in
+  *" pwrite.$ac_objext "* ) ;;
+  *) LIBOBJS="$LIBOBJS pwrite.$ac_objext"
  ;;
 esac
 
@@ -18813,6 +18836,15 @@ cat >>confdefs.h <<_ACEOF
 #define PG_VERSION_NUM $PG_VERSION_NUM
 _ACEOF
 
+
+
+# If we are inserting PG_SYSROOT into CPPFLAGS, do so symbolically not
+# literally, so that it's possible to override it at build time using
+# a command like "make ... PG_SYSROOT=path".  This has to be done after
+# we've finished all configure checks that depend on CPPFLAGS.
+if test x"$PG_SYSROOT" != x; then
+  CPPFLAGS=`echo "$CPPFLAGS" | sed -e "s| $PG_SYSROOT | \\\$(PG_SYSROOT) |"`
+fi
 
 
 

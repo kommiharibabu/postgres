@@ -81,9 +81,9 @@ LLVMValueRef FuncStrlen;
 LLVMValueRef FuncVarsizeAny;
 LLVMValueRef FuncSlotGetsomeattrs;
 LLVMValueRef FuncSlotGetmissingattrs;
-LLVMValueRef FuncHeapGetsysattr;
 LLVMValueRef FuncMakeExpandedObjectReadOnlyInternal;
 LLVMValueRef FuncExecEvalArrayRefSubscript;
+LLVMValueRef FuncExecEvalSysVar;
 LLVMValueRef FuncExecAggTransReparent;
 LLVMValueRef FuncExecAggInitGroup;
 
@@ -438,7 +438,7 @@ llvm_optimize_module(LLVMJitContext *context, LLVMModuleRef module)
 
 	if (context->base.flags & PGJIT_OPT3)
 	{
-		/* TODO: Unscientifically determined threshhold */
+		/* TODO: Unscientifically determined threshold */
 		LLVMPassManagerBuilderUseInlinerWithThreshold(llvm_pmb, 512);
 	}
 	else
@@ -822,9 +822,9 @@ llvm_create_types(void)
 	FuncVarsizeAny = LLVMGetNamedFunction(mod, "varsize_any");
 	FuncSlotGetsomeattrs = LLVMGetNamedFunction(mod, "slot_getsomeattrs");
 	FuncSlotGetmissingattrs = LLVMGetNamedFunction(mod, "slot_getmissingattrs");
-	FuncHeapGetsysattr = LLVMGetNamedFunction(mod, "heap_getsysattr");
 	FuncMakeExpandedObjectReadOnlyInternal = LLVMGetNamedFunction(mod, "MakeExpandedObjectReadOnlyInternal");
 	FuncExecEvalArrayRefSubscript = LLVMGetNamedFunction(mod, "ExecEvalArrayRefSubscript");
+	FuncExecEvalSysVar = LLVMGetNamedFunction(mod, "ExecEvalSysVar");
 	FuncExecAggTransReparent = LLVMGetNamedFunction(mod, "ExecAggTransReparent");
 	FuncExecAggInitGroup = LLVMGetNamedFunction(mod, "ExecAggInitGroup");
 
@@ -853,7 +853,7 @@ llvm_split_symbol_name(const char *name, char **modname, char **funcname)
 	{
 		/*
 		 * Symbol names cannot contain a ., therefore we can split based on
-		 * first and last occurance of one.
+		 * first and last occurrence of one.
 		 */
 		*funcname = rindex(name, '.');
 		(*funcname)++;			/* jump over . */

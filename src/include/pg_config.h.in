@@ -114,6 +114,12 @@
 /* Define to 1 if your compiler handles computed gotos. */
 #undef HAVE_COMPUTED_GOTO
 
+/* Define to 1 if you have the `copyfile' function. */
+#undef HAVE_COPYFILE
+
+/* Define to 1 if you have the <copyfile.h> header file. */
+#undef HAVE_COPYFILE_H
+
 /* Define to 1 if you have the <crtdefs.h> header file. */
 #undef HAVE_CRTDEFS_H
 
@@ -438,6 +444,9 @@
 /* Define to 1 if you have the `ppoll' function. */
 #undef HAVE_PPOLL
 
+/* Define to 1 if you have the `pread' function. */
+#undef HAVE_PREAD
+
 /* Define to 1 if you have the `pstat' function. */
 #undef HAVE_PSTAT
 
@@ -452,6 +461,9 @@
 
 /* Have PTHREAD_PRIO_INHERIT. */
 #undef HAVE_PTHREAD_PRIO_INHERIT
+
+/* Define to 1 if you have the `pwrite' function. */
+#undef HAVE_PWRITE
 
 /* Define to 1 if you have the `random' function. */
 #undef HAVE_RANDOM

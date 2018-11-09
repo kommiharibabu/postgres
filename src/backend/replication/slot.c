@@ -1524,7 +1524,7 @@ RestoreSlotFromDisk(const char *name)
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("logical replication slot \"%s\" exists, but wal_level < logical",
 						NameStr(cp.slotdata.name)),
-				 errhint("Change wal_level to be replica or higher.")));
+				 errhint("Change wal_level to be logical or higher.")));
 	else if (wal_level < WAL_LEVEL_REPLICA)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -1563,7 +1563,7 @@ RestoreSlotFromDisk(const char *name)
 	}
 
 	if (!restored)
-		ereport(PANIC,
+		ereport(FATAL,
 				(errmsg("too many replication slots active before shutdown"),
 				 errhint("Increase max_replication_slots and try again.")));
 }

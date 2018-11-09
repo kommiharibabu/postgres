@@ -97,6 +97,7 @@ sub mkvcbuild
 	  srandom.c getaddrinfo.c gettimeofday.c inet_net_ntop.c kill.c open.c
 	  erand48.c snprintf.c strlcat.c strlcpy.c dirmod.c noblock.c path.c
 	  dirent.c dlopen.c getopt.c getopt_long.c
+	  pread.c pwrite.c
 	  pg_strong_random.c pgcheckdir.c pgmkdirp.c pgsleep.c pgstrcasecmp.c
 	  pqsignal.c mkdtemp.c qsort.c qsort_arg.c quotes.c system.c
 	  sprompt.c strerror.c tar.c thread.c
@@ -630,7 +631,7 @@ sub mkvcbuild
 				{
 
 					# Some builds exhibit runtime failure through Perl warning
-					# 'Can't spawn "conftest.exe"'; supress that.
+					# 'Can't spawn "conftest.exe"'; suppress that.
 					no warnings;
 
 					# Disable error dialog boxes like we do in the postmaster.

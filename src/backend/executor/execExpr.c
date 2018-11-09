@@ -2861,7 +2861,6 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 	for (transno = 0; transno < aggstate->numtrans; transno++)
 	{
 		AggStatePerTrans pertrans = &aggstate->pertrans[transno];
-		int			numInputs = pertrans->numInputs;
 		int			argno;
 		int			setno;
 		FunctionCallInfo trans_fcinfo = &pertrans->transfn_fcinfo;
@@ -3016,19 +3015,19 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 				argno++;
 			}
 		}
-		Assert(numInputs == argno);
+		Assert(pertrans->numInputs == argno);
 
 		/*
 		 * For a strict transfn, nothing happens when there's a NULL input; we
 		 * just keep the prior transValue. This is true for both plain and
 		 * sorted/distinct aggregates.
 		 */
-		if (trans_fcinfo->flinfo->fn_strict && numInputs > 0)
+		if (trans_fcinfo->flinfo->fn_strict && pertrans->numTransInputs > 0)
 		{
 			scratch.opcode = EEOP_AGG_STRICT_INPUT_CHECK;
 			scratch.d.agg_strict_input_check.nulls = strictnulls;
 			scratch.d.agg_strict_input_check.jumpnull = -1; /* adjust later */
-			scratch.d.agg_strict_input_check.nargs = numInputs;
+			scratch.d.agg_strict_input_check.nargs = pertrans->numTransInputs;
 			ExprEvalPushStep(state, &scratch);
 			adjust_bailout = lappend_int(adjust_bailout,
 										 state->steps_len - 1);
