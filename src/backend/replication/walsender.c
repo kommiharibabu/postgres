@@ -403,7 +403,7 @@ IdentifySystem(void)
 							  TEXTOID, -1, 0);
 
 	/* prepare for projection of tuples */
-	tstate = begin_tup_output_tupdesc(dest, tupdesc);
+	tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);
 
 	/* column 1: system identifier */
 	values[0] = CStringGetTextDatum(sysid);
@@ -735,7 +735,7 @@ StartReplication(StartReplicationCmd *cmd)
 								  TEXTOID, -1, 0);
 
 		/* prepare for projection of tuple */
-		tstate = begin_tup_output_tupdesc(dest, tupdesc);
+		tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);
 
 		values[0] = Int64GetDatum((int64) sendTimeLineNextTLI);
 		values[1] = CStringGetTextDatum(startpos_str);
@@ -1007,7 +1007,7 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 							  TEXTOID, -1, 0);
 
 	/* prepare for projection of tuples */
-	tstate = begin_tup_output_tupdesc(dest, tupdesc);
+	tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);
 
 	/* slot_name */
 	slot_name = NameStr(MyReplicationSlot->data.name);
@@ -3003,10 +3003,6 @@ WalSndSignals(void)
 
 	/* Reset some signals that are accepted by postmaster but not here */
 	pqsignal(SIGCHLD, SIG_DFL);
-	pqsignal(SIGTTIN, SIG_DFL);
-	pqsignal(SIGTTOU, SIG_DFL);
-	pqsignal(SIGCONT, SIG_DFL);
-	pqsignal(SIGWINCH, SIG_DFL);
 }
 
 /* Report shared-memory space needed by WalSndShmemInit */

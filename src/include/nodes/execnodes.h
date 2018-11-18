@@ -33,6 +33,7 @@
 
 
 struct PlanState;				/* forward references in this file */
+struct PartitionRoutingInfo;
 struct ParallelHashJoinState;
 struct ExecRowMark;
 struct ExprState;
@@ -469,8 +470,8 @@ typedef struct ResultRelInfo
 	/* relation descriptor for root partitioned table */
 	Relation	ri_PartitionRoot;
 
-	/* true if ready for tuple routing */
-	bool		ri_PartitionReadyForRouting;
+	/* Additional information specific to partition tuple routing */
+	struct PartitionRoutingInfo *ri_PartitionInfo;
 } ResultRelInfo;
 
 /* ----------------
@@ -977,6 +978,42 @@ typedef struct PlanState
 	 * descriptor, without encoding knowledge about all executor nodes.
 	 */
 	TupleDesc	scandesc;
+
+	/*
+	 * Define the slot types for inner, outer and scanslots for expression
+	 * contexts with this state as a parent.  If *opsset is set, then
+	 * *opsfixed indicates whether *ops is guaranteed to be the type of slot
+	 * used. That means that every slot in the corresponding
+	 * ExprContext.ecxt_*tuple will point to a slot of that type, while
+	 * evaluating the expression.  If *opsfixed is false, but *ops is set,
+	 * that indicates the most likely type of slot.
+	 *
+	 * The scan* fields are set by ExecInitScanTupleSlot(). If that's not
+	 * called, nodes can initialize the fields themselves.
+	 *
+	 * If outer/inneropsset is false, the information is inferred on-demand
+	 * using ExecGetResultSlotOps() on ->righttree/lefttree, using the
+	 * corresponding node's resultops* fields.
+	 *
+	 * The result* fields are automatically set when ExecInitResultSlot is
+	 * used (be it directly or when the slot is created by
+	 * ExecAssignScanProjectionInfo() /
+	 * ExecConditionalAssignProjectionInfo()).  If no projection is necessary
+	 * ExecConditionalAssignProjectionInfo() defaults those fields to the scan
+	 * operations.
+	 */
+	const TupleTableSlotOps *scanops;
+	const TupleTableSlotOps *outerops;
+	const TupleTableSlotOps *innerops;
+	const TupleTableSlotOps *resultops;
+	bool scanopsfixed;
+	bool outeropsfixed;
+	bool inneropsfixed;
+	bool resultopsfixed;
+	bool scanopsset;
+	bool outeropsset;
+	bool inneropsset;
+	bool resultopsset;
 } PlanState;
 
 /* ----------------
@@ -1064,6 +1101,8 @@ typedef struct ModifyTableState
 	PlanState **mt_plans;		/* subplans (one per target rel) */
 	int			mt_nplans;		/* number of plans in the array */
 	int			mt_whichplan;	/* which one is being executed (0..n-1) */
+	TupleTableSlot** mt_scans;	/* input tuple corresponding to underlying
+								   plans */
 	ResultRelInfo *resultRelInfo;	/* per-subplan target relations */
 	ResultRelInfo *rootResultRelInfo;	/* root target relation (partitioned
 										 * table root) */
@@ -1073,6 +1112,12 @@ typedef struct ModifyTableState
 	TupleTableSlot *mt_existing;	/* slot to store existing target tuple in */
 	List	   *mt_excludedtlist;	/* the excluded pseudo relation's tlist  */
 	TupleTableSlot *mt_conflproj;	/* CONFLICT ... SET ... projection target */
+
+	/*
+	 * Slot for storing tuples in the root partitioned table's rowtype during
+	 * an UPDATE of a partitioned table.
+	 */
+	TupleTableSlot *mt_root_tuple_slot;
 
 	/* Tuple-routing support info */
 	struct PartitionTupleRouting *mt_partition_tuple_routing;
@@ -1329,6 +1374,7 @@ typedef struct IndexScanState
 	bool	   *iss_OrderByTypByVals;
 	int16	   *iss_OrderByTypLens;
 	Size		iss_PscanLen;
+	TupleTableSlot *iss_ReorderQueueSlot;
 } IndexScanState;
 
 /* ----------------

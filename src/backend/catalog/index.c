@@ -2041,7 +2041,9 @@ FormIndexDatum(IndexInfo *indexInfo,
 		Datum		iDatum;
 		bool		isNull;
 
-		if (keycol != 0)
+		if (keycol < 0)
+			iDatum = slot_getsysattr(slot, keycol, &isNull);
+		else if (keycol != 0)
 		{
 			/*
 			 * Plain index column; get the value we need directly from the
@@ -2510,7 +2512,8 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 	 */
 	estate = CreateExecutorState();
 	econtext = GetPerTupleExprContext(estate);
-	slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRelation));
+	slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRelation),
+									&TTSOpsHeapTuple);
 
 	/* Arrange for econtext's scan tuple to be the tuple under test */
 	econtext->ecxt_scantuple = slot;
@@ -2997,7 +3000,8 @@ IndexCheckExclusion(Relation heapRelation,
 	 */
 	estate = CreateExecutorState();
 	econtext = GetPerTupleExprContext(estate);
-	slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRelation));
+	slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRelation),
+									&TTSOpsHeapTuple);
 
 	/* Arrange for econtext's scan tuple to be the tuple under test */
 	econtext->ecxt_scantuple = slot;
@@ -3315,7 +3319,8 @@ validate_index_heapscan(Relation heapRelation,
 	 */
 	estate = CreateExecutorState();
 	econtext = GetPerTupleExprContext(estate);
-	slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRelation));
+	slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRelation),
+									&TTSOpsHeapTuple);
 
 	/* Arrange for econtext's scan tuple to be the tuple under test */
 	econtext->ecxt_scantuple = slot;

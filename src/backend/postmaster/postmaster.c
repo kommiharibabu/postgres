@@ -646,8 +646,21 @@ PostmasterMain(int argc, char *argv[])
 	pqsignal_no_restart(SIGUSR2, dummy_handler);	/* unused, reserve for
 													 * children */
 	pqsignal_no_restart(SIGCHLD, reaper);	/* handle child termination */
+
+	/*
+	 * No other place in Postgres should touch SIGTTIN/SIGTTOU handling.  We
+	 * ignore those signals in a postmaster environment, so that there is no
+	 * risk of a child process freezing up due to writing to stderr.  But for
+	 * a standalone backend, their default handling is reasonable.  Hence, all
+	 * child processes should just allow the inherited settings to stand.
+	 */
+#ifdef SIGTTIN
 	pqsignal(SIGTTIN, SIG_IGN); /* ignored */
+#endif
+#ifdef SIGTTOU
 	pqsignal(SIGTTOU, SIG_IGN); /* ignored */
+#endif
+
 	/* ignore SIGXFSZ, so that ulimit violations work like disk full */
 #ifdef SIGXFSZ
 	pqsignal(SIGXFSZ, SIG_IGN); /* ignored */
@@ -2525,8 +2538,16 @@ InitProcessGlobals(void)
 	random_start_time.tv_usec = 0;
 #endif
 
-	/* Set a different seed for random() in every backend. */
-	srandom((unsigned int) MyProcPid ^ (unsigned int) MyStartTimestamp);
+	/*
+	 * Set a different seed for random() in every backend.  Since PIDs and
+	 * timestamps tend to change more frequently in their least significant
+	 * bits, shift the timestamp left to allow a larger total number of seeds
+	 * in a given time period.  Since that would leave only 20 bits of the
+	 * timestamp that cycle every ~1 second, also mix in some higher bits.
+	 */
+	srandom(((uint64) MyProcPid) ^
+			((uint64) MyStartTimestamp << 12) ^
+			((uint64) MyStartTimestamp >> 20));
 }
 
 

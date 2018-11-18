@@ -357,7 +357,7 @@ ExecScanSubPlan(SubPlanState *node,
 			 */
 			if (node->curTuple)
 				heap_freetuple(node->curTuple);
-			node->curTuple = ExecCopySlotTuple(slot);
+			node->curTuple = ExecCopySlotHeapTuple(slot);
 
 			result = heap_getattr(node->curTuple, 1, tdesc, isNull);
 			/* keep scanning subplan to make sure there's only one tuple */
@@ -968,7 +968,7 @@ ExecInitSubPlan(SubPlan *subplan, PlanState *parent)
 		 * own innerecontext.
 		 */
 		tupDescLeft = ExecTypeFromTL(lefttlist, false);
-		slot = ExecInitExtraTupleSlot(estate, tupDescLeft);
+		slot = ExecInitExtraTupleSlot(estate, tupDescLeft, &TTSOpsVirtual);
 		sstate->projLeft = ExecBuildProjectionInfo(lefttlist,
 												   NULL,
 												   slot,
@@ -976,7 +976,7 @@ ExecInitSubPlan(SubPlan *subplan, PlanState *parent)
 												   NULL);
 
 		sstate->descRight = tupDescRight = ExecTypeFromTL(righttlist, false);
-		slot = ExecInitExtraTupleSlot(estate, tupDescRight);
+		slot = ExecInitExtraTupleSlot(estate, tupDescRight, &TTSOpsVirtual);
 		sstate->projRight = ExecBuildProjectionInfo(righttlist,
 													sstate->innerecontext,
 													slot,
@@ -988,6 +988,7 @@ ExecInitSubPlan(SubPlan *subplan, PlanState *parent)
 		 * across-type comparison).
 		 */
 		sstate->cur_eq_comp = ExecBuildGroupingEqual(tupDescLeft, tupDescRight,
+													 &TTSOpsVirtual, &TTSOpsMinimalTuple,
 													 ncols,
 													 sstate->keyColIdx,
 													 sstate->tab_eq_funcoids,
@@ -1136,7 +1137,7 @@ ExecSetParamPlan(SubPlanState *node, ExprContext *econtext)
 		 */
 		if (node->curTuple)
 			heap_freetuple(node->curTuple);
-		node->curTuple = ExecCopySlotTuple(slot);
+		node->curTuple = ExecCopySlotHeapTuple(slot);
 
 		/*
 		 * Now set all the setParam params from the columns of the tuple

@@ -2517,7 +2517,8 @@ ExecBRInsertTriggers(EState *estate, ResultRelInfo *relinfo,
 					 TupleTableSlot *slot)
 {
 	TriggerDesc *trigdesc = relinfo->ri_TrigDesc;
-	HeapTuple	slottuple = ExecMaterializeSlot(slot);
+	bool		should_free;
+	HeapTuple	slottuple = ExecFetchSlotHeapTuple(slot, true, &should_free);
 	HeapTuple	newtuple = slottuple;
 	HeapTuple	oldtuple;
 	TriggerData LocTriggerData;
@@ -2556,7 +2557,11 @@ ExecBRInsertTriggers(EState *estate, ResultRelInfo *relinfo,
 		if (oldtuple != newtuple && oldtuple != slottuple)
 			heap_freetuple(oldtuple);
 		if (newtuple == NULL)
+		{
+			if (should_free)
+				heap_freetuple(slottuple);
 			return NULL;		/* "do nothing" */
+		}
 	}
 
 	if (newtuple != slottuple)
@@ -2575,6 +2580,9 @@ ExecBRInsertTriggers(EState *estate, ResultRelInfo *relinfo,
 		ExecStoreHeapTuple(newtuple, newslot, false);
 		slot = newslot;
 	}
+
+	if (should_free)
+		heap_freetuple(slottuple);
 	return slot;
 }
 
@@ -2598,7 +2606,8 @@ ExecIRInsertTriggers(EState *estate, ResultRelInfo *relinfo,
 					 TupleTableSlot *slot)
 {
 	TriggerDesc *trigdesc = relinfo->ri_TrigDesc;
-	HeapTuple	slottuple = ExecMaterializeSlot(slot);
+	bool		should_free;
+	HeapTuple	slottuple = ExecFetchSlotHeapTuple(slot, true, &should_free);
 	HeapTuple	newtuple = slottuple;
 	HeapTuple	oldtuple;
 	TriggerData LocTriggerData;
@@ -2637,7 +2646,11 @@ ExecIRInsertTriggers(EState *estate, ResultRelInfo *relinfo,
 		if (oldtuple != newtuple && oldtuple != slottuple)
 			heap_freetuple(oldtuple);
 		if (newtuple == NULL)
+		{
+			if (should_free)
+				heap_freetuple(slottuple);
 			return NULL;		/* "do nothing" */
+		}
 	}
 
 	if (newtuple != slottuple)
@@ -2656,6 +2669,9 @@ ExecIRInsertTriggers(EState *estate, ResultRelInfo *relinfo,
 		ExecStoreHeapTuple(newtuple, newslot, false);
 		slot = newslot;
 	}
+
+	if (should_free)
+		heap_freetuple(slottuple);
 	return slot;
 }
 
@@ -2976,7 +2992,7 @@ ExecBRUpdateTriggers(EState *estate, EPQState *epqstate,
 					 TupleTableSlot *slot)
 {
 	TriggerDesc *trigdesc = relinfo->ri_TrigDesc;
-	HeapTuple	slottuple = ExecMaterializeSlot(slot);
+	HeapTuple	slottuple = ExecFetchSlotHeapTuple(slot, true, NULL);
 	HeapTuple	newtuple = slottuple;
 	TriggerData LocTriggerData;
 	HeapTuple	trigtuple;
@@ -3018,7 +3034,7 @@ ExecBRUpdateTriggers(EState *estate, EPQState *epqstate,
 	if (newSlot != NULL)
 	{
 		slot = ExecFilterJunk(relinfo->ri_junkFilter, newSlot);
-		slottuple = ExecMaterializeSlot(slot);
+		slottuple = ExecFetchSlotHeapTuple(slot, true, NULL);
 		newtuple = slottuple;
 	}
 
@@ -3132,7 +3148,7 @@ ExecIRUpdateTriggers(EState *estate, ResultRelInfo *relinfo,
 					 HeapTuple trigtuple, TupleTableSlot *slot)
 {
 	TriggerDesc *trigdesc = relinfo->ri_TrigDesc;
-	HeapTuple	slottuple = ExecMaterializeSlot(slot);
+	HeapTuple	slottuple = ExecFetchSlotHeapTuple(slot, true, NULL);
 	HeapTuple	newtuple = slottuple;
 	TriggerData LocTriggerData;
 	HeapTuple	oldtuple;
@@ -3509,7 +3525,7 @@ TriggerEnabled(EState *estate, ResultRelInfo *relinfo,
 			{
 				oldContext = MemoryContextSwitchTo(estate->es_query_cxt);
 				estate->es_trig_oldtup_slot =
-					ExecInitExtraTupleSlot(estate, NULL);
+					ExecInitExtraTupleSlot(estate, NULL, &TTSOpsHeapTuple);
 				MemoryContextSwitchTo(oldContext);
 			}
 			oldslot = estate->es_trig_oldtup_slot;
@@ -3523,7 +3539,7 @@ TriggerEnabled(EState *estate, ResultRelInfo *relinfo,
 			{
 				oldContext = MemoryContextSwitchTo(estate->es_query_cxt);
 				estate->es_trig_newtup_slot =
-					ExecInitExtraTupleSlot(estate, NULL);
+					ExecInitExtraTupleSlot(estate, NULL, &TTSOpsHeapTuple);
 				MemoryContextSwitchTo(oldContext);
 			}
 			newslot = estate->es_trig_newtup_slot;
@@ -4262,22 +4278,22 @@ AfterTriggerExecute(AfterTriggerEvent event,
 		case AFTER_TRIGGER_FDW_REUSE:
 
 			/*
-			 * Using ExecMaterializeSlot() rather than ExecFetchSlotTuple()
-			 * ensures that tg_trigtuple does not reference tuplestore memory.
-			 * (It is formally possible for the trigger function to queue
-			 * trigger events that add to the same tuplestore, which can push
-			 * other tuples out of memory.)  The distinction is academic,
-			 * because we start with a minimal tuple that ExecFetchSlotTuple()
-			 * must materialize anyway.
+			 * Materialize tuple in the slot so that tg_trigtuple does not
+			 * reference tuplestore memory.  (It is formally possible for the
+			 * trigger function to queue trigger events that add to the same
+			 * tuplestore, which can push other tuples out of memory.)  The
+			 * distinction is academic, because we start with a minimal tuple
+			 * that is stored as a heap tuple, constructed in different memory
+			 * context, in the slot anyway.
 			 */
-			LocTriggerData.tg_trigtuple =
-				ExecMaterializeSlot(trig_tuple_slot1);
+			LocTriggerData.tg_trigtuple = ExecFetchSlotHeapTuple(trig_tuple_slot1,
+																	true, NULL);
 			LocTriggerData.tg_trigtuplebuf = InvalidBuffer;
 
 			LocTriggerData.tg_newtuple =
 				((evtshared->ats_event & TRIGGER_EVENT_OPMASK) ==
 				 TRIGGER_EVENT_UPDATE) ?
-				ExecMaterializeSlot(trig_tuple_slot2) : NULL;
+				ExecFetchSlotHeapTuple(trig_tuple_slot2, true, NULL) : NULL;
 			LocTriggerData.tg_newtuplebuf = InvalidBuffer;
 
 			break;
@@ -4530,8 +4546,10 @@ afterTriggerInvokeEvents(AfterTriggerEventList *events,
 							ExecDropSingleTupleTableSlot(slot1);
 							ExecDropSingleTupleTableSlot(slot2);
 						}
-						slot1 = MakeSingleTupleTableSlot(rel->rd_att);
-						slot2 = MakeSingleTupleTableSlot(rel->rd_att);
+						slot1 = MakeSingleTupleTableSlot(rel->rd_att,
+														 &TTSOpsMinimalTuple);
+						slot2 = MakeSingleTupleTableSlot(rel->rd_att,
+														 &TTSOpsMinimalTuple);
 					}
 					if (trigdesc == NULL)	/* should not happen */
 						elog(ERROR, "relation %u has no triggers",

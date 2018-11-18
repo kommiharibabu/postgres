@@ -1052,10 +1052,12 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 		if (junk_filter_needed)
 		{
 			JunkFilter *j;
+			TupleTableSlot *slot;
 
+			slot = ExecInitExtraTupleSlot(estate, NULL, &TTSOpsVirtual);
 			j = ExecInitJunkFilter(planstate->plan->targetlist,
 								   tupType->tdhasoid,
-								   ExecInitExtraTupleSlot(estate, NULL));
+								   slot);
 			estate->es_junkFilter = j;
 
 			/* Want to return the cleaned tuple type */
@@ -1343,7 +1345,7 @@ InitResultRelInfo(ResultRelInfo *resultRelInfo,
 
 	resultRelInfo->ri_PartitionCheck = partition_check;
 	resultRelInfo->ri_PartitionRoot = partition_root;
-	resultRelInfo->ri_PartitionReadyForRouting = false;
+	resultRelInfo->ri_PartitionInfo = NULL; /* may be set later */
 }
 
 /*
@@ -1928,7 +1930,7 @@ ExecPartitionCheckEmitError(ResultRelInfo *resultRelInfo,
 		 */
 		if (map != NULL)
 			slot = execute_attr_map_slot(map, slot,
-										 MakeTupleTableSlot(tupdesc));
+										 MakeTupleTableSlot(tupdesc, &TTSOpsVirtual));
 	}
 
 	insertedCols = GetInsertedColumns(resultRelInfo, estate);
@@ -2009,7 +2011,7 @@ ExecConstraints(ResultRelInfo *resultRelInfo,
 					 */
 					if (map != NULL)
 						slot = execute_attr_map_slot(map, slot,
-													 MakeTupleTableSlot(tupdesc));
+													 MakeTupleTableSlot(tupdesc, &TTSOpsVirtual));
 				}
 
 				insertedCols = GetInsertedColumns(resultRelInfo, estate);
@@ -2059,7 +2061,7 @@ ExecConstraints(ResultRelInfo *resultRelInfo,
 				 */
 				if (map != NULL)
 					slot = execute_attr_map_slot(map, slot,
-												 MakeTupleTableSlot(tupdesc));
+												 MakeTupleTableSlot(tupdesc, &TTSOpsVirtual));
 			}
 
 			insertedCols = GetInsertedColumns(resultRelInfo, estate);
@@ -2167,7 +2169,7 @@ ExecWithCheckOptions(WCOKind kind, ResultRelInfo *resultRelInfo,
 						 */
 						if (map != NULL)
 							slot = execute_attr_map_slot(map, slot,
-														 MakeTupleTableSlot(tupdesc));
+														 MakeTupleTableSlot(tupdesc, &TTSOpsVirtual));
 					}
 
 					insertedCols = GetInsertedColumns(resultRelInfo, estate);
@@ -2549,7 +2551,7 @@ EvalPlanQual(EState *estate, EPQState *epqstate,
 	 * is to guard against early re-use of the EPQ query.
 	 */
 	if (!TupIsNull(slot))
-		(void) ExecMaterializeSlot(slot);
+		ExecMaterializeSlot(slot);
 
 	/*
 	 * Clear out the test tuple.  This is needed in case the EPQ query is
