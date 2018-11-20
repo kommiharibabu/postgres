@@ -3455,7 +3455,7 @@ XLogFileCopy(XLogSegNo destsegno, TimeLineID srcTLI, XLogSegNo srcsegno,
 
 	pgstat_report_wait_start(WAIT_EVENT_WAL_COPY_SYNC);
 	if (pg_fsync(fd) != 0)
-		ereport(ERROR,
+		ereport(data_sync_elevel(ERROR),
 				(errcode_for_file_access(),
 				 errmsg("could not fsync file \"%s\": %m", tmppath)));
 	pgstat_report_wait_end();
@@ -4203,9 +4203,6 @@ CleanupBackupHistory(void)
  * If no valid record is available, returns NULL, or fails if emode is PANIC.
  * (emode must be either PANIC, LOG). In standby mode, retries until a valid
  * record is available.
- *
- * The record is copied into readRecordBuf, so that on successful return,
- * the returned record pointer always points there.
  */
 static XLogRecord *
 ReadRecord(XLogReaderState *xlogreader, XLogRecPtr RecPtr, int emode,

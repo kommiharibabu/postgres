@@ -428,6 +428,15 @@ static const struct config_enum_entry password_encryption_options[] = {
 	{NULL, 0, false}
 };
 
+const struct config_enum_entry ssl_protocol_versions_info[] = {
+	{"", PG_TLS_ANY, false},
+	{"TLSv1", PG_TLS1_VERSION, false},
+	{"TLSv1.1", PG_TLS1_1_VERSION, false},
+	{"TLSv1.2", PG_TLS1_2_VERSION, false},
+	{"TLSv1.3", PG_TLS1_3_VERSION, false},
+	{NULL, 0, false}
+};
+
 /*
  * Options for enum values stored in other modules
  */
@@ -1830,6 +1839,15 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"data_sync_retry", PGC_POSTMASTER, ERROR_HANDLING_OPTIONS,
+			gettext_noop("Whether to continue running after a failure to sync data files."),
+		},
+		&data_sync_retry,
+		false,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL
@@ -1967,7 +1985,7 @@ static struct config_int ConfigureNamesInt[] =
 
 	{
 		{"wal_receiver_status_interval", PGC_SIGHUP, REPLICATION_STANDBY,
-			gettext_noop("Sets the maximum interval between WAL receiver status reports to the primary."),
+			gettext_noop("Sets the maximum interval between WAL receiver status reports to the sending server."),
 			NULL,
 			GUC_UNIT_S
 		},
@@ -1978,7 +1996,7 @@ static struct config_int ConfigureNamesInt[] =
 
 	{
 		{"wal_receiver_timeout", PGC_SIGHUP, REPLICATION_STANDBY,
-			gettext_noop("Sets the maximum wait time to receive data from the primary."),
+			gettext_noop("Sets the maximum wait time to receive data from the sending server."),
 			NULL,
 			GUC_UNIT_MS
 		},
@@ -4181,6 +4199,30 @@ static struct config_enum ConfigureNamesEnum[] =
 		},
 		&plan_cache_mode,
 		PLAN_CACHE_MODE_AUTO, plan_cache_mode_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"ssl_min_protocol_version", PGC_SIGHUP, CONN_AUTH_SSL,
+			gettext_noop("Sets the minimum SSL/TLS protocol version to use."),
+			NULL,
+			GUC_SUPERUSER_ONLY
+		},
+		&ssl_min_protocol_version,
+		PG_TLS1_VERSION,
+		ssl_protocol_versions_info + 1 /* don't allow PG_TLS_ANY */,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"ssl_max_protocol_version", PGC_SIGHUP, CONN_AUTH_SSL,
+			gettext_noop("Sets the maximum SSL/TLS protocol version to use."),
+			NULL,
+			GUC_SUPERUSER_ONLY
+		},
+		&ssl_max_protocol_version,
+		PG_TLS_ANY,
+		ssl_protocol_versions_info,
 		NULL, NULL, NULL
 	},
 
