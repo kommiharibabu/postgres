@@ -1973,10 +1973,7 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
       <entry><type>aclitem[]</type></entry>
       <entry></entry>
       <entry>
-       Access privileges; see
-       <xref linkend="sql-grant"/> and
-       <xref linkend="sql-revoke"/>
-       for details
+       Access privileges; see <xref linkend="ddl-priv"/> for details
       </entry>
      </row>
 
@@ -2679,10 +2676,7 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
       <entry><type>aclitem[]</type></entry>
       <entry></entry>
       <entry>
-       Access privileges; see
-       <xref linkend="sql-grant"/> and
-       <xref linkend="sql-revoke"/>
-       for details
+       Access privileges; see <xref linkend="ddl-priv"/> for details
       </entry>
      </row>
     </tbody>
@@ -3491,10 +3485,7 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
       <entry><type>aclitem[]</type></entry>
       <entry></entry>
       <entry>
-       Access privileges; see
-       <xref linkend="sql-grant"/> and
-       <xref linkend="sql-revoke"/>
-       for details
+       Access privileges; see <xref linkend="ddl-priv"/> for details
       </entry>
      </row>
 
@@ -3587,10 +3578,7 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
       <entry><type>aclitem[]</type></entry>
       <entry></entry>
       <entry>
-       Access privileges; see
-       <xref linkend="sql-grant"/> and
-       <xref linkend="sql-revoke"/>
-       for details
+       Access privileges; see <xref linkend="ddl-priv"/> for details
       </entry>
      </row>
 
@@ -4052,9 +4040,7 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
       <entry></entry>
       <entry>
        The initial access privileges; see
-       <xref linkend="sql-grant"/> and
-       <xref linkend="sql-revoke"/>
-       for details
+       <xref linkend="ddl-priv"/> for details
       </entry>
      </row>
 
@@ -4179,10 +4165,7 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
       <entry><type>aclitem[]</type></entry>
       <entry></entry>
       <entry>
-       Access privileges; see
-       <xref linkend="sql-grant"/> and
-       <xref linkend="sql-revoke"/>
-       for details
+       Access privileges; see <xref linkend="ddl-priv"/> for details
       </entry>
      </row>
     </tbody>
@@ -4319,10 +4302,7 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
       <entry><type>aclitem[]</type></entry>
       <entry></entry>
       <entry>
-       Access privileges; see
-       <xref linkend="sql-grant"/> and
-       <xref linkend="sql-revoke"/>
-       for details
+       Access privileges; see <xref linkend="ddl-priv"/> for details
       </entry>
      </row>
 
@@ -4386,10 +4366,7 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
       <entry><type>aclitem[]</type></entry>
       <entry></entry>
       <entry>
-       Access privileges; see
-       <xref linkend="sql-grant"/> and
-       <xref linkend="sql-revoke"/>
-       for details
+       Access privileges; see <xref linkend="ddl-priv"/> for details
       </entry>
      </row>
     </tbody>
@@ -5396,10 +5373,7 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
       <entry><type>aclitem[]</type></entry>
       <entry></entry>
       <entry>
-       Access privileges; see
-       <xref linkend="sql-grant"/> and
-       <xref linkend="sql-revoke"/>
-       for details
+       Access privileges; see <xref linkend="ddl-priv"/> for details
       </entry>
      </row>
     </tbody>
@@ -6421,6 +6395,18 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
      </row>
 
      <row>
+      <entry><structfield>stacoll<replaceable>N</replaceable></structfield></entry>
+      <entry><type>oid</type></entry>
+      <entry><literal><link linkend="catalog-pg-collation"><structname>pg_collation</structname></link>.oid</literal></entry>
+      <entry>
+       The collation used to derive the statistics stored in the
+       <replaceable>N</replaceable>th <quote>slot</quote>.  For example, a
+       histogram slot for a collatable column would show the collation that
+       defines the sort order of the data.  Zero for noncollatable data.
+      </entry>
+     </row>
+
+     <row>
       <entry><structfield>stanumbers<replaceable>N</replaceable></structfield></entry>
       <entry><type>float4[]</type></entry>
       <entry></entry>
@@ -6810,10 +6796,7 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
       <entry><type>aclitem[]</type></entry>
       <entry></entry>
       <entry>
-       Access privileges; see
-       <xref linkend="sql-grant"/> and
-       <xref linkend="sql-revoke"/>
-       for details
+       Access privileges; see <xref linkend="ddl-priv"/> for details
       </entry>
      </row>
 
@@ -7883,10 +7866,10 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
       <entry><para>
        <structfield>typcollation</structfield> specifies the collation
        of the type.  If the type does not support collations, this will
-       be zero.  A base type that supports collations will have
-       <symbol>DEFAULT_COLLATION_OID</symbol> here.  A domain over a
-       collatable type can have some other collation OID, if one was
-       specified for the domain.
+       be zero.  A base type that supports collations will have a nonzero
+       value here, typically <symbol>DEFAULT_COLLATION_OID</symbol>.
+       A domain over a collatable type can have a collation OID different
+       from its base type's, if one was specified for the domain.
       </para></entry>
      </row>
 
@@ -7923,10 +7906,7 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
       <entry><type>aclitem[]</type></entry>
       <entry></entry>
       <entry>
-       Access privileges; see
-       <xref linkend="sql-grant"/> and
-       <xref linkend="sql-revoke"/>
-       for details
+       Access privileges; see <xref linkend="ddl-priv"/> for details
       </entry>
      </row>
     </tbody>

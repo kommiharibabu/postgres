@@ -162,7 +162,7 @@ CREATE VIEW pg_indexes AS
          JOIN pg_class I ON (I.oid = X.indexrelid)
          LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace)
          LEFT JOIN pg_tablespace T ON (T.oid = I.reltablespace)
-    WHERE C.relkind IN ('r', 'm') AND I.relkind = 'i';
+    WHERE C.relkind IN ('r', 'm', 'p') AND I.relkind IN ('i', 'I');
 
 CREATE OR REPLACE VIEW pg_sequences AS
     SELECT
@@ -734,7 +734,8 @@ CREATE VIEW pg_stat_replication AS
             W.flush_lag,
             W.replay_lag,
             W.sync_priority,
-            W.sync_state
+            W.sync_state,
+            W.reply_time
     FROM pg_stat_get_activity(NULL) AS S
         JOIN pg_stat_get_wal_senders() AS W ON (S.pid = W.pid)
         LEFT JOIN pg_authid AS U ON (S.usesysid = U.oid);

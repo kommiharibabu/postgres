@@ -1249,7 +1249,7 @@ include_dir 'conf.d'
         than the client's.
         This parameter can only be set in the <filename>postgresql.conf</filename>
         file or on the server command line.
-        The default is <literal>true</literal>.
+        The default is <literal>on</literal>.
        </para>
 
        <para>
@@ -1404,12 +1404,12 @@ include_dir 'conf.d'
         This parameter determines whether the passphrase command set by
         <varname>ssl_passphrase_command</varname> will also be called during a
         configuration reload if a key file needs a passphrase.  If this
-        parameter is false (the default), then
+        parameter is off (the default), then
         <varname>ssl_passphrase_command</varname> will be ignored during a
         reload and the SSL configuration will not be reloaded if a passphrase
         is needed.  That setting is appropriate for a command that requires a
         TTY for prompting, which might not be available when the server is
-        running.  Setting this parameter to true might be appropriate if the
+        running.  Setting this parameter to on might be appropriate if the
         passphrase is obtained from a file, for example.
        </para>
        <para>
@@ -1675,12 +1675,11 @@ include_dir 'conf.d'
         enforced by the kernel (as set by <literal>ulimit -s</literal> or local
         equivalent), less a safety margin of a megabyte or so.  The safety
         margin is needed because the stack depth is not checked in every
-        routine in the server, but only in key potentially-recursive routines
-        such as expression evaluation.  The default setting is two
-        megabytes (<literal>2MB</literal>), which is conservatively small and
-        unlikely to risk crashes.  However, it might be too small to allow
-        execution of complex functions.  Only superusers can change this
-        setting.
+        routine in the server, but only in key potentially-recursive routines.
+        The default setting is two megabytes (<literal>2MB</literal>), which
+        is conservatively small and unlikely to risk crashes.  However,
+        it might be too small to allow execution of complex functions.
+        Only superusers can change this setting.
        </para>
 
        <para>
@@ -3330,14 +3329,14 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
       <listitem>
        <para>
         Specifies whether to stop just after the specified recovery target
-        (<literal>true</literal>), or just before the recovery target
-        (<literal>false</literal>).
+        (<literal>on</literal>), or just before the recovery target
+        (<literal>off</literal>).
         Applies when <xref linkend="guc-recovery-target-lsn"/>,
         <xref linkend="guc-recovery-target-time"/>, or
         <xref linkend="guc-recovery-target-xid"/> is specified.
         This setting controls whether transactions
         having exactly the target WAL location (LSN), commit time, or transaction ID, respectively, will
-        be included in the recovery.  Default is <literal>true</literal>.
+        be included in the recovery.  Default is <literal>on</literal>.
        </para>
       </listitem>
      </varlistentry>
@@ -5721,11 +5720,11 @@ local0.*    /var/log/postgresql
         <para>
          Causes the duration of each completed statement to be logged
          if the statement ran for at least the specified number of
-         milliseconds.  Setting this to zero prints all statement durations.
-         Minus-one (the default) disables logging statement durations.
-         For example, if you set it to <literal>250ms</literal>
-         then all SQL statements that run 250ms or longer will be
-         logged.  Enabling this parameter can be helpful in tracking down
+         milliseconds, modulated by <varname>log_statement_sample_rate</varname>.
+         Setting this to zero prints all statement durations. Minus-one (the default)
+         disables logging statement durations. For example, if you set it to
+         <literal>250ms</literal> then all SQL statements that run 250ms or longer
+         will be logged. Enabling this parameter can be helpful in tracking down
          unoptimized queries in your applications.
          Only superusers can change this setting.
         </para>
@@ -5749,6 +5748,26 @@ local0.*    /var/log/postgresql
          duration message using the process ID or session ID.
         </para>
        </note>
+       </listitem>
+      </varlistentry>
+
+     <varlistentry id="guc-log-statement-sample-rate" xreflabel="log_statement_sample_rate">
+      <term><varname>log_statement_sample_rate</varname> (<type>real</type>)
+      <indexterm>
+       <primary><varname>log_statement_sample_rate</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+       <listitem>
+        <para>
+         Determines the fraction of the statements that exceed
+         <xref linkend="guc-log-min-duration-statement"/> which to log.
+         The default is <literal>1</literal>, meaning log to all such
+         statements.
+         Setting this to zero disables logging, same as setting
+         <varname>log_min_duration_statement</varname>
+         to minus-one. <varname>log_statement_sample_rate</varname>
+         is helpful when the traffic is too high to log all queries.
+        </para>
        </listitem>
       </varlistentry>
 
@@ -7047,7 +7066,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
        <para>
         If one of the list items is the special name
         <literal>$user</literal>, then the schema having the name returned by
-        <function>SESSION_USER</function> is substituted, if there is such a schema
+        <function>CURRENT_USER</function> is substituted, if there is such a schema
         and the user has <literal>USAGE</literal> permission for it.
         (If not, <literal>$user</literal> is ignored.)
        </para>
@@ -8655,8 +8674,8 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </term>
       <listitem>
        <para>
-        If true, any error will terminate the current session.  By default,
-        this is set to false, so that only FATAL errors will terminate the
+        If on, any error will terminate the current session.  By default,
+        this is set to off, so that only FATAL errors will terminate the
         session.
        </para>
       </listitem>
@@ -8670,9 +8689,9 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </term>
       <listitem>
        <para>
-        When set to true, which is the default, <productname>PostgreSQL</productname>
+        When set to on, which is the default, <productname>PostgreSQL</productname>
         will automatically reinitialize after a backend crash.  Leaving this
-        value set to true is normally the best way to maximize the availability
+        value set to on is normally the best way to maximize the availability
         of the database.  However, in some circumstances, such as when
         <productname>PostgreSQL</productname> is being invoked by clusterware, it may be
         useful to disable the restart so that the clusterware can gain
@@ -8689,7 +8708,7 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </term>
       <listitem>
        <para>
-        When set to false, which is the default, <productname>PostgreSQL</productname>
+        When set to off, which is the default, <productname>PostgreSQL</productname>
         will raise a PANIC-level error on failure to flush modified data files
         to the filesystem.  This causes the database server to crash.
        </para>
@@ -8704,9 +8723,9 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
         faulty hardware.
        </para>
        <para>
-        If set to true, <productname>PostgreSQL</productname> will instead
+        If set to on, <productname>PostgreSQL</productname> will instead
         report an error but continue to run so that the data flushing
-        operation can be retried in a later checkpoint.  Only set it to true
+        operation can be retried in a later checkpoint.  Only set it to on
         after investigating the operating system's treatment of buffered data
         in case of write-back failure.
        </para>

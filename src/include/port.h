@@ -209,6 +209,9 @@ extern char *pg_strerror_r(int errnum, char *buf, size_t buflen);
 #define strerror_r pg_strerror_r
 #define PG_STRERROR_R_BUFLEN 256	/* Recommended buffer size for strerror_r */
 
+/* Wrap strsignal(), or provide our own version if necessary */
+extern const char *pg_strsignal(int signum);
+
 /* Portable prompt handling */
 extern void simple_prompt(const char *prompt, char *destination, size_t destlen,
 			  bool echo);
@@ -519,5 +522,7 @@ extern char *escape_single_quotes_ascii(const char *src);
 
 /* port/wait_error.c */
 extern char *wait_result_to_str(int exit_status);
+extern bool wait_result_is_signal(int exit_status, int signum);
+extern bool wait_result_is_any_signal(int exit_status, bool include_command_not_found);
 
 #endif							/* PG_PORT_H */

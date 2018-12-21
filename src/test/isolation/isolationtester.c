@@ -201,7 +201,7 @@ main(int argc, char **argv)
 		PQclear(res);
 
 		/* Get the backend pid for lock wait checking. */
-		res = PQexec(conns[i], "SELECT pg_backend_pid()");
+		res = PQexec(conns[i], "SELECT pg_catalog.pg_backend_pid()");
 		if (PQresultStatus(res) == PGRES_TUPLES_OK)
 		{
 			if (PQntuples(res) == 1 && PQnfields(res) == 1)
@@ -783,15 +783,15 @@ try_complete_step(Step *step, int flags)
 			td += (int64) current_time.tv_usec - (int64) start_time.tv_usec;
 
 			/*
-			 * After 60 seconds, try to cancel the query.
+			 * After 180 seconds, try to cancel the query.
 			 *
 			 * If the user tries to test an invalid permutation, we don't want
 			 * to hang forever, especially when this is running in the
-			 * buildfarm.  So try to cancel it after a minute.  This will
-			 * presumably lead to this permutation failing, but remaining
-			 * permutations and tests should still be OK.
+			 * buildfarm.  This will presumably lead to this permutation
+			 * failing, but remaining permutations and tests should still be
+			 * OK.
 			 */
-			if (td > 60 * USECS_PER_SEC && !canceled)
+			if (td > 180 * USECS_PER_SEC && !canceled)
 			{
 				PGcancel   *cancel = PQgetCancel(conn);
 
@@ -808,15 +808,15 @@ try_complete_step(Step *step, int flags)
 			}
 
 			/*
-			 * After 75 seconds, just give up and die.
+			 * After 200 seconds, just give up and die.
 			 *
 			 * Since cleanup steps won't be run in this case, this may cause
 			 * later tests to fail.  That stinks, but it's better than waiting
 			 * forever for the server to respond to the cancel.
 			 */
-			if (td > 75 * USECS_PER_SEC)
+			if (td > 200 * USECS_PER_SEC)
 			{
-				fprintf(stderr, "step %s timed out after 75 seconds\n",
+				fprintf(stderr, "step %s timed out after 200 seconds\n",
 						step->name);
 				exit_nicely();
 			}

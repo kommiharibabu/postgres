@@ -388,6 +388,7 @@ lookup_type_cache(Oid type_id, int flags)
 		typentry->typtype = typtup->typtype;
 		typentry->typrelid = typtup->typrelid;
 		typentry->typelem = typtup->typelem;
+		typentry->typcollation = typtup->typcollation;
 
 		/* If it's a domain, immediately thread it into the domain cache list */
 		if (typentry->typtype == TYPTYPE_DOMAIN)
@@ -992,7 +993,16 @@ load_domaintype_info(TypeCacheEntry *typentry)
 
 			check_expr = (Expr *) stringToNode(constring);
 
-			/* ExecInitExpr will assume we've planned the expression */
+			/*
+			 * Plan the expression, since ExecInitExpr will expect that.
+			 *
+			 * Note: caching the result of expression_planner() is not very
+			 * good practice.  Ideally we'd use a CachedExpression here so
+			 * that we would react promptly to, eg, changes in inlined
+			 * functions.  However, because we don't support mutable domain
+			 * CHECK constraints, it's not really clear that it's worth the
+			 * extra overhead to do that.
+			 */
 			check_expr = expression_planner(check_expr);
 
 			r = makeNode(DomainConstraintState);

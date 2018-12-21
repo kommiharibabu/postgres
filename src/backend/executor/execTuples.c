@@ -140,7 +140,7 @@ tts_virtual_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
  * To materialize a virtual slot all the datums that aren't passed by value
  * have to be copied into the slot's memory context.  To do so, compute the
  * required size, and allocate enough memory to store all attributes.  That's
- * good for cache hit ratio, but more imporantly requires only memory
+ * good for cache hit ratio, but more importantly requires only memory
  * allocation/deallocation.
  */
 static void
@@ -738,7 +738,7 @@ tts_buffer_heap_copyslot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 		dstslot->tts_flags |= TTS_FLAG_SHOULDFREE;
 		dstslot->tts_flags &= ~TTS_FLAG_EMPTY;
 		oldContext = MemoryContextSwitchTo(dstslot->tts_mcxt);
-		bdstslot->base.tuple = ExecCopySlotHeapTuple(srcslot);;
+		bdstslot->base.tuple = ExecCopySlotHeapTuple(srcslot);
 		MemoryContextSwitchTo(oldContext);
 	}
 	else

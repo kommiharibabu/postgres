@@ -486,6 +486,7 @@ int			log_min_messages = WARNING;
 int			client_min_messages = NOTICE;
 int			log_min_duration_statement = -1;
 int			log_temp_files = -1;
+double		log_statement_sample_rate = 1.0;
 int			trace_recovery_messages = LOG;
 
 int			temp_file_limit = -1;
@@ -2642,7 +2643,8 @@ static struct config_int ConfigureNamesInt[] =
 		{"log_min_duration_statement", PGC_SUSET, LOGGING_WHEN,
 			gettext_noop("Sets the minimum execution time above which "
 						 "statements will be logged."),
-			gettext_noop("Zero prints all queries. -1 turns this feature off."),
+			gettext_noop("Zero prints all queries, subject to log_statement_sample_rate. "
+						 "-1 turns this feature off."),
 			GUC_UNIT_MS
 		},
 		&log_min_duration_statement,
@@ -3316,6 +3318,17 @@ static struct config_real ConfigureNamesReal[] =
 		},
 		&vacuum_cleanup_index_scale_factor,
 		0.1, 0.0, 1e10,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"log_statement_sample_rate", PGC_SUSET, LOGGING_WHEN,
+			gettext_noop("Fraction of statements over log_min_duration_statement to log."),
+			gettext_noop("If you only want a sample, use a value between 0 (never "
+						 "log) and 1.0 (always log).")
+		},
+		&log_statement_sample_rate,
+		1.0, 0.0, 1.0,
 		NULL, NULL, NULL
 	},
 
@@ -4374,7 +4387,7 @@ static struct config_enum ConfigureNamesEnum[] =
 		},
 		&ssl_min_protocol_version,
 		PG_TLS1_VERSION,
-		ssl_protocol_versions_info + 1 /* don't allow PG_TLS_ANY */,
+		ssl_protocol_versions_info + 1, /* don't allow PG_TLS_ANY */
 		NULL, NULL, NULL
 	},
 
@@ -9653,7 +9666,7 @@ do_serialize(char **destptr, Size *maxbytes, const char *fmt,...)
 	if (n < 0)
 	{
 		/* Shouldn't happen. Better show errno description. */
-		elog(ERROR, "vsnprintf failed: %m");
+		elog(ERROR, "vsnprintf failed: %m with format string \"%s\"", fmt);
 	}
 	if (n >= *maxbytes)
 	{
@@ -10916,7 +10929,7 @@ check_effective_io_concurrency(int *newval, void **extra, GucSource source)
 #else
 	if (*newval != 0)
 	{
-		GUC_check_errdetail("effective_io_concurrency must be set to 0 on platforms that lack posix_fadvise()");
+		GUC_check_errdetail("effective_io_concurrency must be set to 0 on platforms that lack posix_fadvise().");
 		return false;
 	}
 	return true;
@@ -11028,7 +11041,7 @@ check_recovery_target_timeline(char **newval, void **extra, GucSource source)
 		strtoul(*newval, NULL, 0);
 		if (errno == EINVAL || errno == ERANGE)
 		{
-			GUC_check_errdetail("recovery_target_timeline is not a valid number");
+			GUC_check_errdetail("recovery_target_timeline is not a valid number.");
 			return false;
 		}
 		rttg = RECOVERY_TARGET_TIMELINE_NUMERIC;
@@ -11206,7 +11219,7 @@ check_recovery_target_name(char **newval, void **extra, GucSource source)
 	/* Use the value of newval directly */
 	if (strlen(*newval) >= MAXFNAMELEN)
 	{
-		GUC_check_errdetail("recovery_target_name is too long (maximum %d characters)",
+		GUC_check_errdetail("recovery_target_name is too long (maximum %d characters).",
 							MAXFNAMELEN - 1);
 		return false;
 	}

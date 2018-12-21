@@ -1521,6 +1521,21 @@ my %tests = (
 		unlike => { exclude_dump_test_schema => 1, },
 	},
 
+	'CREATE OPERATOR CLASS dump_test.op_class_empty' => {
+		create_order => 89,
+		create_sql   => 'CREATE OPERATOR CLASS dump_test.op_class_empty
+		                 FOR TYPE bigint USING btree FAMILY dump_test.op_family
+						 AS STORAGE bigint;',
+		regexp => qr/^
+			\QCREATE OPERATOR CLASS dump_test.op_class_empty\E\n\s+
+			\QFOR TYPE bigint USING btree FAMILY dump_test.op_family AS\E\n\s+
+			\QSTORAGE bigint;\E
+			/xm,
+		like =>
+		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
+		unlike => { exclude_dump_test_schema => 1, },
+	},
+
 	'CREATE EVENT TRIGGER test_event_trigger' => {
 		create_order => 33,
 		create_sql   => 'CREATE EVENT TRIGGER test_event_trigger
@@ -2246,12 +2261,16 @@ my %tests = (
 		create_order => 91,
 		create_sql =>
 		  'CREATE TABLE dump_test_second_schema.measurement_y2006m2
-					   PARTITION OF dump_test.measurement FOR VALUES
-					   FROM (\'2006-02-01\') TO (\'2006-03-01\');',
+						PARTITION OF dump_test.measurement (
+							unitsales DEFAULT 0 CHECK (unitsales >= 0)
+						)
+						FOR VALUES FROM (\'2006-02-01\') TO (\'2006-03-01\');',
 		regexp => qr/^
 			\Q-- Name: measurement_y2006m2;\E.*\n
 			\Q--\E\n\n
-			\QCREATE TABLE dump_test_second_schema.measurement_y2006m2 PARTITION OF dump_test.measurement\E\n
+			\QCREATE TABLE dump_test_second_schema.measurement_y2006m2 PARTITION OF dump_test.measurement (\E\n
+			\s+\QCONSTRAINT measurement_y2006m2_unitsales_check CHECK ((unitsales >= 0))\E\n
+			\)\n
 			\QFOR VALUES FROM ('2006-02-01') TO ('2006-03-01');\E\n
 			/xm,
 		like => {
@@ -2321,6 +2340,28 @@ my %tests = (
 			/xms,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
+		unlike => { exclude_dump_test_schema => 1, },
+	},
+
+	'CREATE TABLE table_with_stats' => {
+		create_order => 98,
+		create_sql   => 'CREATE TABLE dump_test.table_index_stats (
+						   col1 int,
+						   col2 int,
+						   col3 int);
+						 CREATE INDEX index_with_stats
+						  ON dump_test.table_index_stats
+						  ((col1 + 1), col1, (col2 + 1), (col3 + 1));
+						 ALTER INDEX dump_test.index_with_stats
+						   ALTER COLUMN 1 SET STATISTICS 400;
+						 ALTER INDEX dump_test.index_with_stats
+						   ALTER COLUMN 3 SET STATISTICS 500;',
+		regexp => qr/^
+			\QALTER INDEX dump_test.index_with_stats ALTER COLUMN 1 SET STATISTICS 400;\E\n
+			\QALTER INDEX dump_test.index_with_stats ALTER COLUMN 3 SET STATISTICS 500;\E\n
+			/xms,
+		like =>
+			{ %full_runs, %dump_test_schema_runs, section_post_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
 	},
 

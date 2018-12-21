@@ -87,11 +87,12 @@
  * For both oprrest and oprjoin functions, the operator's input collation OID
  * (if any) is passed using the standard fmgr mechanism, so that the estimator
  * function can fetch it with PG_GET_COLLATION().  Note, however, that all
- * statistics in pg_statistic are currently built using the database's default
+ * statistics in pg_statistic are currently built using the relevant column's
  * collation.  Thus, in most cases where we are looking at statistics, we
- * should ignore the actual operator collation and use DEFAULT_COLLATION_OID.
+ * should ignore the operator collation and use the stats entry's collation.
  * We expect that the error induced by doing this is usually not large enough
- * to justify complicating matters.
+ * to justify complicating matters.  In any case, doing otherwise would yield
+ * entirely garbage results for ordered stats data such as histograms.
  *----------
  */
 
@@ -181,7 +182,8 @@ static double eqjoinsel_semi(Oid opfuncoid,
 			   RelOptInfo *inner_rel);
 static bool estimate_multivariate_ndistinct(PlannerInfo *root,
 								RelOptInfo *rel, List **varinfos, double *ndistinct);
-static bool convert_to_scalar(Datum value, Oid valuetypid, double *scaledvalue,
+static bool convert_to_scalar(Datum value, Oid valuetypid, Oid collid,
+				  double *scaledvalue,
 				  Datum lobound, Datum hibound, Oid boundstypid,
 				  double *scaledlobound, double *scaledhibound);
 static double convert_numeric_to_scalar(Datum value, Oid typid, bool *failure);
@@ -201,7 +203,8 @@ static double convert_one_string_to_scalar(char *value,
 							 int rangelo, int rangehi);
 static double convert_one_bytea_to_scalar(unsigned char *value, int valuelen,
 							int rangelo, int rangehi);
-static char *convert_string_datum(Datum value, Oid typid, bool *failure);
+static char *convert_string_datum(Datum value, Oid typid, Oid collid,
+					 bool *failure);
 static double convert_timevalue_to_scalar(Datum value, Oid typid,
 							bool *failure);
 static void examine_simple_variable(PlannerInfo *root, Var *var,
@@ -370,12 +373,12 @@ var_eq_const(VariableStatData *vardata, Oid operator,
 				/* be careful to apply operator right way 'round */
 				if (varonleft)
 					match = DatumGetBool(FunctionCall2Coll(&eqproc,
-														   DEFAULT_COLLATION_OID,
+														   sslot.stacoll,
 														   sslot.values[i],
 														   constval));
 				else
 					match = DatumGetBool(FunctionCall2Coll(&eqproc,
-														   DEFAULT_COLLATION_OID,
+														   sslot.stacoll,
 														   constval,
 														   sslot.values[i]));
 				if (match)
@@ -666,11 +669,11 @@ mcv_selectivity(VariableStatData *vardata, FmgrInfo *opproc,
 		{
 			if (varonleft ?
 				DatumGetBool(FunctionCall2Coll(opproc,
-											   DEFAULT_COLLATION_OID,
+											   sslot.stacoll,
 											   sslot.values[i],
 											   constval)) :
 				DatumGetBool(FunctionCall2Coll(opproc,
-											   DEFAULT_COLLATION_OID,
+											   sslot.stacoll,
 											   constval,
 											   sslot.values[i])))
 				mcv_selec += sslot.numbers[i];
@@ -744,11 +747,11 @@ histogram_selectivity(VariableStatData *vardata, FmgrInfo *opproc,
 			{
 				if (varonleft ?
 					DatumGetBool(FunctionCall2Coll(opproc,
-												   DEFAULT_COLLATION_OID,
+												   sslot.stacoll,
 												   sslot.values[i],
 												   constval)) :
 					DatumGetBool(FunctionCall2Coll(opproc,
-												   DEFAULT_COLLATION_OID,
+												   sslot.stacoll,
 												   constval,
 												   sslot.values[i])))
 					nmatch++;
@@ -873,7 +876,7 @@ ineq_histogram_selectivity(PlannerInfo *root,
 														 &sslot.values[probe]);
 
 				ltcmp = DatumGetBool(FunctionCall2Coll(opproc,
-													   DEFAULT_COLLATION_OID,
+													   sslot.stacoll,
 													   sslot.values[probe],
 													   constval));
 				if (isgt)
@@ -958,7 +961,8 @@ ineq_histogram_selectivity(PlannerInfo *root,
 				 * values to a uniform comparison scale, and do a linear
 				 * interpolation within this bin.
 				 */
-				if (convert_to_scalar(constval, consttype, &val,
+				if (convert_to_scalar(constval, consttype, sslot.stacoll,
+									  &val,
 									  sslot.values[i - 1], sslot.values[i],
 									  vardata->vartype,
 									  &low, &high))
@@ -1288,13 +1292,11 @@ patternsel(PG_FUNCTION_ARGS, Pattern_Type ptype, bool negate)
 	switch (vartype)
 	{
 		case TEXTOID:
+		case NAMEOID:
 			opfamily = TEXT_BTREE_FAM_OID;
 			break;
 		case BPCHAROID:
 			opfamily = BPCHAR_BTREE_FAM_OID;
-			break;
-		case NAMEOID:
-			opfamily = NAME_BTREE_FAM_OID;
 			break;
 		case BYTEAOID:
 			opfamily = BYTEA_BTREE_FAM_OID;
@@ -2499,7 +2501,7 @@ eqjoinsel_inner(Oid opfuncoid,
 				if (hasmatch2[j])
 					continue;
 				if (DatumGetBool(FunctionCall2Coll(&eqproc,
-												   DEFAULT_COLLATION_OID,
+												   sslot1->stacoll,
 												   sslot1->values[i],
 												   sslot2->values[j])))
 				{
@@ -2711,7 +2713,7 @@ eqjoinsel_semi(Oid opfuncoid,
 				if (hasmatch2[j])
 					continue;
 				if (DatumGetBool(FunctionCall2Coll(&eqproc,
-												   DEFAULT_COLLATION_OID,
+												   sslot1->stacoll,
 												   sslot1->values[i],
 												   sslot2->values[j])))
 				{
@@ -4066,7 +4068,7 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
  * converted to measurements expressed in seconds.
  */
 static bool
-convert_to_scalar(Datum value, Oid valuetypid, double *scaledvalue,
+convert_to_scalar(Datum value, Oid valuetypid, Oid collid, double *scaledvalue,
 				  Datum lobound, Datum hibound, Oid boundstypid,
 				  double *scaledlobound, double *scaledhibound)
 {
@@ -4131,11 +4133,11 @@ convert_to_scalar(Datum value, Oid valuetypid, double *scaledvalue,
 		case NAMEOID:
 			{
 				char	   *valstr = convert_string_datum(value, valuetypid,
-														  &failure);
+														  collid, &failure);
 				char	   *lostr = convert_string_datum(lobound, boundstypid,
-														 &failure);
+														 collid, &failure);
 				char	   *histr = convert_string_datum(hibound, boundstypid,
-														 &failure);
+														 collid, &failure);
 
 				/*
 				 * Bail out if any of the values is not of string type.  We
@@ -4404,7 +4406,7 @@ convert_one_string_to_scalar(char *value, int rangelo, int rangehi)
  * before continuing, so as to generate correct locale-specific results.
  */
 static char *
-convert_string_datum(Datum value, Oid typid, bool *failure)
+convert_string_datum(Datum value, Oid typid, Oid collid, bool *failure)
 {
 	char	   *val;
 
@@ -4432,7 +4434,7 @@ convert_string_datum(Datum value, Oid typid, bool *failure)
 			return NULL;
 	}
 
-	if (!lc_collate_is_c(DEFAULT_COLLATION_OID))
+	if (!lc_collate_is_c(collid))
 	{
 		char	   *xfrmstr;
 		size_t		xfrmlen;
@@ -5407,14 +5409,14 @@ get_variable_range(PlannerInfo *root, VariableStatData *vardata, Oid sortop,
 				continue;
 			}
 			if (DatumGetBool(FunctionCall2Coll(&opproc,
-											   DEFAULT_COLLATION_OID,
+											   sslot.stacoll,
 											   sslot.values[i], tmin)))
 			{
 				tmin = sslot.values[i];
 				tmin_is_mcv = true;
 			}
 			if (DatumGetBool(FunctionCall2Coll(&opproc,
-											   DEFAULT_COLLATION_OID,
+											   sslot.stacoll,
 											   tmax, sslot.values[i])))
 			{
 				tmax = sslot.values[i];
@@ -6014,6 +6016,7 @@ prefix_selectivity(PlannerInfo *root, VariableStatData *vardata,
 	Selectivity prefixsel;
 	Oid			cmpopr;
 	FmgrInfo	opproc;
+	AttStatsSlot sslot;
 	Const	   *greaterstrcon;
 	Selectivity eq_sel;
 
@@ -6036,16 +6039,23 @@ prefix_selectivity(PlannerInfo *root, VariableStatData *vardata,
 
 	/*-------
 	 * If we can create a string larger than the prefix, say
-	 *	"x < greaterstr".
+	 * "x < greaterstr".  We try to generate the string referencing the
+	 * collation of the var's statistics, but if that's not available,
+	 * use DEFAULT_COLLATION_OID.
 	 *-------
 	 */
+	if (HeapTupleIsValid(vardata->statsTuple) &&
+		get_attstatsslot(&sslot, vardata->statsTuple,
+						 STATISTIC_KIND_HISTOGRAM, InvalidOid, 0))
+		 /* sslot.stacoll is set up */ ;
+	else
+		sslot.stacoll = DEFAULT_COLLATION_OID;
 	cmpopr = get_opfamily_member(opfamily, vartype, vartype,
 								 BTLessStrategyNumber);
 	if (cmpopr == InvalidOid)
 		elog(ERROR, "no < operator for opfamily %u", opfamily);
 	fmgr_info(get_opcode(cmpopr), &opproc);
-	greaterstrcon = make_greater_string(prefixcon, &opproc,
-										DEFAULT_COLLATION_OID);
+	greaterstrcon = make_greater_string(prefixcon, &opproc, sslot.stacoll);
 	if (greaterstrcon)
 	{
 		Selectivity topsel;
@@ -6329,23 +6339,16 @@ make_greater_string(const Const *str_const, FmgrInfo *ltproc, Oid collation)
 	char	   *workstr;
 	int			len;
 	Datum		cmpstr;
-	text	   *cmptxt = NULL;
+	char	   *cmptxt = NULL;
 	mbcharacter_incrementer charinc;
 
 	/*
 	 * Get a modifiable copy of the prefix string in C-string format, and set
 	 * up the string we will compare to as a Datum.  In C locale this can just
-	 * be the given prefix string, otherwise we need to add a suffix.  Types
-	 * NAME and BYTEA sort bytewise so they don't need a suffix either.
+	 * be the given prefix string, otherwise we need to add a suffix.  Type
+	 * BYTEA sorts bytewise so it never needs a suffix either.
 	 */
-	if (datatype == NAMEOID)
-	{
-		workstr = DatumGetCString(DirectFunctionCall1(nameout,
-													  str_const->constvalue));
-		len = strlen(workstr);
-		cmpstr = str_const->constvalue;
-	}
-	else if (datatype == BYTEAOID)
+	if (datatype == BYTEAOID)
 	{
 		bytea	   *bstr = DatumGetByteaPP(str_const->constvalue);
 
@@ -6357,7 +6360,11 @@ make_greater_string(const Const *str_const, FmgrInfo *ltproc, Oid collation)
 	}
 	else
 	{
-		workstr = TextDatumGetCString(str_const->constvalue);
+		if (datatype == NAMEOID)
+			workstr = DatumGetCString(DirectFunctionCall1(nameout,
+														  str_const->constvalue));
+		else
+			workstr = TextDatumGetCString(str_const->constvalue);
 		len = strlen(workstr);
 		if (lc_collate_is_c(collation) || len == 0)
 			cmpstr = str_const->constvalue;
@@ -6383,11 +6390,22 @@ make_greater_string(const Const *str_const, FmgrInfo *ltproc, Oid collation)
 			}
 
 			/* And build the string to compare to */
-			cmptxt = (text *) palloc(VARHDRSZ + len + 1);
-			SET_VARSIZE(cmptxt, VARHDRSZ + len + 1);
-			memcpy(VARDATA(cmptxt), workstr, len);
-			*(VARDATA(cmptxt) + len) = suffixchar;
-			cmpstr = PointerGetDatum(cmptxt);
+			if (datatype == NAMEOID)
+			{
+				cmptxt = palloc(len + 2);
+				memcpy(cmptxt, workstr, len);
+				cmptxt[len] = suffixchar;
+				cmptxt[len + 1] = '\0';
+				cmpstr = PointerGetDatum(cmptxt);
+			}
+			else
+			{
+				cmptxt = palloc(VARHDRSZ + len + 1);
+				SET_VARSIZE(cmptxt, VARHDRSZ + len + 1);
+				memcpy(VARDATA(cmptxt), workstr, len);
+				*(VARDATA(cmptxt) + len) = suffixchar;
+				cmpstr = PointerGetDatum(cmptxt);
+			}
 		}
 	}
 
@@ -6506,7 +6524,7 @@ string_to_const(const char *str, Oid datatype)
 			break;
 
 		case NAMEOID:
-			collation = InvalidOid;
+			collation = C_COLLATION_OID;
 			constlen = NAMEDATALEN;
 			break;
 
