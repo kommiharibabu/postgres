@@ -1001,10 +1001,8 @@ create_samplescan_path(PlannerInfo *root, RelOptInfo *rel, Relids required_outer
  *	  Creates a path node for an index scan.
  *
  * 'index' is a usable index.
- * 'indexclauses' is a list of RestrictInfo nodes representing clauses
- *			to be used as index qual conditions in the scan.
- * 'indexclausecols' is an integer list of index column numbers (zero based)
- *			the indexclauses can be used with.
+ * 'indexclauses' is a list of IndexClause nodes representing clauses
+ *			to be enforced as qual conditions in the scan.
  * 'indexorderbys' is a list of bare expressions (no RestrictInfos)
  *			to be used as index ordering operators in the scan.
  * 'indexorderbycols' is an integer list of index column numbers (zero based)
@@ -1025,7 +1023,6 @@ IndexPath *
 create_index_path(PlannerInfo *root,
 				  IndexOptInfo *index,
 				  List *indexclauses,
-				  List *indexclausecols,
 				  List *indexorderbys,
 				  List *indexorderbycols,
 				  List *pathkeys,
@@ -1037,8 +1034,6 @@ create_index_path(PlannerInfo *root,
 {
 	IndexPath  *pathnode = makeNode(IndexPath);
 	RelOptInfo *rel = index->rel;
-	List	   *indexquals,
-			   *indexqualcols;
 
 	pathnode->path.pathtype = indexonly ? T_IndexOnlyScan : T_IndexScan;
 	pathnode->path.parent = rel;
@@ -1050,15 +1045,8 @@ create_index_path(PlannerInfo *root,
 	pathnode->path.parallel_workers = 0;
 	pathnode->path.pathkeys = pathkeys;
 
-	/* Convert clauses to indexquals the executor can handle */
-	expand_indexqual_conditions(index, indexclauses, indexclausecols,
-								&indexquals, &indexqualcols);
-
-	/* Fill in the pathnode */
 	pathnode->indexinfo = index;
 	pathnode->indexclauses = indexclauses;
-	pathnode->indexquals = indexquals;
-	pathnode->indexqualcols = indexqualcols;
 	pathnode->indexorderbys = indexorderbys;
 	pathnode->indexorderbycols = indexorderbycols;
 	pathnode->indexscandir = indexscandir;
@@ -2079,15 +2067,14 @@ create_worktablescan_path(PlannerInfo *root, RelOptInfo *rel,
 
 /*
  * create_foreignscan_path
- *	  Creates a path corresponding to a scan of a foreign table, foreign join,
- *	  or foreign upper-relation processing, returning the pathnode.
+ *	  Creates a path corresponding to a scan of a foreign base table,
+ *	  returning the pathnode.
  *
  * This function is never called from core Postgres; rather, it's expected
- * to be called by the GetForeignPaths, GetForeignJoinPaths, or
- * GetForeignUpperPaths function of a foreign data wrapper.  We make the FDW
- * supply all fields of the path, since we do not have any way to calculate
- * them in core.  However, there is a usually-sane default for the pathtarget
- * (rel->reltarget), so we let a NULL for "target" select that.
+ * to be called by the GetForeignPaths function of a foreign data wrapper.
+ * We make the FDW supply all fields of the path, since we do not have any way
+ * to calculate them in core.  However, there is a usually-sane default for
+ * the pathtarget (rel->reltarget), so we let a NULL for "target" select that.
  */
 ForeignPath *
 create_foreignscan_path(PlannerInfo *root, RelOptInfo *rel,
@@ -2100,11 +2087,109 @@ create_foreignscan_path(PlannerInfo *root, RelOptInfo *rel,
 {
 	ForeignPath *pathnode = makeNode(ForeignPath);
 
+	/* Historically some FDWs were confused about when to use this */
+	Assert(IS_SIMPLE_REL(rel));
+
 	pathnode->path.pathtype = T_ForeignScan;
 	pathnode->path.parent = rel;
 	pathnode->path.pathtarget = target ? target : rel->reltarget;
 	pathnode->path.param_info = get_baserel_parampathinfo(root, rel,
 														  required_outer);
+	pathnode->path.parallel_aware = false;
+	pathnode->path.parallel_safe = rel->consider_parallel;
+	pathnode->path.parallel_workers = 0;
+	pathnode->path.rows = rows;
+	pathnode->path.startup_cost = startup_cost;
+	pathnode->path.total_cost = total_cost;
+	pathnode->path.pathkeys = pathkeys;
+
+	pathnode->fdw_outerpath = fdw_outerpath;
+	pathnode->fdw_private = fdw_private;
+
+	return pathnode;
+}
+
+/*
+ * create_foreign_join_path
+ *	  Creates a path corresponding to a scan of a foreign join,
+ *	  returning the pathnode.
+ *
+ * This function is never called from core Postgres; rather, it's expected
+ * to be called by the GetForeignJoinPaths function of a foreign data wrapper.
+ * We make the FDW supply all fields of the path, since we do not have any way
+ * to calculate them in core.  However, there is a usually-sane default for
+ * the pathtarget (rel->reltarget), so we let a NULL for "target" select that.
+ */
+ForeignPath *
+create_foreign_join_path(PlannerInfo *root, RelOptInfo *rel,
+						 PathTarget *target,
+						 double rows, Cost startup_cost, Cost total_cost,
+						 List *pathkeys,
+						 Relids required_outer,
+						 Path *fdw_outerpath,
+						 List *fdw_private)
+{
+	ForeignPath *pathnode = makeNode(ForeignPath);
+
+	/*
+	 * We should use get_joinrel_parampathinfo to handle parameterized paths,
+	 * but the API of this function doesn't support it, and existing
+	 * extensions aren't yet trying to build such paths anyway.  For the
+	 * moment just throw an error if someone tries it; eventually we should
+	 * revisit this.
+	 */
+	if (!bms_is_empty(required_outer) || !bms_is_empty(rel->lateral_relids))
+		elog(ERROR, "parameterized foreign joins are not supported yet");
+
+	pathnode->path.pathtype = T_ForeignScan;
+	pathnode->path.parent = rel;
+	pathnode->path.pathtarget = target ? target : rel->reltarget;
+	pathnode->path.param_info = NULL;	/* XXX see above */
+	pathnode->path.parallel_aware = false;
+	pathnode->path.parallel_safe = rel->consider_parallel;
+	pathnode->path.parallel_workers = 0;
+	pathnode->path.rows = rows;
+	pathnode->path.startup_cost = startup_cost;
+	pathnode->path.total_cost = total_cost;
+	pathnode->path.pathkeys = pathkeys;
+
+	pathnode->fdw_outerpath = fdw_outerpath;
+	pathnode->fdw_private = fdw_private;
+
+	return pathnode;
+}
+
+/*
+ * create_foreign_upper_path
+ *	  Creates a path corresponding to an upper relation that's computed
+ *	  directly by an FDW, returning the pathnode.
+ *
+ * This function is never called from core Postgres; rather, it's expected to
+ * be called by the GetForeignUpperPaths function of a foreign data wrapper.
+ * We make the FDW supply all fields of the path, since we do not have any way
+ * to calculate them in core.  However, there is a usually-sane default for
+ * the pathtarget (rel->reltarget), so we let a NULL for "target" select that.
+ */
+ForeignPath *
+create_foreign_upper_path(PlannerInfo *root, RelOptInfo *rel,
+						  PathTarget *target,
+						  double rows, Cost startup_cost, Cost total_cost,
+						  List *pathkeys,
+						  Path *fdw_outerpath,
+						  List *fdw_private)
+{
+	ForeignPath *pathnode = makeNode(ForeignPath);
+
+	/*
+	 * Upper relations should never have any lateral references, since joining
+	 * is complete.
+	 */
+	Assert(bms_is_empty(rel->lateral_relids));
+
+	pathnode->path.pathtype = T_ForeignScan;
+	pathnode->path.parent = rel;
+	pathnode->path.pathtarget = target ? target : rel->reltarget;
+	pathnode->path.param_info = NULL;
 	pathnode->path.parallel_aware = false;
 	pathnode->path.parallel_safe = rel->consider_parallel;
 	pathnode->path.parallel_workers = 0;
@@ -2626,7 +2711,7 @@ create_set_projection_path(PlannerInfo *root,
 		Node	   *node = (Node *) lfirst(lc);
 		double		itemrows;
 
-		itemrows = expression_returns_set_rows(node);
+		itemrows = expression_returns_set_rows(root, node);
 		if (tlist_rows < itemrows)
 			tlist_rows = itemrows;
 	}
@@ -3712,7 +3797,6 @@ do { \
 
 				FLAT_COPY_PATH(ipath, path, IndexPath);
 				ADJUST_CHILD_ATTRS(ipath->indexclauses);
-				ADJUST_CHILD_ATTRS(ipath->indexquals);
 				new_path = (Path *) ipath;
 			}
 			break;
