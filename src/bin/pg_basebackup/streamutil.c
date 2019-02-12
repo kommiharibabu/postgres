@@ -33,6 +33,7 @@
 #define ERRCODE_DUPLICATE_OBJECT  "42710"
 
 uint32		WalSegSz;
+GroupAccessMode group_access_mode = GROUP_ACCESS_INHERIT;
 
 static bool RetrieveDataDirCreatePerm(PGconn *conn);
 
@@ -364,36 +365,44 @@ RetrieveDataDirCreatePerm(PGconn *conn)
 	if (PQserverVersion(conn) < MINIMUM_VERSION_FOR_GROUP_ACCESS)
 		return true;
 
-	res = PQexec(conn, "SHOW data_directory_mode");
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	if (group_access_mode == GROUP_ACCESS_INHERIT)
 	{
-		pg_log_error("could not send replication command \"%s\": %s",
-					 "SHOW data_directory_mode", PQerrorMessage(conn));
+		res = PQexec(conn, "SHOW data_directory_mode");
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		{
+			pg_log_error("could not send replication command \"%s\": %s",
+						 "SHOW data_directory_mode", PQerrorMessage(conn));
+
+			PQclear(res);
+			return false;
+		}
+		if (PQntuples(res) != 1 || PQnfields(res) < 1)
+		{
+			pg_log_error("could not fetch group access flag: got %d rows and %d fields, expected %d rows and %d or more fields",
+						 PQntuples(res), PQnfields(res), 1, 1);
+
+			PQclear(res);
+			return false;
+		}
+
+		if (sscanf(PQgetvalue(res, 0, 0), "%o", &data_directory_mode) != 1)
+		{
+			pg_log_error("group access flag could not be parsed: %s",
+						 PQgetvalue(res, 0, 0));
+
+			PQclear(res);
+			return false;
+		}
+
+		SetDataDirectoryCreatePerm(data_directory_mode);
 
 		PQclear(res);
-		return false;
 	}
-	if (PQntuples(res) != 1 || PQnfields(res) < 1)
-	{
-		pg_log_error("could not fetch group access flag: got %d rows and %d fields, expected %d rows and %d or more fields",
-					 PQntuples(res), PQnfields(res), 1, 1);
+	else if (group_access_mode == GROUP_ACCESS_NONE)
+		SetDataDirectoryCreatePerm(PG_DIR_MODE_OWNER);
+	else
+		SetDataDirectoryCreatePerm(PG_DIR_MODE_GROUP);
 
-		PQclear(res);
-		return false;
-	}
-
-	if (sscanf(PQgetvalue(res, 0, 0), "%o", &data_directory_mode) != 1)
-	{
-		pg_log_error("group access flag could not be parsed: %s",
-					 PQgetvalue(res, 0, 0));
-
-		PQclear(res);
-		return false;
-	}
-
-	SetDataDirectoryCreatePerm(data_directory_mode);
-
-	PQclear(res);
 	return true;
 }
 
