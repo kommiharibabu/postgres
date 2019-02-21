@@ -3435,6 +3435,43 @@ keep_going:						/* We will come back to here until there is
 					return PGRES_POLLING_WRITING;
 				}
 
+				conn->status = CONNECTION_CHECK_TARGET;
+				goto keep_going;
+			}
+
+		case CONNECTION_SETENV:
+			{
+
+				/*
+				 * Do post-connection housekeeping (only needed in protocol 2.0).
+				 *
+				 * We pretend that the connection is OK for the duration of these
+				 * queries.
+				 */
+				conn->status = CONNECTION_OK;
+
+				switch (pqSetenvPoll(conn))
+				{
+					case PGRES_POLLING_OK:	/* Success */
+						break;
+
+					case PGRES_POLLING_READING: /* Still going */
+						conn->status = CONNECTION_SETENV;
+						return PGRES_POLLING_READING;
+
+					case PGRES_POLLING_WRITING: /* Still going */
+						conn->status = CONNECTION_SETENV;
+						return PGRES_POLLING_WRITING;
+
+					default:
+						goto error_return;
+				}
+			}
+
+			/* Intentional fall through */
+
+		case CONNECTION_CHECK_TARGET:
+			{
 				/*
 				 * If a read-write connection is required, see if we have one.
 				 *
@@ -3475,68 +3512,6 @@ keep_going:						/* We will come back to here until there is
 				conn->status = CONNECTION_OK;
 				return PGRES_POLLING_OK;
 			}
-
-		case CONNECTION_SETENV:
-
-			/*
-			 * Do post-connection housekeeping (only needed in protocol 2.0).
-			 *
-			 * We pretend that the connection is OK for the duration of these
-			 * queries.
-			 */
-			conn->status = CONNECTION_OK;
-
-			switch (pqSetenvPoll(conn))
-			{
-				case PGRES_POLLING_OK:	/* Success */
-					break;
-
-				case PGRES_POLLING_READING: /* Still going */
-					conn->status = CONNECTION_SETENV;
-					return PGRES_POLLING_READING;
-
-				case PGRES_POLLING_WRITING: /* Still going */
-					conn->status = CONNECTION_SETENV;
-					return PGRES_POLLING_WRITING;
-
-				default:
-					goto error_return;
-			}
-
-			/*
-			 * If a read-write connection is required, see if we have one.
-			 * (This should match the stanza in the CONNECTION_AUTH_OK case
-			 * above.)
-			 *
-			 * Servers before 7.4 lack the transaction_read_only GUC, but by
-			 * the same token they don't have any read-only mode, so we may
-			 * just skip the test in that case.
-			 */
-			if (conn->sversion >= 70400 &&
-				conn->target_session_attrs != NULL &&
-				strcmp(conn->target_session_attrs, "read-write") == 0)
-			{
-				if (!saveErrorMessage(conn, &savedMessage))
-					goto error_return;
-
-				conn->status = CONNECTION_OK;
-				if (!PQsendQuery(conn,
-								 "SHOW transaction_read_only"))
-				{
-					restoreErrorMessage(conn, &savedMessage);
-					goto error_return;
-				}
-				conn->status = CONNECTION_CHECK_WRITABLE;
-				restoreErrorMessage(conn, &savedMessage);
-				return PGRES_POLLING_READING;
-			}
-
-			/* We can release the address list now. */
-			release_conn_addrinfo(conn);
-
-			/* We are open for business! */
-			conn->status = CONNECTION_OK;
-			return PGRES_POLLING_OK;
 
 		case CONNECTION_CONSUME:
 			{
