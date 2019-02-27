@@ -73,6 +73,12 @@ typedef enum
 
 typedef enum
 {
+	SESSION_TYPE_ANY = 0,		/* Any session (default) */
+	SESSION_TYPE_READ_WRITE		/* Read-write session */
+}			TargetSessionAttrsType;
+
+typedef enum
+{
 	PGRES_POLLING_FAILED = 0,
 	PGRES_POLLING_READING,		/* These two indicate that one may	  */
 	PGRES_POLLING_WRITING,		/* use select before polling again.   */

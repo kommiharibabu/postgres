@@ -1294,8 +1294,11 @@ connectOptions2(PGconn *conn)
 	 */
 	if (conn->target_session_attrs)
 	{
-		if (strcmp(conn->target_session_attrs, "any") != 0
-			&& strcmp(conn->target_session_attrs, "read-write") != 0)
+		if (strcmp(conn->target_session_attrs, "any") == 0)
+			conn->requested_session_type = SESSION_TYPE_ANY;
+		else if (strcmp(conn->target_session_attrs, "read-write") == 0)
+			conn->requested_session_type = SESSION_TYPE_READ_WRITE;
+		else
 		{
 			conn->status = CONNECTION_BAD;
 			printfPQExpBuffer(&conn->errorMessage,
@@ -3478,8 +3481,7 @@ keep_going:						/* We will come back to here until there is
 				 * may just skip the test in that case.
 				 */
 				if (conn->sversion >= 70400 &&
-					conn->target_session_attrs != NULL &&
-					strcmp(conn->target_session_attrs, "read-write") == 0)
+					conn->requested_session_type != SESSION_TYPE_ANY)
 				{
 					/*
 					 * Save existing error messages across the PQsendQuery
@@ -3787,6 +3789,8 @@ makeEmptyPGconn(void)
 #ifdef ENABLE_GSS
 	conn->try_gss = true;
 #endif
+
+	conn->requested_session_type = SESSION_TYPE_ANY;
 
 	/*
 	 * We try to send at least 8K at a time, which is the usual size of pipe
