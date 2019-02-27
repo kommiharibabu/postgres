@@ -2519,9 +2519,6 @@ CopyFrom(CopyState cstate)
 	/* Set up a tuple slot too */
 	myslot = ExecInitExtraTupleSlot(estate, tupDesc,
 									&TTSOpsHeapTuple);
-	/* Triggers might need a slot as well */
-	estate->es_trig_tuple_slot = ExecInitExtraTupleSlot(estate, NULL,
-														&TTSOpsHeapTuple);
 
 	/*
 	 * Set up a ModifyTableState so we can let FDW(s) init themselves for
@@ -2710,10 +2707,10 @@ CopyFrom(CopyState cstate)
 		tuple = heap_form_tuple(tupDesc, values, nulls);
 
 		/*
-		 * Constraints might reference the tableoid column, so initialize
-		 * t_tableOid before evaluating them.
+		 * Constraints might reference the tableoid column, so (re-)initialize
+		 * tts_tableOid before evaluating them.
 		 */
-		tuple->t_tableOid = RelationGetRelid(target_resultRelInfo->ri_RelationDesc);
+		myslot->tts_tableOid = RelationGetRelid(target_resultRelInfo->ri_RelationDesc);
 
 		/* Triggers and stuff need to be invoked in query context. */
 		MemoryContextSwitchTo(oldcontext);
@@ -2870,7 +2867,7 @@ CopyFrom(CopyState cstate)
 					 * Otherwise, just remember the original unconverted
 					 * tuple, to avoid a needless round trip conversion.
 					 */
-					cstate->transition_capture->tcs_original_insert_tuple = tuple;
+					cstate->transition_capture->tcs_original_insert_tuple = myslot;
 					cstate->transition_capture->tcs_map = NULL;
 				}
 			}
@@ -2899,7 +2896,7 @@ CopyFrom(CopyState cstate)
 				MemoryContextSwitchTo(oldcontext);
 			}
 
-			tuple->t_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
+			slot->tts_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
 		}
 
 		skip_tuple = false;
@@ -2907,12 +2904,8 @@ CopyFrom(CopyState cstate)
 		/* BEFORE ROW INSERT Triggers */
 		if (has_before_insert_row_trig)
 		{
-			slot = ExecBRInsertTriggers(estate, resultRelInfo, slot);
-
-			if (slot == NULL)	/* "do nothing" */
-				skip_tuple = true;
-			else				/* trigger might have changed tuple */
-				tuple = ExecFetchSlotHeapTuple(slot, true, NULL);
+			if (!ExecBRInsertTriggers(estate, resultRelInfo, slot))
+				skip_tuple = true;	/* "do nothing" */
 		}
 
 		if (!skip_tuple)
@@ -2990,19 +2983,21 @@ CopyFrom(CopyState cstate)
 						if (slot == NULL)	/* "do nothing" */
 							continue;	/* next tuple please */
 
-						/* FDW might have changed tuple */
-						tuple = ExecFetchSlotHeapTuple(slot, true, NULL);
-
 						/*
 						 * AFTER ROW Triggers might reference the tableoid
-						 * column, so initialize t_tableOid before evaluating
-						 * them.
+						 * column, so (re-)initialize tts_tableOid before
+						 * evaluating them.
 						 */
-						tuple->t_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
+						slot->tts_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
 					}
 					else
+					{
+						tuple = ExecFetchSlotHeapTuple(slot, true, NULL);
 						heap_insert(resultRelInfo->ri_RelationDesc, tuple,
 									mycid, hi_options, bistate);
+						ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
+						slot->tts_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
+					}
 
 					/* And create index entries for it */
 					if (resultRelInfo->ri_NumIndices > 0)
@@ -3014,7 +3009,7 @@ CopyFrom(CopyState cstate)
 															   NIL);
 
 					/* AFTER ROW INSERT Triggers */
-					ExecARInsertTriggers(estate, resultRelInfo, tuple,
+					ExecARInsertTriggers(estate, resultRelInfo, slot,
 										 recheckIndexes, cstate->transition_capture);
 
 					list_free(recheckIndexes);
@@ -3154,7 +3149,7 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 				ExecInsertIndexTuples(myslot, &(bufferedTuples[i]->t_self),
 									  estate, false, NULL, NIL);
 			ExecARInsertTriggers(estate, resultRelInfo,
-								 bufferedTuples[i],
+								 myslot,
 								 recheckIndexes, cstate->transition_capture);
 			list_free(recheckIndexes);
 		}
@@ -3171,8 +3166,9 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 		for (i = 0; i < nBufferedTuples; i++)
 		{
 			cstate->cur_lineno = firstBufferedLineNo + i;
+			ExecStoreHeapTuple(bufferedTuples[i], myslot, false);
 			ExecARInsertTriggers(estate, resultRelInfo,
-								 bufferedTuples[i],
+								 myslot,
 								 NIL, cstate->transition_capture);
 		}
 	}

@@ -4860,7 +4860,10 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 
 			/* Write the tuple out to the new relation */
 			if (newrel)
+			{
 				heap_insert(newrel, tuple, mycid, hi_options, bistate);
+				ItemPointerCopy(&tuple->t_self, &newslot->tts_tid);
+			}
 
 			ResetExprContext(econtext);
 
@@ -8918,8 +8921,6 @@ validateForeignKeyConstraint(char *conname,
 		trigdata.tg_trigtuple = tuple;
 		trigdata.tg_newtuple = NULL;
 		trigdata.tg_trigger = &trig;
-		trigdata.tg_trigtuplebuf = scan->rs_cbuf;
-		trigdata.tg_newtuplebuf = InvalidBuffer;
 
 		fcinfo->context = (Node *) &trigdata;
 
