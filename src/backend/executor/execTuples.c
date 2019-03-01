@@ -700,25 +700,36 @@ tts_buffer_heap_materialize(TupleTableSlot *slot)
 
 	slot->tts_flags |= TTS_FLAG_SHOULDFREE;
 
-	/*
-	 * A heap tuple stored in a BufferHeapTupleTableSlot should have a buffer
-	 * associated with it, unless it's materialized (which would've returned
-	 * above).
-	 */
-	Assert(bslot->base.tuple);
-
 	oldContext = MemoryContextSwitchTo(slot->tts_mcxt);
-	bslot->base.tuple = heap_copytuple(bslot->base.tuple);
-	MemoryContextSwitchTo(oldContext);
 
-	/*
-	 * A heap tuple stored in a BufferHeapTupleTableSlot should have a buffer
-	 * associated with it, unless it's materialized.
-	 */
-	Assert(BufferIsValid(bslot->buffer));
-	if (likely(BufferIsValid(bslot->buffer)))
-		ReleaseBuffer(bslot->buffer);
-	bslot->buffer = InvalidBuffer;
+	if (!bslot->base.tuple)
+	{
+		/*
+		 * Normally BufferHeapTupleTableSlot should have a tuple + buffer
+		 * associated with it, unless it's materialized (which would've
+		 * returned above). But when it's useful to allow storing virtual
+		 * tuples in a buffer slot, which then also needs to be
+		 * materializable.
+		 */
+		bslot->base.tuple = heap_form_tuple(slot->tts_tupleDescriptor,
+											slot->tts_values,
+											slot->tts_isnull);
+
+	}
+	else
+	{
+		bslot->base.tuple = heap_copytuple(bslot->base.tuple);
+
+		/*
+		 * A heap tuple stored in a BufferHeapTupleTableSlot should have a
+		 * buffer associated with it, unless it's materialized or virtual.
+		 */
+		Assert(BufferIsValid(bslot->buffer));
+		if (likely(BufferIsValid(bslot->buffer)))
+			ReleaseBuffer(bslot->buffer);
+		bslot->buffer = InvalidBuffer;
+	}
+	MemoryContextSwitchTo(oldContext);
 
 	/*
 	 * Have to deform from scratch, otherwise tts_values[] entries could point
@@ -736,10 +747,12 @@ tts_buffer_heap_copyslot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 
 	/*
 	 * If the source slot is of a different kind, or is a buffer slot that has
-	 * been materialized, make a new copy of the tuple.
+	 * been materialized / is virtual, make a new copy of the tuple. Otherwise
+	 * make a new reference to the in-buffer tuple.
 	 */
 	if (dstslot->tts_ops != srcslot->tts_ops ||
-		TTS_SHOULDFREE(srcslot))
+		TTS_SHOULDFREE(srcslot) ||
+		!bsrcslot->base.tuple)
 	{
 		MemoryContext oldContext;
 
@@ -752,15 +765,19 @@ tts_buffer_heap_copyslot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 	}
 	else
 	{
+		Assert(BufferIsValid(bsrcslot->buffer));
+
 		tts_buffer_heap_store_tuple(dstslot, bsrcslot->base.tuple,
 									bsrcslot->buffer, false);
 
 		/*
-		 * Need to materialize because the HeapTupleData portion of the tuple
-		 * might be in a foreign memory context. That's annoying, but until
-		 * that's moved into the slot, unavoidable.
+		 * The HeapTupleData portion of the source tuple might be shorter
+		 * lived than the destination slot. Therefore copy the HeapTuple into
+		 * our slot's tupdata, which is guaranteed to live long enough (but
+		 * will still point into the buffer).
 		 */
-		tts_buffer_heap_materialize(dstslot);
+		memcpy(&bdstslot->base.tupdata, bdstslot->base.tuple, sizeof(HeapTupleData));
+		bdstslot->base.tuple = &bdstslot->base.tupdata;
 	}
 }
 
@@ -1523,6 +1540,32 @@ ExecStoreAllNullTuple(TupleTableSlot *slot)
 		   slot->tts_tupleDescriptor->natts * sizeof(bool));
 
 	return ExecStoreVirtualTuple(slot);
+}
+
+/*
+ * Store a HeapTuple in datum form, into a slot. That always requires
+ * deforming it and storing it in virtual form.
+ *
+ * Until the slot is materialized, the contents of the slot depend on the
+ * datum.
+ */
+void
+ExecStoreHeapTupleDatum(Datum data, TupleTableSlot *slot)
+{
+	HeapTupleData tuple = {0};
+	HeapTupleHeader td;
+
+	td = DatumGetHeapTupleHeader(data);
+
+	tuple.t_len = HeapTupleHeaderGetDatumLength(td);
+	tuple.t_self = td->t_ctid;
+	tuple.t_data = td;
+
+	ExecClearTuple(slot);
+
+	heap_deform_tuple(&tuple, slot->tts_tupleDescriptor,
+					  slot->tts_values, slot->tts_isnull);
+	ExecStoreVirtualTuple(slot);
 }
 
 /*

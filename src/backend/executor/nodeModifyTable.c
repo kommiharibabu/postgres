@@ -655,7 +655,6 @@ ExecDelete(ModifyTableState *mtstate,
 		 */
 		if (TTS_EMPTY(slot))
 			ExecStoreAllNullTuple(slot);
-		ExecMaterializeSlot(slot);
 
 		slot->tts_tableOid = RelationGetRelid(resultRelationDesc);
 	}
@@ -1804,7 +1803,7 @@ ExecModifyTable(PlanState *pstate)
 	 * case it is within a CTE subplan.  Hence this test must be here, not in
 	 * ExecInitModifyTable.)
 	 */
-	if (estate->es_epqTuple != NULL)
+	if (estate->es_epqTupleSlot != NULL)
 		elog(ERROR, "ModifyTable should not be called during EvalPlanQual");
 
 	/*
