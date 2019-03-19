@@ -2089,9 +2089,21 @@ pgstat_update_heap_dead_tuples(Relation rel, int delta)
  * ----------
  */
 void
-AtEOXact_PgStat(bool isCommit)
+AtEOXact_PgStat(bool isCommit, bool parallel)
 {
 	PgStat_SubXactStatus *xact_state;
+
+	/*
+	 * Don't count parallel worker stats, just release the resources.
+	 */
+	if (parallel)
+	{
+		pgStatXactStack = NULL;
+
+		/* Make sure any stats snapshot is thrown away */
+		pgstat_clear_snapshot();
+		return;
+	}
 
 	/*
 	 * Count transaction commit or abort.  (We use counters, not just bools,
