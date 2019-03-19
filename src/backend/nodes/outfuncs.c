@@ -947,6 +947,7 @@ _outPartitionedRelPruneInfo(StringInfo str, const PartitionedRelPruneInfo *node)
 	WRITE_INT_FIELD(nexprs);
 	WRITE_INT_ARRAY(subplan_map, node->nparts);
 	WRITE_INT_ARRAY(subpart_map, node->nparts);
+	WRITE_OID_ARRAY(relid_map, node->nparts);
 	WRITE_BOOL_ARRAY(hasexecparam, node->nexprs);
 	WRITE_BOOL_FIELD(do_initial_prune);
 	WRITE_BOOL_FIELD(do_exec_prune);
@@ -1043,6 +1044,7 @@ _outIntoClause(StringInfo str, const IntoClause *node)
 
 	WRITE_NODE_FIELD(rel);
 	WRITE_NODE_FIELD(colNames);
+	WRITE_NODE_FIELD(accessMethod);
 	WRITE_NODE_FIELD(options);
 	WRITE_ENUM_FIELD(onCommit, OnCommitAction);
 	WRITE_STRING_FIELD(tableSpaceName);
@@ -1744,8 +1746,6 @@ _outIndexPath(StringInfo str, const IndexPath *node)
 
 	WRITE_NODE_FIELD(indexinfo);
 	WRITE_NODE_FIELD(indexclauses);
-	WRITE_NODE_FIELD(indexquals);
-	WRITE_NODE_FIELD(indexqualcols);
 	WRITE_NODE_FIELD(indexorderbys);
 	WRITE_NODE_FIELD(indexorderbycols);
 	WRITE_ENUM_FIELD(indexscandir, ScanDirection);
@@ -2448,6 +2448,18 @@ _outRestrictInfo(StringInfo str, const RestrictInfo *node)
 }
 
 static void
+_outIndexClause(StringInfo str, const IndexClause *node)
+{
+	WRITE_NODE_TYPE("INDEXCLAUSE");
+
+	WRITE_NODE_FIELD(rinfo);
+	WRITE_NODE_FIELD(indexquals);
+	WRITE_BOOL_FIELD(lossy);
+	WRITE_INT_FIELD(indexcol);
+	WRITE_NODE_FIELD(indexcols);
+}
+
+static void
 _outPlaceHolderVar(StringInfo str, const PlaceHolderVar *node)
 {
 	WRITE_NODE_TYPE("PLACEHOLDERVAR");
@@ -2568,6 +2580,7 @@ _outCreateStmtInfo(StringInfo str, const CreateStmt *node)
 	WRITE_NODE_FIELD(options);
 	WRITE_ENUM_FIELD(oncommit, OnCommitAction);
 	WRITE_STRING_FIELD(tablespacename);
+	WRITE_STRING_FIELD(accessMethod);
 	WRITE_BOOL_FIELD(if_not_exists);
 }
 
@@ -2979,6 +2992,7 @@ _outCommonTableExpr(StringInfo str, const CommonTableExpr *node)
 
 	WRITE_STRING_FIELD(ctename);
 	WRITE_NODE_FIELD(aliascolnames);
+	WRITE_ENUM_FIELD(ctematerialized, CTEMaterialize);
 	WRITE_NODE_FIELD(ctequery);
 	WRITE_LOCATION_FIELD(location);
 	WRITE_BOOL_FIELD(cterecursive);
@@ -4043,6 +4057,9 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_RestrictInfo:
 				_outRestrictInfo(str, obj);
+				break;
+			case T_IndexClause:
+				_outIndexClause(str, obj);
 				break;
 			case T_PlaceHolderVar:
 				_outPlaceHolderVar(str, obj);

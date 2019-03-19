@@ -2638,6 +2638,21 @@ pg_get_functiondef(PG_FUNCTION_ARGS)
 	if (proc->prorows > 0 && proc->prorows != 1000)
 		appendStringInfo(&buf, " ROWS %g", proc->prorows);
 
+	if (proc->prosupport)
+	{
+		Oid			argtypes[1];
+
+		/*
+		 * We should qualify the support function's name if it wouldn't be
+		 * resolved by lookup in the current search path.
+		 */
+		argtypes[0] = INTERNALOID;
+		appendStringInfo(&buf, " SUPPORT %s",
+						 generate_function_name(proc->prosupport, 1,
+												NIL, argtypes,
+												false, NULL, EXPR_KIND_NONE));
+	}
+
 	if (oldlen != buf.len)
 		appendStringInfoChar(&buf, '\n');
 
@@ -5166,7 +5181,19 @@ get_with_clause(Query *query, deparse_context *context)
 			}
 			appendStringInfoChar(buf, ')');
 		}
-		appendStringInfoString(buf, " AS (");
+		appendStringInfoString(buf, " AS ");
+		switch (cte->ctematerialized)
+		{
+			case CTEMaterializeDefault:
+				break;
+			case CTEMaterializeAlways:
+				appendStringInfoString(buf, "MATERIALIZED ");
+				break;
+			case CTEMaterializeNever:
+				appendStringInfoString(buf, "NOT MATERIALIZED ");
+				break;
+		}
+		appendStringInfoChar(buf, '(');
 		if (PRETTY_INDENT(context))
 			appendContextKeyword(context, "", 0, 0, 0);
 		get_query_def((Query *) cte->ctequery, buf, context->namespaces, NULL,
@@ -9784,30 +9811,17 @@ get_tablefunc(TableFunc *tf, deparse_context *context, bool showimplicit)
 		ListCell   *l5;
 		int			colnum = 0;
 
-		l2 = list_head(tf->coltypes);
-		l3 = list_head(tf->coltypmods);
-		l4 = list_head(tf->colexprs);
-		l5 = list_head(tf->coldefexprs);
-
 		appendStringInfoString(buf, " COLUMNS ");
-		foreach(l1, tf->colnames)
+		forfive(l1, tf->colnames, l2, tf->coltypes, l3, tf->coltypmods,
+				l4, tf->colexprs, l5, tf->coldefexprs)
 		{
 			char	   *colname = strVal(lfirst(l1));
-			Oid			typid;
-			int32		typmod;
-			Node	   *colexpr;
-			Node	   *coldefexpr;
-			bool		ordinality = tf->ordinalitycol == colnum;
+			Oid			typid = lfirst_oid(l2);
+			int32		typmod = lfirst_int(l3);
+			Node	   *colexpr = (Node *) lfirst(l4);
+			Node	   *coldefexpr = (Node *) lfirst(l5);
+			bool		ordinality = (tf->ordinalitycol == colnum);
 			bool		notnull = bms_is_member(colnum, tf->notnulls);
-
-			typid = lfirst_oid(l2);
-			l2 = lnext(l2);
-			typmod = lfirst_int(l3);
-			l3 = lnext(l3);
-			colexpr = (Node *) lfirst(l4);
-			l4 = lnext(l4);
-			coldefexpr = (Node *) lfirst(l5);
-			l5 = lnext(l5);
 
 			if (colnum > 0)
 				appendStringInfoString(buf, ", ");
@@ -10322,12 +10336,11 @@ get_from_clause_coldeflist(RangeTblFunction *rtfunc,
 
 	appendStringInfoChar(buf, '(');
 
-	/* there's no forfour(), so must chase one list the hard way */
 	i = 0;
-	l4 = list_head(rtfunc->funccolnames);
-	forthree(l1, rtfunc->funccoltypes,
-			 l2, rtfunc->funccoltypmods,
-			 l3, rtfunc->funccolcollations)
+	forfour(l1, rtfunc->funccoltypes,
+			l2, rtfunc->funccoltypmods,
+			l3, rtfunc->funccolcollations,
+			l4, rtfunc->funccolnames)
 	{
 		Oid			atttypid = lfirst_oid(l1);
 		int32		atttypmod = lfirst_int(l2);
@@ -10351,7 +10364,6 @@ get_from_clause_coldeflist(RangeTblFunction *rtfunc,
 			appendStringInfo(buf, " COLLATE %s",
 							 generate_collation_name(attcollation));
 
-		l4 = lnext(l4);
 		i++;
 	}
 

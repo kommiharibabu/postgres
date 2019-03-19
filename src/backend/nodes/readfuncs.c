@@ -418,6 +418,7 @@ _readCommonTableExpr(void)
 
 	READ_STRING_FIELD(ctename);
 	READ_NODE_FIELD(aliascolnames);
+	READ_ENUM_FIELD(ctematerialized, CTEMaterialize);
 	READ_NODE_FIELD(ctequery);
 	READ_LOCATION_FIELD(location);
 	READ_BOOL_FIELD(cterecursive);
@@ -515,6 +516,7 @@ _readIntoClause(void)
 
 	READ_NODE_FIELD(rel);
 	READ_NODE_FIELD(colNames);
+	READ_STRING_FIELD(accessMethod);
 	READ_NODE_FIELD(options);
 	READ_ENUM_FIELD(onCommit, OnCommitAction);
 	READ_STRING_FIELD(tableSpaceName);
@@ -2384,6 +2386,7 @@ _readPartitionedRelPruneInfo(void)
 	READ_INT_FIELD(nexprs);
 	READ_INT_ARRAY(subplan_map, local_node->nparts);
 	READ_INT_ARRAY(subpart_map, local_node->nparts);
+	READ_OID_ARRAY(relid_map, local_node->nparts);
 	READ_BOOL_ARRAY(hasexecparam, local_node->nexprs);
 	READ_BOOL_FIELD(do_initial_prune);
 	READ_BOOL_FIELD(do_exec_prune);

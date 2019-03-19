@@ -28,6 +28,7 @@
 #include "access/multixact.h"
 #include "access/relscan.h"
 #include "access/sysattr.h"
+#include "access/tableam.h"
 #include "access/transam.h"
 #include "access/visibilitymap.h"
 #include "access/xact.h"
@@ -907,6 +908,7 @@ index_create(Relation heapRelation,
 								tableSpaceId,
 								indexRelationId,
 								relFileNode,
+								accessMethodObjectId,
 								indexTupDesc,
 								relkind,
 								relpersistence,
@@ -1041,9 +1043,6 @@ index_create(Relation heapRelation,
 		else
 		{
 			bool		have_simple_col = false;
-			DependencyType deptype;
-
-			deptype = OidIsValid(parentIndexRelid) ? DEPENDENCY_INTERNAL_AUTO : DEPENDENCY_AUTO;
 
 			/* Create auto dependencies on simply-referenced columns */
 			for (i = 0; i < indexInfo->ii_NumIndexAttrs; i++)
@@ -1054,7 +1053,7 @@ index_create(Relation heapRelation,
 					referenced.objectId = heapRelationId;
 					referenced.objectSubId = indexInfo->ii_IndexAttrNumbers[i];
 
-					recordDependencyOn(&myself, &referenced, deptype);
+					recordDependencyOn(&myself, &referenced, DEPENDENCY_AUTO);
 
 					have_simple_col = true;
 				}
@@ -1072,18 +1071,29 @@ index_create(Relation heapRelation,
 				referenced.objectId = heapRelationId;
 				referenced.objectSubId = 0;
 
-				recordDependencyOn(&myself, &referenced, deptype);
+				recordDependencyOn(&myself, &referenced, DEPENDENCY_AUTO);
 			}
 		}
 
-		/* Store dependency on parent index, if any */
+		/*
+		 * If this is an index partition, create partition dependencies on
+		 * both the parent index and the table.  (Note: these must be *in
+		 * addition to*, not instead of, all other dependencies.  Otherwise
+		 * we'll be short some dependencies after DETACH PARTITION.)
+		 */
 		if (OidIsValid(parentIndexRelid))
 		{
 			referenced.classId = RelationRelationId;
 			referenced.objectId = parentIndexRelid;
 			referenced.objectSubId = 0;
 
-			recordDependencyOn(&myself, &referenced, DEPENDENCY_INTERNAL_AUTO);
+			recordDependencyOn(&myself, &referenced, DEPENDENCY_PARTITION_PRI);
+
+			referenced.classId = RelationRelationId;
+			referenced.objectId = heapRelationId;
+			referenced.objectSubId = 0;
+
+			recordDependencyOn(&myself, &referenced, DEPENDENCY_PARTITION_SEC);
 		}
 
 		/* Store dependency on collations */
@@ -1342,15 +1352,17 @@ index_constraint_create(Relation heapRelation,
 	recordDependencyOn(&myself, &referenced, DEPENDENCY_INTERNAL);
 
 	/*
-	 * Also, if this is a constraint on a partition, mark it as depending on
-	 * the constraint in the parent.
+	 * Also, if this is a constraint on a partition, give it partition-type
+	 * dependencies on the parent constraint as well as the table.
 	 */
 	if (OidIsValid(parentConstraintId))
 	{
-		ObjectAddress parentConstr;
-
-		ObjectAddressSet(parentConstr, ConstraintRelationId, parentConstraintId);
-		recordDependencyOn(&referenced, &parentConstr, DEPENDENCY_INTERNAL_AUTO);
+		ObjectAddressSet(myself, ConstraintRelationId, conOid);
+		ObjectAddressSet(referenced, ConstraintRelationId, parentConstraintId);
+		recordDependencyOn(&myself, &referenced, DEPENDENCY_PARTITION_PRI);
+		ObjectAddressSet(referenced, RelationRelationId,
+						 RelationGetRelid(heapRelation));
+		recordDependencyOn(&myself, &referenced, DEPENDENCY_PARTITION_SEC);
 	}
 
 	/*
@@ -2127,7 +2139,7 @@ index_update_stats(Relation rel,
 		ReindexIsProcessingHeap(RelationRelationId))
 	{
 		/* don't assume syscache will work */
-		HeapScanDesc pg_class_scan;
+		TableScanDesc pg_class_scan;
 		ScanKeyData key[1];
 
 		ScanKeyInit(&key[0],
@@ -2135,10 +2147,10 @@ index_update_stats(Relation rel,
 					BTEqualStrategyNumber, F_OIDEQ,
 					ObjectIdGetDatum(relid));
 
-		pg_class_scan = heap_beginscan_catalog(pg_class, 1, key);
+		pg_class_scan = table_beginscan_catalog(pg_class, 1, key);
 		tuple = heap_getnext(pg_class_scan, ForwardScanDirection);
 		tuple = heap_copytuple(tuple);
-		heap_endscan(pg_class_scan);
+		table_endscan(pg_class_scan);
 	}
 	else
 	{
@@ -2420,7 +2432,7 @@ IndexBuildHeapScan(Relation heapRelation,
 				   bool allow_sync,
 				   IndexBuildCallback callback,
 				   void *callback_state,
-				   HeapScanDesc scan)
+				   TableScanDesc scan)
 {
 	return IndexBuildHeapRangeScan(heapRelation, indexRelation,
 								   indexInfo, allow_sync,
@@ -2449,8 +2461,9 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 						BlockNumber numblocks,
 						IndexBuildCallback callback,
 						void *callback_state,
-						HeapScanDesc scan)
+						TableScanDesc scan)
 {
+	HeapScanDesc hscan;
 	bool		is_system_catalog;
 	bool		checking_uniqueness;
 	HeapTuple	heapTuple;
@@ -2491,8 +2504,7 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 	 */
 	estate = CreateExecutorState();
 	econtext = GetPerTupleExprContext(estate);
-	slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRelation),
-									&TTSOpsHeapTuple);
+	slot = table_slot_create(heapRelation, NULL);
 
 	/* Arrange for econtext's scan tuple to be the tuple under test */
 	econtext->ecxt_scantuple = slot;
@@ -2529,12 +2541,12 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 		else
 			snapshot = SnapshotAny;
 
-		scan = heap_beginscan_strat(heapRelation,	/* relation */
-									snapshot,	/* snapshot */
-									0,	/* number of keys */
-									NULL,	/* scan key */
-									true,	/* buffer access strategy OK */
-									allow_sync);	/* syncscan OK? */
+		scan = table_beginscan_strat(heapRelation,	/* relation */
+									 snapshot,	/* snapshot */
+									 0,	/* number of keys */
+									 NULL,	/* scan key */
+									 true,	/* buffer access strategy OK */
+									 allow_sync);	/* syncscan OK? */
 	}
 	else
 	{
@@ -2549,6 +2561,8 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 		Assert(allow_sync);
 		snapshot = scan->rs_snapshot;
 	}
+
+	hscan = (HeapScanDesc) scan;
 
 	/*
 	 * Must call GetOldestXmin() with SnapshotAny.  Should never call
@@ -2607,15 +2621,15 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 		 * tuple per HOT-chain --- else we could create more than one index
 		 * entry pointing to the same root tuple.
 		 */
-		if (scan->rs_cblock != root_blkno)
+		if (hscan->rs_cblock != root_blkno)
 		{
-			Page		page = BufferGetPage(scan->rs_cbuf);
+			Page		page = BufferGetPage(hscan->rs_cbuf);
 
-			LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
+			LockBuffer(hscan->rs_cbuf, BUFFER_LOCK_SHARE);
 			heap_get_root_tuples(page, root_offsets);
-			LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+			LockBuffer(hscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
 
-			root_blkno = scan->rs_cblock;
+			root_blkno = hscan->rs_cblock;
 		}
 
 		if (snapshot == SnapshotAny)
@@ -2632,7 +2646,7 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 			 * be conservative about it.  (This remark is still correct even
 			 * with HOT-pruning: our pin on the buffer prevents pruning.)
 			 */
-			LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
+			LockBuffer(hscan->rs_cbuf, BUFFER_LOCK_SHARE);
 
 			/*
 			 * The criteria for counting a tuple as live in this block need to
@@ -2641,7 +2655,7 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 			 * values, e.g. when there are many recently-dead tuples.
 			 */
 			switch (HeapTupleSatisfiesVacuum(heapTuple, OldestXmin,
-											 scan->rs_cbuf))
+											 hscan->rs_cbuf))
 			{
 				case HEAPTUPLE_DEAD:
 					/* Definitely dead, we can ignore it */
@@ -2722,7 +2736,7 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 							/*
 							 * Must drop the lock on the buffer before we wait
 							 */
-							LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+							LockBuffer(hscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
 							XactLockTableWait(xwait, heapRelation,
 											  &heapTuple->t_self,
 											  XLTW_InsertIndexUnique);
@@ -2789,7 +2803,7 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 							/*
 							 * Must drop the lock on the buffer before we wait
 							 */
-							LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+							LockBuffer(hscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
 							XactLockTableWait(xwait, heapRelation,
 											  &heapTuple->t_self,
 											  XLTW_InsertIndexUnique);
@@ -2841,7 +2855,7 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 					break;
 			}
 
-			LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+			LockBuffer(hscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
 
 			if (!indexIt)
 				continue;
@@ -2856,7 +2870,7 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 		MemoryContextReset(econtext->ecxt_per_tuple_memory);
 
 		/* Set up for predicate or expression evaluation */
-		ExecStoreHeapTuple(heapTuple, slot, false);
+		ExecStoreBufferHeapTuple(heapTuple, slot, hscan->rs_cbuf);
 
 		/*
 		 * In a partial index, discard tuples that don't satisfy the
@@ -2920,7 +2934,7 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 		}
 	}
 
-	heap_endscan(scan);
+	table_endscan(scan);
 
 	/* we can now forget our snapshot, if set and registered by us */
 	if (need_unregister_snapshot)
@@ -2955,8 +2969,7 @@ IndexCheckExclusion(Relation heapRelation,
 					Relation indexRelation,
 					IndexInfo *indexInfo)
 {
-	HeapScanDesc scan;
-	HeapTuple	heapTuple;
+	TableScanDesc scan;
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
 	ExprState  *predicate;
@@ -2979,8 +2992,7 @@ IndexCheckExclusion(Relation heapRelation,
 	 */
 	estate = CreateExecutorState();
 	econtext = GetPerTupleExprContext(estate);
-	slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRelation),
-									&TTSOpsHeapTuple);
+	slot = table_slot_create(heapRelation, NULL);
 
 	/* Arrange for econtext's scan tuple to be the tuple under test */
 	econtext->ecxt_scantuple = slot;
@@ -2992,21 +3004,16 @@ IndexCheckExclusion(Relation heapRelation,
 	 * Scan all live tuples in the base relation.
 	 */
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
-	scan = heap_beginscan_strat(heapRelation,	/* relation */
-								snapshot,	/* snapshot */
-								0,	/* number of keys */
-								NULL,	/* scan key */
-								true,	/* buffer access strategy OK */
-								true);	/* syncscan OK */
+	scan = table_beginscan_strat(heapRelation,	/* relation */
+								 snapshot,	/* snapshot */
+								 0, /* number of keys */
+								 NULL,	/* scan key */
+								 true,	/* buffer access strategy OK */
+								 true); /* syncscan OK */
 
-	while ((heapTuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		CHECK_FOR_INTERRUPTS();
-
-		MemoryContextReset(econtext->ecxt_per_tuple_memory);
-
-		/* Set up for predicate or expression evaluation */
-		ExecStoreHeapTuple(heapTuple, slot, false);
 
 		/*
 		 * In a partial index, ignore tuples that don't satisfy the predicate.
@@ -3031,11 +3038,13 @@ IndexCheckExclusion(Relation heapRelation,
 		 */
 		check_exclusion_constraint(heapRelation,
 								   indexRelation, indexInfo,
-								   &(heapTuple->t_self), values, isnull,
+								   &(slot->tts_tid), values, isnull,
 								   estate, true);
+
+		MemoryContextReset(econtext->ecxt_per_tuple_memory);
 	}
 
-	heap_endscan(scan);
+	table_endscan(scan);
 	UnregisterSnapshot(snapshot);
 
 	ExecDropSingleTupleTableSlot(slot);
@@ -3270,7 +3279,8 @@ validate_index_heapscan(Relation heapRelation,
 						Snapshot snapshot,
 						v_i_state *state)
 {
-	HeapScanDesc scan;
+	TableScanDesc scan;
+	HeapScanDesc hscan;
 	HeapTuple	heapTuple;
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
@@ -3313,12 +3323,13 @@ validate_index_heapscan(Relation heapRelation,
 	 * here, because it's critical that we read from block zero forward to
 	 * match the sorted TIDs.
 	 */
-	scan = heap_beginscan_strat(heapRelation,	/* relation */
-								snapshot,	/* snapshot */
-								0,	/* number of keys */
-								NULL,	/* scan key */
-								true,	/* buffer access strategy OK */
-								false); /* syncscan not OK */
+	scan = table_beginscan_strat(heapRelation,	/* relation */
+								 snapshot,	/* snapshot */
+								 0,	/* number of keys */
+								 NULL,	/* scan key */
+								 true,	/* buffer access strategy OK */
+								 false); /* syncscan not OK */
+	hscan = (HeapScanDesc) scan;
 
 	/*
 	 * Scan all tuples matching the snapshot.
@@ -3347,17 +3358,17 @@ validate_index_heapscan(Relation heapRelation,
 		 * already-passed-over tuplesort output TIDs of the current page. We
 		 * clear that array here, when advancing onto a new heap page.
 		 */
-		if (scan->rs_cblock != root_blkno)
+		if (hscan->rs_cblock != root_blkno)
 		{
-			Page		page = BufferGetPage(scan->rs_cbuf);
+			Page		page = BufferGetPage(hscan->rs_cbuf);
 
-			LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
+			LockBuffer(hscan->rs_cbuf, BUFFER_LOCK_SHARE);
 			heap_get_root_tuples(page, root_offsets);
-			LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+			LockBuffer(hscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
 
 			memset(in_index, 0, sizeof(in_index));
 
-			root_blkno = scan->rs_cblock;
+			root_blkno = hscan->rs_cblock;
 		}
 
 		/* Convert actual tuple TID to root TID */
@@ -3482,7 +3493,7 @@ validate_index_heapscan(Relation heapRelation,
 		}
 	}
 
-	heap_endscan(scan);
+	table_endscan(scan);
 
 	ExecDropSingleTupleTableSlot(slot);
 

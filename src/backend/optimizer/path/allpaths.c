@@ -105,6 +105,7 @@ static Path *get_cheapest_parameterized_child_path(PlannerInfo *root,
 									  Relids required_outer);
 static void accumulate_append_subpath(Path *path,
 						  List **subpaths, List **special_subpaths);
+static void set_dummy_rel_pathlist(RelOptInfo *rel);
 static void set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 					  Index rti, RangeTblEntry *rte);
 static void set_function_pathlist(PlannerInfo *root, RelOptInfo *rel,
@@ -530,8 +531,19 @@ set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 	}
 
 	/*
+	 * Allow a plugin to editorialize on the set of Paths for this base
+	 * relation.  It could add new paths (such as CustomPaths) by calling
+	 * add_path(), or add_partial_path() if parallel aware.  It could also
+	 * delete or modify paths added by the core code.
+	 */
+	if (set_rel_pathlist_hook)
+		(*set_rel_pathlist_hook) (root, rel, rti, rte);
+
+	/*
 	 * If this is a baserel, we should normally consider gathering any partial
-	 * paths we may have created for it.
+	 * paths we may have created for it.  We have to do this after calling the
+	 * set_rel_pathlist_hook, else it cannot add partial paths to be included
+	 * here.
 	 *
 	 * However, if this is an inheritance child, skip it.  Otherwise, we could
 	 * end up with a very large number of gather nodes, each trying to grab
@@ -539,20 +551,12 @@ set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 	 * paths for the parent appendrel.
 	 *
 	 * Also, if this is the topmost scan/join rel (that is, the only baserel),
-	 * we postpone this until the final scan/join targelist is available (see
-	 * grouping_planner).
+	 * we postpone gathering until the final scan/join targetlist is available
+	 * (see grouping_planner).
 	 */
 	if (rel->reloptkind == RELOPT_BASEREL &&
 		bms_membership(root->all_baserels) != BMS_SINGLETON)
 		generate_gather_paths(root, rel, false);
-
-	/*
-	 * Allow a plugin to editorialize on the set of Paths for this base
-	 * relation.  It could add new paths (such as CustomPaths) by calling
-	 * add_path(), or delete or modify paths added by the core code.
-	 */
-	if (set_rel_pathlist_hook)
-		(*set_rel_pathlist_hook) (root, rel, rti, rte);
 
 	/* Now find the cheapest of the paths for this rel */
 	set_cheapest(rel);
@@ -1554,7 +1558,7 @@ add_paths_to_append_rel(PlannerInfo *root, RelOptInfo *rel,
 	 * Consider an append of unordered, unparameterized partial paths.  Make
 	 * it parallel-aware if possible.
 	 */
-	if (partial_subpaths_valid)
+	if (partial_subpaths_valid && partial_subpaths != NIL)
 	{
 		AppendPath *appendpath;
 		ListCell   *lc;
@@ -1951,11 +1955,13 @@ accumulate_append_subpath(Path *path, List **subpaths, List **special_subpaths)
  *	  Build a dummy path for a relation that's been excluded by constraints
  *
  * Rather than inventing a special "dummy" path type, we represent this as an
- * AppendPath with no members (see also IS_DUMMY_PATH/IS_DUMMY_REL macros).
+ * AppendPath with no members (see also IS_DUMMY_APPEND/IS_DUMMY_REL macros).
  *
- * This is exported because inheritance_planner() has need for it.
+ * (See also mark_dummy_rel, which does basically the same thing, but is
+ * typically used to change a rel into dummy state after we already made
+ * paths for it.)
  */
-void
+static void
 set_dummy_rel_pathlist(RelOptInfo *rel)
 {
 	/* Set dummy size estimates --- we leave attr_widths[] as zeroes */
@@ -1966,14 +1972,16 @@ set_dummy_rel_pathlist(RelOptInfo *rel)
 	rel->pathlist = NIL;
 	rel->partial_pathlist = NIL;
 
-	add_path(rel, (Path *) create_append_path(NULL, rel, NIL, NIL, NULL,
+	/* Set up the dummy path */
+	add_path(rel, (Path *) create_append_path(NULL, rel, NIL, NIL,
+											  rel->lateral_relids,
 											  0, false, NIL, -1));
 
 	/*
-	 * We set the cheapest path immediately, to ensure that IS_DUMMY_REL()
-	 * will recognize the relation as dummy if anyone asks.  This is redundant
-	 * when we're called from set_rel_size(), but not when called from
-	 * elsewhere, and doing it twice is harmless anyway.
+	 * We set the cheapest-path fields immediately, just in case they were
+	 * pointing at some discarded path.  This is redundant when we're called
+	 * from set_rel_size(), but not when called from elsewhere, and doing it
+	 * twice is harmless anyway.
 	 */
 	set_cheapest(rel);
 }
@@ -3529,11 +3537,11 @@ generate_partitionwise_join_paths(PlannerInfo *root, RelOptInfo *rel)
 		/* Add partitionwise join paths for partitioned child-joins. */
 		generate_partitionwise_join_paths(root, child_rel);
 
+		set_cheapest(child_rel);
+
 		/* Dummy children will not be scanned, so ignore those. */
 		if (IS_DUMMY_REL(child_rel))
 			continue;
-
-		set_cheapest(child_rel);
 
 #ifdef OPTIMIZER_DEBUG
 		debug_print_rel(root, child_rel);
