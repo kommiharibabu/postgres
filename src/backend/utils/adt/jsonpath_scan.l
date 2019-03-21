@@ -1,3 +1,4 @@
+%{
 /*-------------------------------------------------------------------------
  *
  * jsonpath_scan.l
@@ -11,14 +12,12 @@
  *-------------------------------------------------------------------------
  */
 
-%{
 #include "postgres.h"
 
 #include "mb/pg_wchar.h"
 #include "nodes/pg_list.h"
-#include "utils/jsonpath_scanner.h"
 
-static string scanstring;
+static JsonPathString scanstring;
 
 /* No reason to constrain amount of data slurped */
 /* #define YY_READ_BUF_SIZE 16777216 */
@@ -46,7 +45,6 @@ fprintf_to_ereport(const char *fmt, const char *msg)
 	ereport(ERROR, (errmsg_internal("%s", msg)));
 }
 
-#define yyerror jsonpath_yyerror
 %}
 
 %option 8bit
@@ -282,20 +280,20 @@ jsonpath_yyerror(JsonPathParseResult **result, const char *message)
 	}
 }
 
-typedef struct keyword
+typedef struct JsonPathKeyword
 {
 	int16		len;
 	bool		lowercase;
 	int			val;
-	const char	*keyword;
-} keyword;
+	const char *keyword;
+} JsonPathKeyword;
 
 /*
  * Array of key words should be sorted by length and then
  * alphabetical order
  */
 
-static const keyword keywords[] = {
+static const JsonPathKeyword keywords[] = {
 	{ 2, false,	IS_P,		"is"},
 	{ 2, false,	TO_P,		"to"},
 	{ 3, false,	ABS_P,		"abs"},
@@ -322,11 +320,11 @@ static const keyword keywords[] = {
 static int
 checkSpecialVal()
 {
-	int				res = IDENT_P;
-	int				diff;
-	const keyword  *StopLow = keywords,
-				   *StopHigh = keywords + lengthof(keywords),
-				   *StopMiddle;
+	int						res = IDENT_P;
+	int						diff;
+	const JsonPathKeyword  *StopLow = keywords,
+						   *StopHigh = keywords + lengthof(keywords),
+						   *StopMiddle;
 
 	if (scanstring.len > keywords[lengthof(keywords) - 1].len)
 		return res;
@@ -635,4 +633,3 @@ jsonpath_yyfree(void *ptr)
 	if (ptr)
 		pfree(ptr);
 }
-

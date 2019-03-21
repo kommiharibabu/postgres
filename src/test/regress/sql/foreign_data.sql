@@ -199,7 +199,10 @@ GRANT USAGE ON FOREIGN DATA WRAPPER foo TO regress_test_indirect;
 SET ROLE regress_test_role;
 ALTER SERVER s1 OWNER TO regress_test_indirect;
 RESET ROLE;
+-- We use terse mode to avoid ordering issues in detail output.
+\set VERBOSITY terse
 DROP ROLE regress_test_indirect;                            -- ERROR
+\set VERBOSITY default
 \des+
 
 ALTER SERVER s8 RENAME to s8new;
@@ -501,7 +504,6 @@ CREATE SERVER s10 FOREIGN DATA WRAPPER foo;                     -- ERROR
 ALTER SERVER s9 VERSION '1.1';
 GRANT USAGE ON FOREIGN SERVER s9 TO regress_test_role;
 CREATE USER MAPPING FOR current_user SERVER s9;
--- We use terse mode to avoid ordering issues in cascade detail output.
 \set VERBOSITY terse
 DROP SERVER s9 CASCADE;
 \set VERBOSITY default
@@ -805,11 +807,11 @@ DROP FOREIGN TABLE foreign_part;
 DROP TABLE temp_parted;
 
 -- Cleanup
+\set VERBOSITY terse
 DROP SCHEMA foreign_schema CASCADE;
 DROP ROLE regress_test_role;                                -- ERROR
 DROP SERVER t1 CASCADE;
 DROP USER MAPPING FOR regress_test_role SERVER s6;
-\set VERBOSITY terse
 DROP FOREIGN DATA WRAPPER foo CASCADE;
 DROP SERVER s8 CASCADE;
 \set VERBOSITY default
