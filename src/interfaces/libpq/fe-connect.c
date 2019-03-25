@@ -2123,6 +2123,51 @@ restoreErrorMessage(PGconn *conn, PQExpBuffer savedMessage)
 	termPQExpBuffer(savedMessage);
 }
 
+static void
+reject_checked_write_connection(PGconn *conn)
+{
+	/* Not a requested type; fail this connection. */
+	const char *displayed_host;
+	const char *displayed_port;
+
+	/* Append error report to conn->errorMessage. */
+	if (conn->connhost[conn->whichhost].type == CHT_HOST_ADDRESS)
+		displayed_host = conn->connhost[conn->whichhost].hostaddr;
+	else
+		displayed_host = conn->connhost[conn->whichhost].host;
+	displayed_port = conn->connhost[conn->whichhost].port;
+	if (displayed_port == NULL || displayed_port[0] == '\0')
+		displayed_port = DEF_PGPORT_STR;
+
+	if (conn->requested_session_type == SESSION_TYPE_READ_WRITE)
+		appendPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("could not make a writable "
+										"connection to server "
+										"\"%s:%s\"\n"),
+						  displayed_host, displayed_port);
+	else
+		appendPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("could not make a readonly "
+										"connection to server "
+										"\"%s:%s\"\n"),
+						  displayed_host, displayed_port);
+
+	/* Close connection politely. */
+	conn->status = CONNECTION_OK;
+	sendTerminateConn(conn);
+
+	/* Record read-write host index */
+	if (conn->requested_session_type == SESSION_TYPE_PREFER_READ &&
+		conn->read_write_or_primary_host_index == -1)
+		conn->read_write_or_primary_host_index = conn->whichhost;
+
+	/*
+	 * Try next host if any, but we don't want to consider additional
+	 * addresses for this host.
+	 */
+	conn->try_next_host = true;
+}
+
 /* ----------------
  *		PQconnectPoll
  *
@@ -3549,10 +3594,6 @@ keep_going:						/* We will come back to here until there is
 							  (conn->requested_session_type == SESSION_TYPE_PREFER_READ ||
 							   conn->requested_session_type == SESSION_TYPE_READ_ONLY)))
 					{
-						/* Not a requested type; fail this connection. */
-						const char *displayed_host;
-						const char *displayed_port;
-
 						/*
 						 * The following scenario is possible only for the
 						 * prefer-read mode for the next pass of the list of
@@ -3562,42 +3603,7 @@ keep_going:						/* We will come back to here until there is
 						if (conn->read_write_or_primary_host_index == -2)
 							goto consume_checked_target_connection;
 
-						/* Append error report to conn->errorMessage. */
-						if (conn->connhost[conn->whichhost].type == CHT_HOST_ADDRESS)
-							displayed_host = conn->connhost[conn->whichhost].hostaddr;
-						else
-							displayed_host = conn->connhost[conn->whichhost].host;
-						displayed_port = conn->connhost[conn->whichhost].port;
-						if (displayed_port == NULL || displayed_port[0] == '\0')
-							displayed_port = DEF_PGPORT_STR;
-
-						if (conn->requested_session_type == SESSION_TYPE_READ_WRITE)
-							appendPQExpBuffer(&conn->errorMessage,
-											  libpq_gettext("could not make a writable "
-															"connection to server "
-															"\"%s:%s\"\n"),
-											  displayed_host, displayed_port);
-						else
-							appendPQExpBuffer(&conn->errorMessage,
-											  libpq_gettext("could not make a readonly "
-															"connection to server "
-															"\"%s:%s\"\n"),
-											  displayed_host, displayed_port);
-
-						/* Close connection politely. */
-						conn->status = CONNECTION_OK;
-						sendTerminateConn(conn);
-
-						/* Record read-write host index */
-						if (conn->requested_session_type == SESSION_TYPE_PREFER_READ &&
-							conn->read_write_or_primary_host_index == -1)
-							conn->read_write_or_primary_host_index = conn->whichhost;
-
-						/*
-						 * Try next host if any, but we don't want to consider
-						 * additional addresses for this host.
-						 */
-						conn->try_next_host = true;
+						reject_checked_write_connection(conn);
 						goto keep_going;
 					}
 
@@ -3778,42 +3784,7 @@ keep_going:						/* We will come back to here until there is
 						PQclear(res);
 						restoreErrorMessage(conn, &savedMessage);
 
-						/* Append error report to conn->errorMessage. */
-						if (conn->connhost[conn->whichhost].type == CHT_HOST_ADDRESS)
-							displayed_host = conn->connhost[conn->whichhost].hostaddr;
-						else
-							displayed_host = conn->connhost[conn->whichhost].host;
-						displayed_port = conn->connhost[conn->whichhost].port;
-						if (displayed_port == NULL || displayed_port[0] == '\0')
-							displayed_port = DEF_PGPORT_STR;
-
-						if (conn->requested_session_type == SESSION_TYPE_READ_WRITE)
-							appendPQExpBuffer(&conn->errorMessage,
-											  libpq_gettext("could not make a writable "
-															"connection to server "
-															"\"%s:%s\"\n"),
-											  displayed_host, displayed_port);
-						else
-							appendPQExpBuffer(&conn->errorMessage,
-											  libpq_gettext("could not make a readonly "
-															"connection to server "
-															"\"%s:%s\"\n"),
-											  displayed_host, displayed_port);
-
-						/* Close connection politely. */
-						conn->status = CONNECTION_OK;
-						sendTerminateConn(conn);
-
-						/* Record read-write host index */
-						if (conn->requested_session_type == SESSION_TYPE_PREFER_READ &&
-							conn->read_write_or_primary_host_index == -1)
-							conn->read_write_or_primary_host_index = conn->whichhost;
-
-						/*
-						 * Try next host if any, but we don't want to consider
-						 * additional addresses for this host.
-						 */
-						conn->try_next_host = true;
+						reject_checked_write_connection(conn);
 						goto keep_going;
 					}
 
