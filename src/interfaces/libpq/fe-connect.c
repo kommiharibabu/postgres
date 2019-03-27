@@ -1300,6 +1300,8 @@ connectOptions2(PGconn *conn)
 			conn->requested_session_type = SESSION_TYPE_READ_WRITE;
 		else if (strcmp(conn->target_session_attrs, "prefer-read") == 0)
 			conn->requested_session_type = SESSION_TYPE_PREFER_READ;
+		else if (strcmp(conn->target_session_attrs, "read-only") == 0)
+			conn->requested_session_type = SESSION_TYPE_READ_ONLY;
 		else
 		{
 			conn->status = CONNECTION_BAD;
@@ -3496,8 +3498,8 @@ keep_going:						/* We will come back to here until there is
 		case CONNECTION_CHECK_TARGET:
 			{
 				/*
-				 * If a read-write or prefer-read connection is required, see
-				 * if we have one.
+				 * If a read-write, prefer-read or read-only connection is
+				 * required, see if we have one.
 				 *
 				 * Servers before 7.4 lack the transaction_read_only GUC, but
 				 * by the same token they don't have any read-only mode, so we
@@ -3534,7 +3536,8 @@ keep_going:						/* We will come back to here until there is
 					else if ((conn->transaction_read_only &&
 							  conn->requested_session_type == SESSION_TYPE_READ_WRITE) ||
 							 (!conn->transaction_read_only &&
-							  conn->requested_session_type == SESSION_TYPE_PREFER_READ))
+							  (conn->requested_session_type == SESSION_TYPE_PREFER_READ ||
+							   conn->requested_session_type == SESSION_TYPE_READ_ONLY)))
 					{
 						/* Not a requested type; fail this connection. */
 						const char *displayed_host;
@@ -3594,17 +3597,28 @@ keep_going:						/* We will come back to here until there is
 
 				/*
 				 * Requested type is prefer-read, then record this host index
-				 * and try the other before considering it later
+				 * and try the other before considering it later. If requested
+				 * type of connection is read-only, ignore this connection.
 				 */
-				if (conn->requested_session_type == SESSION_TYPE_PREFER_READ &&
-					conn->read_write_host_index != -2)
+				if (conn->requested_session_type == SESSION_TYPE_PREFER_READ ||
+					conn->requested_session_type == SESSION_TYPE_READ_ONLY)
 				{
+					/*
+					 * The following scenario is possible only for the
+					 * prefer-read mode for the next pass of the list of
+					 * connections as it couldn't find any servers that are
+					 * default read-only.
+					 */
+					if (conn->read_write_host_index == -2)
+						goto target_accept_connection;
+
 					/* Close connection politely. */
 					conn->status = CONNECTION_OK;
 					sendTerminateConn(conn);
 
 					/* Record read-write host index */
-					if (conn->read_write_host_index == -1)
+					if (conn->requested_session_type == SESSION_TYPE_PREFER_READ &&
+						conn->read_write_host_index == -1)
 						conn->read_write_host_index = conn->whichhost;
 
 					/*
@@ -3692,12 +3706,14 @@ keep_going:						/* We will come back to here until there is
 					 * ignore it. Server is read-write and requested mode is
 					 * prefer-read, record it for the first time and try to
 					 * consume in the next scan (it means no read-only server
-					 * is found in the first scan).
+					 * is found in the first scan). Server is read-write and
+					 * requested mode is read-only, ignore this connection.
 					 */
 					if ((readonly_server &&
 						 conn->requested_session_type == SESSION_TYPE_READ_WRITE) ||
 						(!readonly_server &&
-						 conn->requested_session_type == SESSION_TYPE_PREFER_READ))
+						 (conn->requested_session_type == SESSION_TYPE_PREFER_READ ||
+						  conn->requested_session_type == SESSION_TYPE_READ_ONLY)))
 					{
 						/*
 						 * The following scenario is possible only for the

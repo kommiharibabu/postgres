@@ -1649,7 +1649,7 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
       <listitem>
        <para>
         The supported options for this parameter are, <literal>any</literal>,
-        <literal>read-write</literal> and <literal>prefer-read</literal>.
+        <literal>read-write</literal>, <literal>prefer-read</literal> and <literal>read-only</literal>.
         The default value of this parameter, <literal>any</literal>, regards
         all connections as acceptable. If multiple hosts were specified in the
         connection string, based on the specified value, any remaining servers
@@ -1676,6 +1676,11 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
         <literal>on</literal>, it means server doesn't support read-write transactions.
         But for server version 12 or greater uses the value of <varname>transaction_read_only</varname>
         configuration parameter that is reported by the server upon successful connection.
+       </para>
+
+       <para>
+        If this parameter is set to <literal>read-only</literal>, only a connection
+        in which read-only transactions are accepted by default.
        </para>
       </listitem>
      </varlistentry>
