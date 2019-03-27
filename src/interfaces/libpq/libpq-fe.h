@@ -74,7 +74,8 @@ typedef enum
 typedef enum
 {
 	SESSION_TYPE_ANY = 0,		/* Any session (default) */
-	SESSION_TYPE_READ_WRITE		/* Read-write session */
+	SESSION_TYPE_READ_WRITE,	/* Read-write session */
+	SESSION_TYPE_PREFER_READ	/* Prefer read only session */
 }			TargetSessionAttrsType;
 
 typedef enum

@@ -1648,18 +1648,25 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
       <term><literal>target_session_attrs</literal></term>
       <listitem>
        <para>
-        The supported options for this parameter are, <literal>any</literal> and
-        <literal>read-write</literal>. The default value of this parameter,
-        <literal>any</literal>, regards all connections as acceptable.
-        If multiple hosts were specified in the connection string, based on the
-        specified value, any remaining servers will be tried before confirming
-        succesful connection or failure.
+        The supported options for this parameter are, <literal>any</literal>,
+        <literal>read-write</literal> and <literal>prefer-read</literal>.
+        The default value of this parameter, <literal>any</literal>, regards
+        all connections as acceptable. If multiple hosts were specified in the
+        connection string, based on the specified value, any remaining servers
+        will be tried before confirming succesful connection or failure.
        </para>
 
        <para>
         If this parameter is set to <literal>read-write</literal>, only a
         connection in which read-write transactions are accepted by default
         is considered acceptable.
+       </para>
+
+       <para>
+        If this parameter is set to <literal>prefer-read</literal>, only a
+        connection in which read-only transactions are accepted by default
+        is preferred. If no such connections can be found, then a connection
+        in which read-write transactions accepted will be considered.
        </para>
 
        <para>
@@ -1671,7 +1678,7 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
         configuration parameter that is reported by the server upon successful connection.
        </para>
       </listitem>
-    </varlistentry>
+     </varlistentry>
     </variablelist>
    </para>
   </sect2>
