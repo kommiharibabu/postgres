@@ -3485,26 +3485,61 @@ keep_going:						/* We will come back to here until there is
 				if (conn->sversion >= 70400 &&
 					conn->requested_session_type != SESSION_TYPE_ANY)
 				{
-					/*
-					 * Save existing error messages across the PQsendQuery
-					 * attempt.  This is necessary because PQsendQuery is
-					 * going to reset conn->errorMessage, so we would lose
-					 * error messages related to previous hosts we have tried
-					 * and failed to connect to.
-					 */
-					if (!saveErrorMessage(conn, &savedMessage))
-						goto error_return;
-
-					conn->status = CONNECTION_OK;
-					if (!PQsendQuery(conn,
-									 "SHOW transaction_read_only"))
+					if (conn->sversion < 120000)
 					{
+						/*
+						 * Save existing error messages across the PQsendQuery
+						 * attempt.  This is necessary because PQsendQuery is
+						 * going to reset conn->errorMessage, so we would lose
+						 * error messages related to previous hosts we have tried
+						 * and failed to connect to.
+						 */
+						if (!saveErrorMessage(conn, &savedMessage))
+							goto error_return;
+
+						conn->status = CONNECTION_OK;
+						if (!PQsendQuery(conn,
+										 "SHOW transaction_read_only"))
+						{
+							restoreErrorMessage(conn, &savedMessage);
+							goto error_return;
+						}
+						conn->status = CONNECTION_CHECK_WRITABLE;
 						restoreErrorMessage(conn, &savedMessage);
-						goto error_return;
+						return PGRES_POLLING_READING;
 					}
-					conn->status = CONNECTION_CHECK_WRITABLE;
-					restoreErrorMessage(conn, &savedMessage);
-					return PGRES_POLLING_READING;
+					else if (conn->transaction_read_only)
+					{
+						/* Not writable; fail this connection. */
+						const char *displayed_host;
+						const char *displayed_port;
+
+						/* Append error report to conn->errorMessage. */
+						if (conn->connhost[conn->whichhost].type == CHT_HOST_ADDRESS)
+							displayed_host = conn->connhost[conn->whichhost].hostaddr;
+						else
+							displayed_host = conn->connhost[conn->whichhost].host;
+						displayed_port = conn->connhost[conn->whichhost].port;
+						if (displayed_port == NULL || displayed_port[0] == '\0')
+							displayed_port = DEF_PGPORT_STR;
+
+						appendPQExpBuffer(&conn->errorMessage,
+										  libpq_gettext("could not make a writable "
+														"connection to server "
+														"\"%s:%s\"\n"),
+										  displayed_host, displayed_port);
+
+						/* Close connection politely. */
+						conn->status = CONNECTION_OK;
+						sendTerminateConn(conn);
+
+						/*
+						 * Try next host if any, but we don't want to consider
+						 * additional addresses for this host.
+						 */
+						conn->try_next_host = true;
+						goto keep_going;
+					}
 				}
 
 				/* We can release the address list now. */
@@ -3785,6 +3820,7 @@ makeEmptyPGconn(void)
 	conn->setenv_state = SETENV_STATE_IDLE;
 	conn->client_encoding = PG_SQL_ASCII;
 	conn->std_strings = false;	/* unless server says differently */
+	conn->transaction_read_only = false;
 	conn->verbosity = PQERRORS_DEFAULT;
 	conn->show_context = PQSHOW_CONTEXT_ERRORS;
 	conn->sock = PGINVALID_SOCKET;
