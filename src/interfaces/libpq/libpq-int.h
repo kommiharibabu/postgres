@@ -366,7 +366,7 @@ struct pg_conn
 
 	/*
 	 * Type of connection to make.  Possible values: any, read-write,
-	 * prefer-read.
+	 * prefer-read and read-only.
 	 */
 	char	   *target_session_attrs;
 	TargetSessionAttrsType requested_session_type;
