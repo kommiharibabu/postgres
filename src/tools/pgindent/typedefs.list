@@ -796,6 +796,7 @@ FreePageManager
 FreePageSpanLeader
 FromCharDateMode
 FromExpr
+FullTransactionId
 FuncCall
 FuncCallContext
 FuncCandidateList
@@ -2106,6 +2107,7 @@ SeqTableData
 SerCommitSeqNo
 SerializedReindexState
 SerializedSnapshotData
+SerializedTransactionState
 Session
 SessionBackupState
 SetConstraintState
@@ -2489,6 +2491,7 @@ VacAttrStatsP
 VacuumParams
 VacuumRelation
 VacuumStmt
+ValidateIndexState
 Value
 ValuesScan
 ValuesScanState
@@ -3239,7 +3242,6 @@ uuidKEY
 uuid_rc_t
 uuid_sortsupport_state
 uuid_t
-v_i_state
 va_list
 vacuumingOptions
 validate_string_relopt
