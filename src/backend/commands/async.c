@@ -1736,7 +1736,6 @@ ProcessNotifyInterrupt(void)
 		ProcessIncomingNotify();
 }
 
-
 /*
  * Read all pending notifications from the queue, and deliver appropriate
  * ones to my frontend.  Stop when we reach queue head or an uncommitted
