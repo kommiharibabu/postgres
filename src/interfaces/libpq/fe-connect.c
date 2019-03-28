@@ -2166,6 +2166,49 @@ reject_checked_write_connection(PGconn *conn)
 	conn->try_next_host = true;
 }
 
+static void
+reject_checked_recovery_connection(PGconn *conn)
+{
+	/* Not a requested type; fail this connection. */
+	const char *displayed_host;
+	const char *displayed_port;
+
+	/* Append error report to conn->errorMessage. */
+	if (conn->connhost[conn->whichhost].type == CHT_HOST_ADDRESS)
+		displayed_host = conn->connhost[conn->whichhost].hostaddr;
+	else
+		displayed_host = conn->connhost[conn->whichhost].host;
+	displayed_port = conn->connhost[conn->whichhost].port;
+	if (displayed_port == NULL || displayed_port[0] == '\0')
+		displayed_port = DEF_PGPORT_STR;
+
+	if (conn->requested_session_type == SESSION_TYPE_PRIMARY)
+		appendPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("server is in recovery mode "
+										"\"%s:%s\"\n"),
+						  displayed_host, displayed_port);
+	else
+		appendPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("server is not in recovery mode "
+										"\"%s:%s\"\n"),
+						  displayed_host, displayed_port);
+
+	/* Close connection politely. */
+	conn->status = CONNECTION_OK;
+	sendTerminateConn(conn);
+
+	/* Record primary host index */
+	if (conn->requested_session_type == SESSION_TYPE_PREFER_STANDBY &&
+		conn->read_write_or_primary_host_index == -1)
+		conn->read_write_or_primary_host_index = conn->whichhost;
+
+	/*
+	 * Try next host if any, but we don't want to consider additional
+	 * addresses for this host.
+	 */
+	conn->try_next_host = true;
+}
+
 /* ----------------
  *		PQconnectPoll
  *
@@ -3619,27 +3662,52 @@ keep_going:						/* We will come back to here until there is
 						   conn->requested_session_type == SESSION_TYPE_PREFER_STANDBY ||
 						   conn->requested_session_type == SESSION_TYPE_STANDBY)))
 				{
-					/*
-					 * Save existing error messages across the PQsendQuery
-					 * attempt.  This is necessary because PQsendQuery is
-					 * going to reset conn->errorMessage, so we would lose
-					 * error messages related to previous hosts we have tried
-					 * and failed to connect to.
-					 */
-					if (!saveErrorMessage(conn, &savedMessage))
-						goto error_return;
 
-					conn->status = CONNECTION_OK;
-					if (!PQsendQuery(conn, "SELECT pg_is_in_recovery()"))
+					if (conn->sversion < 120000)
 					{
+						/*
+						 * Save existing error messages across the PQsendQuery
+						 * attempt.  This is necessary because PQsendQuery is
+						 * going to reset conn->errorMessage, so we would lose
+						 * error messages related to previous hosts we have
+						 * tried and failed to connect to.
+						 */
+						if (!saveErrorMessage(conn, &savedMessage))
+							goto error_return;
+
+						conn->status = CONNECTION_OK;
+						if (!PQsendQuery(conn, "SELECT pg_is_in_recovery()"))
+						{
+							restoreErrorMessage(conn, &savedMessage);
+							goto error_return;
+						}
+
+						conn->status = CONNECTION_CHECK_RECOVERY;
+
 						restoreErrorMessage(conn, &savedMessage);
-						goto error_return;
+						return PGRES_POLLING_READING;
+					}
+					else if ((conn->in_recovery &&
+							  conn->requested_session_type == SESSION_TYPE_PRIMARY) ||
+							 (!conn->in_recovery &&
+							  (conn->requested_session_type == SESSION_TYPE_PREFER_STANDBY ||
+							   conn->requested_session_type == SESSION_TYPE_STANDBY)))
+					{
+						/*
+						 * The following scenario is possible only for the
+						 * prefer-standby mode for the next pass of the list
+						 * of connections as it couldn't find any servers that
+						 * are in recovery.
+						 */
+						if (conn->read_write_or_primary_host_index == -2)
+							goto consume_checked_target_connection;
+
+						reject_checked_recovery_connection(conn);
+						goto keep_going;
 					}
 
-					conn->status = CONNECTION_CHECK_RECOVERY;
-
-					restoreErrorMessage(conn, &savedMessage);
-					return PGRES_POLLING_READING;
+					/* obtained the requested type, consume it */
+					goto consume_checked_target_connection;
 				}
 
 				/*
@@ -3888,40 +3956,7 @@ keep_going:						/* We will come back to here until there is
 						PQclear(res);
 						restoreErrorMessage(conn, &savedMessage);
 
-						/* Append error report to conn->errorMessage. */
-						if (conn->connhost[conn->whichhost].type == CHT_HOST_ADDRESS)
-							displayed_host = conn->connhost[conn->whichhost].hostaddr;
-						else
-							displayed_host = conn->connhost[conn->whichhost].host;
-						displayed_port = conn->connhost[conn->whichhost].port;
-						if (displayed_port == NULL || displayed_port[0] == '\0')
-							displayed_port = DEF_PGPORT_STR;
-
-						if (conn->requested_session_type == SESSION_TYPE_PRIMARY)
-							appendPQExpBuffer(&conn->errorMessage,
-											  libpq_gettext("server is in recovery mode "
-															"\"%s:%s\"\n"),
-											  displayed_host, displayed_port);
-						else
-							appendPQExpBuffer(&conn->errorMessage,
-											  libpq_gettext("server is not in recovery mode "
-															"\"%s:%s\"\n"),
-											  displayed_host, displayed_port);
-
-						/* Close connection politely. */
-						conn->status = CONNECTION_OK;
-						sendTerminateConn(conn);
-
-						/* Record primary host index */
-						if (conn->requested_session_type == SESSION_TYPE_PREFER_STANDBY &&
-							conn->read_write_or_primary_host_index == -1)
-							conn->read_write_or_primary_host_index = conn->whichhost;
-
-						/*
-						 * Try next host if any, but we don't want to consider
-						 * additional addresses for this host.
-						 */
-						conn->try_next_host = true;
+						reject_checked_recovery_connection(conn);
 						goto keep_going;
 					}
 

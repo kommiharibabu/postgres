@@ -1117,6 +1117,10 @@ pqSaveParameterStatus(PGconn *conn, const char *name, const char *value)
 	{
 		conn->transaction_read_only = (strcmp(value, "on") == 0);
 	}
+	else if (strcmp(name, "in_recovery") == 0)
+	{
+		conn->in_recovery = (strcmp(value, "on") == 0);
+	}
 }
 
 

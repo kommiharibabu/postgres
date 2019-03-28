@@ -443,6 +443,7 @@ struct pg_conn
 	int			client_encoding;	/* encoding id */
 	bool		std_strings;	/* standard_conforming_strings */
 	bool		transaction_read_only;	/* transaction_read_only */
+	bool		in_recovery;	/* in_recovery */
 	PGVerbosity verbosity;		/* error/notice message verbosity */
 	PGContextVisibility show_context;	/* whether to show CONTEXT field */
 	PGlobjfuncs *lobjfuncs;		/* private state for large-object access fns */
