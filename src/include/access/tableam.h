@@ -30,6 +30,7 @@ extern bool synchronize_seqscans;
 struct BulkInsertStateData;
 struct IndexInfo;
 struct IndexBuildCallback;
+struct VacuumParams;
 struct ValidateIndexState;
 
 
@@ -164,7 +165,7 @@ typedef struct TableAmRoutine
 	 * synchronized scans, or page mode may be used (although not every AM
 	 * will support those).
 	 *
-	 * is_{bitmapscan, samplescan} specify whether the scan is inteded to
+	 * is_{bitmapscan, samplescan} specify whether the scan is intended to
 	 * support those types of scans.
 	 *
 	 * if temp_snap is true, the snapshot will need to be deallocated at
@@ -220,7 +221,7 @@ typedef struct TableAmRoutine
 	Size		(*parallelscan_initialize) (Relation rel, ParallelTableScanDesc pscan);
 
 	/*
-	 * Reinitilize `pscan` for a new scan. `rel` will be the same relation as
+	 * Reinitialize `pscan` for a new scan. `rel` will be the same relation as
 	 * when `pscan` was initialized by parallelscan_initialize.
 	 */
 	void		(*parallelscan_reinitialize) (Relation rel, ParallelTableScanDesc pscan);
@@ -396,9 +397,9 @@ typedef struct TableAmRoutine
 
 	/*
 	 * This callback needs to remove all contents from `rel`'s current
-	 * relfilenode. No provisions for transactional behaviour need to be
-	 * made. Often this can be implemented by truncating the underlying
-	 * storage to its minimal size.
+	 * relfilenode. No provisions for transactional behaviour need to be made.
+	 * Often this can be implemented by truncating the underlying storage to
+	 * its minimal size.
 	 *
 	 * See also table_relation_nontransactional_truncate().
 	 */
@@ -418,6 +419,59 @@ typedef struct TableAmRoutine
 											  TransactionId OldestXmin, TransactionId FreezeXid, MultiXactId MultiXactCutoff,
 											  double *num_tuples, double *tups_vacuumed, double *tups_recently_dead);
 
+	/*
+	 * React to VACUUM command on the relation. The VACUUM might be user
+	 * triggered or by autovacuum. The specific actions performed by the AM
+	 * will depend heavily on the individual AM.
+	 *
+	 * On entry a transaction is already established, and the relation is
+	 * locked with a ShareUpdateExclusive lock.
+	 *
+	 * Note that neither VACUUM FULL (and CLUSTER), nor ANALYZE go through
+	 * this routine, even if (in the latter case), part of the same VACUUM
+	 * command.
+	 *
+	 * There probably, in the future, needs to be a separate callback to
+	 * integrate with autovacuum's scheduling.
+	 */
+	void		(*relation_vacuum) (Relation onerel, struct VacuumParams *params,
+									BufferAccessStrategy bstrategy);
+
+	/*
+	 * Prepare to analyze block `blockno` of `scan`. The scan has been started
+	 * with table_beginscan_analyze().  See also
+	 * table_scan_analyze_next_block().
+	 *
+	 * The callback may acquire resources like locks that are held until
+	 * table_scan_analyze_next_tuple() returns false. It e.g. can make sense
+	 * to hold a lock until all tuples on a block have been analyzed by
+	 * scan_analyze_next_tuple.
+	 *
+	 * The callback can return false if the block is not suitable for
+	 * sampling, e.g. because it's a metapage that could never contain tuples.
+	 *
+	 * XXX: This obviously is primarily suited for block-based AMs. It's not
+	 * clear what a good interface for non block based AMs would be, so don't
+	 * try to invent one yet.
+	 */
+	bool		(*scan_analyze_next_block) (TableScanDesc scan,
+											BlockNumber blockno,
+											BufferAccessStrategy bstrategy);
+
+	/*
+	 * See table_scan_analyze_next_tuple().
+	 *
+	 * Not every AM might have a meaningful concept of dead rows, in which
+	 * case it's OK to not increment *deadrows - but note that that may
+	 * influence autovacuum scheduling (see comment for relation_vacuum
+	 * callback).
+	 */
+	bool		(*scan_analyze_next_tuple) (TableScanDesc scan,
+											TransactionId OldestXmin,
+											double *liverows,
+											double *deadrows,
+											TupleTableSlot *slot);
+
 	/* see table_index_build_range_scan for reference about parameters */
 	double		(*index_build_range_scan) (Relation heap_rel,
 										   Relation index_rel,
@@ -436,6 +490,22 @@ typedef struct TableAmRoutine
 										struct IndexInfo *index_info,
 										Snapshot snapshot,
 										struct ValidateIndexState *state);
+
+
+	/* ------------------------------------------------------------------------
+	 * Planner related functions.
+	 * ------------------------------------------------------------------------
+	 */
+
+	/*
+	 * See table_relation_estimate_size().
+	 *
+	 * While block oriented, it shouldn't be too hard to for an AM that
+	 * doesn't internally use blocks to convert into a usable representation.
+	 */
+	void		(*relation_estimate_size) (Relation rel, int32 *attr_widths,
+										   BlockNumber *pages, double *tuples,
+										   double *allvisfrac);
 
 } TableAmRoutine;
 
@@ -913,7 +983,7 @@ table_delete(Relation rel, ItemPointer tid, CommandId cid,
  * Input parameters:
  *	relation - table to be modified (caller must hold suitable lock)
  *	otid - TID of old tuple to be replaced
- *	newtup - newly constructed tuple data to store
+ *	slot - newly constructed tuple data to store
  *	cid - update command ID (used for visibility test, and stored into
  *		cmax/cmin if successful)
  *	crosscheck - if not InvalidSnapshot, also check old tuple against this
@@ -929,8 +999,8 @@ table_delete(Relation rel, ItemPointer tid, CommandId cid,
  * TM_SelfModified, TM_Updated, or TM_BeingModified
  * (the last only possible if wait == false).
  *
- * On success, the header fields of *newtup are updated to match the new
- * stored tuple; in particular, newtup->t_self is set to the TID where the
+ * On success, the slot's tts_tid and tts_tableOid are updated to match the new
+ * stored tuple; in particular, slot->tts_tid is set to the TID where the
  * new tuple was inserted, and its HEAP_ONLY_TUPLE flag is set iff a HOT
  * update was done.  However, any TOAST changes in the new tuple's
  * data are not reflected into *newtup.
@@ -965,7 +1035,7 @@ table_update(Relation rel, ItemPointer otid, TupleTableSlot *slot,
  *	flags:
  *		If TUPLE_LOCK_FLAG_LOCK_UPDATE_IN_PROGRESS, follow the update chain to
  *		also lock descendant tuples if lock modes don't conflict.
- *		If TUPLE_LOCK_FLAG_FIND_LAST_VERSION, update chain and lock lastest
+ *		If TUPLE_LOCK_FLAG_FIND_LAST_VERSION, update chain and lock latest
  *		version.
  *
  * Output parameters:
@@ -1079,6 +1149,60 @@ table_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 }
 
 /*
+ * Perform VACUUM on the relation. The VACUUM can be user triggered or by
+ * autovacuum. The specific actions performed by the AM will depend heavily on
+ * the individual AM.
+
+ * On entry a transaction needs to already been established, and the
+ * transaction is locked with a ShareUpdateExclusive lock.
+ *
+ * Note that neither VACUUM FULL (and CLUSTER), nor ANALYZE go through this
+ * routine, even if (in the latter case), part of the same VACUUM command.
+ */
+static inline void
+table_relation_vacuum(Relation rel, struct VacuumParams *params,
+					  BufferAccessStrategy bstrategy)
+{
+	rel->rd_tableam->relation_vacuum(rel, params, bstrategy);
+}
+
+/*
+ * Prepare to analyze block `blockno` of `scan`. The scan needs to have been
+ * started with table_beginscan_analyze().  Note that this routine might
+ * acquire resources like locks that are held until
+ * table_scan_analyze_next_tuple() returns false.
+ *
+ * Returns false if block is unsuitable for sampling, true otherwise.
+ */
+static inline bool
+table_scan_analyze_next_block(TableScanDesc scan, BlockNumber blockno,
+							  BufferAccessStrategy bstrategy)
+{
+	return scan->rs_rd->rd_tableam->scan_analyze_next_block(scan, blockno,
+															bstrategy);
+}
+
+/*
+ * Iterate over tuples tuples in the block selected with
+ * table_scan_analyze_next_block() (which needs to have returned true, and
+ * this routine may not have returned false for the same block before). If a
+ * tuple that's suitable for sampling is found, true is returned and a tuple
+ * is stored in `slot`.
+ *
+ * *liverows and *deadrows are incremented according to the encountered
+ * tuples.
+ */
+static inline bool
+table_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin,
+							  double *liverows, double *deadrows,
+							  TupleTableSlot *slot)
+{
+	return scan->rs_rd->rd_tableam->scan_analyze_next_tuple(scan, OldestXmin,
+															liverows, deadrows,
+															slot);
+}
+
+/*
  * table_index_build_range_scan - scan the table to find tuples to be indexed
  *
  * This is called back from an access-method-specific index build procedure
@@ -1175,6 +1299,25 @@ table_index_validate_scan(Relation heap_rel,
 											  index_info,
 											  snapshot,
 											  state);
+}
+
+
+/* ----------------------------------------------------------------------------
+ * Planner related functionality
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Estimate the current size of the relation, as an AM specific workhorse for
+ * estimate_rel_size(). Look there for an explanation of the parameters.
+ */
+static inline void
+table_relation_estimate_size(Relation rel, int32 *attr_widths,
+							 BlockNumber *pages, double *tuples,
+							 double *allvisfrac)
+{
+	rel->rd_tableam->relation_estimate_size(rel, attr_widths, pages, tuples,
+											allvisfrac);
 }
 
 
