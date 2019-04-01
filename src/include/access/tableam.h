@@ -30,6 +30,8 @@ extern bool synchronize_seqscans;
 struct BulkInsertStateData;
 struct IndexInfo;
 struct IndexBuildCallback;
+struct SampleScanState;
+struct TBMIterateResult;
 struct VacuumParams;
 struct ValidateIndexState;
 
@@ -192,14 +194,16 @@ typedef struct TableAmRoutine
 	 * Restart relation scan.  If set_params is set to true, allow{strat,
 	 * sync, pagemode} (see scan_begin) changes should be taken into account.
 	 */
-	void		(*scan_rescan) (TableScanDesc scan, struct ScanKeyData *key, bool set_params,
-								bool allow_strat, bool allow_sync, bool allow_pagemode);
+	void		(*scan_rescan) (TableScanDesc scan, struct ScanKeyData *key,
+								bool set_params, bool allow_strat,
+								bool allow_sync, bool allow_pagemode);
 
 	/*
 	 * Return next tuple from `scan`, store in slot.
 	 */
 	bool		(*scan_getnextslot) (TableScanDesc scan,
-									 ScanDirection direction, TupleTableSlot *slot);
+									 ScanDirection direction,
+									 TupleTableSlot *slot);
 
 
 	/* ------------------------------------------------------------------------
@@ -218,13 +222,15 @@ typedef struct TableAmRoutine
 	 * pscan will be sized according to parallelscan_estimate() for the same
 	 * relation.
 	 */
-	Size		(*parallelscan_initialize) (Relation rel, ParallelTableScanDesc pscan);
+	Size		(*parallelscan_initialize) (Relation rel,
+											ParallelTableScanDesc pscan);
 
 	/*
 	 * Reinitialize `pscan` for a new scan. `rel` will be the same relation as
 	 * when `pscan` was initialized by parallelscan_initialize.
 	 */
-	void		(*parallelscan_reinitialize) (Relation rel, ParallelTableScanDesc pscan);
+	void		(*parallelscan_reinitialize) (Relation rel,
+											  ParallelTableScanDesc pscan);
 
 
 	/* ------------------------------------------------------------------------
@@ -323,8 +329,9 @@ typedef struct TableAmRoutine
 	 */
 
 	/* see table_insert() for reference about parameters */
-	void		(*tuple_insert) (Relation rel, TupleTableSlot *slot, CommandId cid,
-								 int options, struct BulkInsertStateData *bistate);
+	void		(*tuple_insert) (Relation rel, TupleTableSlot *slot,
+								 CommandId cid, int options,
+								 struct BulkInsertStateData *bistate);
 
 	/* see table_insert_speculative() for reference about parameters */
 	void		(*tuple_insert_speculative) (Relation rel,
@@ -414,10 +421,16 @@ typedef struct TableAmRoutine
 	void		(*relation_copy_data) (Relation rel, RelFileNode newrnode);
 
 	/* See table_relation_copy_for_cluster() */
-	void		(*relation_copy_for_cluster) (Relation NewHeap, Relation OldHeap, Relation OldIndex,
+	void		(*relation_copy_for_cluster) (Relation NewHeap,
+											  Relation OldHeap,
+											  Relation OldIndex,
 											  bool use_sort,
-											  TransactionId OldestXmin, TransactionId FreezeXid, MultiXactId MultiXactCutoff,
-											  double *num_tuples, double *tups_vacuumed, double *tups_recently_dead);
+											  TransactionId OldestXmin,
+											  TransactionId FreezeXid,
+											  MultiXactId MultiXactCutoff,
+											  double *num_tuples,
+											  double *tups_vacuumed,
+											  double *tups_recently_dead);
 
 	/*
 	 * React to VACUUM command on the relation. The VACUUM might be user
@@ -434,7 +447,8 @@ typedef struct TableAmRoutine
 	 * There probably, in the future, needs to be a separate callback to
 	 * integrate with autovacuum's scheduling.
 	 */
-	void		(*relation_vacuum) (Relation onerel, struct VacuumParams *params,
+	void		(*relation_vacuum) (Relation onerel,
+									struct VacuumParams *params,
 									BufferAccessStrategy bstrategy);
 
 	/*
@@ -506,6 +520,106 @@ typedef struct TableAmRoutine
 	void		(*relation_estimate_size) (Relation rel, int32 *attr_widths,
 										   BlockNumber *pages, double *tuples,
 										   double *allvisfrac);
+
+
+	/* ------------------------------------------------------------------------
+	 * Executor related functions.
+	 * ------------------------------------------------------------------------
+	 */
+
+	/*
+	 * Prepare to fetch / check / return tuples from `tbmres->blockno` as part
+	 * of a bitmap table scan. `scan` was started via table_beginscan_bm().
+	 * Return false if there's no tuples to be found on the page, true
+	 * otherwise.
+	 *
+	 * This will typically read and pin the target block, and do the necessary
+	 * work to allow scan_bitmap_next_tuple() to return tuples (e.g. it might
+	 * make sense to perform tuple visibility checks at this time). For some
+	 * AMs it will make more sense to do all the work referencing `tbmres`
+	 * contents here, for others it might be better to defer more work to
+	 * scan_bitmap_next_tuple.
+	 *
+	 * If `tbmres->blockno` is -1, this is a lossy scan and all visible tuples
+	 * on the page have to be returned, otherwise the tuples at offsets in
+	 * `tbmres->offsets` need to be returned.
+	 *
+	 * XXX: Currently this may only be implemented if the AM uses md.c as its
+	 * storage manager, and uses ItemPointer->ip_blkid in a manner that maps
+	 * blockids directly to the underlying storage. nodeBitmapHeapscan.c
+	 * performs prefetching directly using that interface.  This probably
+	 * needs to be rectified at a later point.
+	 *
+	 * XXX: Currently this may only be implemented if the AM uses the
+	 * visibilitymap, as nodeBitmapHeapscan.c unconditionally accesses it to
+	 * perform prefetching.  This probably needs to be rectified at a later
+	 * point.
+	 *
+	 * Optional callback, but either both scan_bitmap_next_block and
+	 * scan_bitmap_next_tuple need to exist, or neither.
+	 */
+	bool		(*scan_bitmap_next_block) (TableScanDesc scan,
+										   struct TBMIterateResult *tbmres);
+
+	/*
+	 * Fetch the next tuple of a bitmap table scan into `slot` and return true
+	 * if a visible tuple was found, false otherwise.
+	 *
+	 * For some AMs it will make more sense to do all the work referencing
+	 * `tbmres` contents in scan_bitmap_next_block, for others it might be
+	 * better to defer more work to this callback.
+	 *
+	 * Optional callback, but either both scan_bitmap_next_block and
+	 * scan_bitmap_next_tuple need to exist, or neither.
+	 */
+	bool		(*scan_bitmap_next_tuple) (TableScanDesc scan,
+										   struct TBMIterateResult *tbmres,
+										   TupleTableSlot *slot);
+
+	/*
+	 * Prepare to fetch tuples from the next block in a sample scan. Return
+	 * false if the sample scan is finished, true otherwise. `scan` was
+	 * started via table_beginscan_sampling().
+	 *
+	 * Typically this will first determine the target block by call the
+	 * TsmRoutine's NextSampleBlock() callback if not NULL, or alternatively
+	 * perform a sequential scan over all blocks.  The determined block is
+	 * then typically read and pinned.
+	 *
+	 * As the TsmRoutine interface is block based, a block needs to be passed
+	 * to NextSampleBlock(). If that's not appropriate for an AM, it
+	 * internally needs to perform mapping between the internal and a block
+	 * based representation.
+	 *
+	 * Note that it's not acceptable to hold deadlock prone resources such as
+	 * lwlocks until scan_sample_next_tuple() has exhausted the tuples on the
+	 * block - the tuple is likely to be returned to an upper query node, and
+	 * the next call could be off a long while. Holding buffer pins etc is
+	 * obviously OK.
+	 *
+	 * Currently it is required to implement this interface, as there's no
+	 * alternative way (contrary e.g. to bitmap scans) to implement sample
+	 * scans. If infeasible to implement the AM may raise an error.
+	 */
+	bool		(*scan_sample_next_block) (TableScanDesc scan,
+										   struct SampleScanState *scanstate);
+
+	/*
+	 * This callback, only called after scan_sample_next_block has returned
+	 * true, should determine the next tuple to be returned from the selected
+	 * block using the TsmRoutine's NextSampleTuple() callback.
+	 *
+	 * The callback needs to perform visibility checks, and only return
+	 * visible tuples. That obviously can mean calling NextSampletuple()
+	 * multiple times.
+	 *
+	 * The TsmRoutine interface assumes that there's a maximum offset on a
+	 * given page, so if that doesn't apply to an AM, it needs to emulate that
+	 * assumption somehow.
+	 */
+	bool		(*scan_sample_next_tuple) (TableScanDesc scan,
+										   struct SampleScanState *scanstate,
+										   TupleTableSlot *slot);
 
 } TableAmRoutine;
 
@@ -595,7 +709,8 @@ table_beginscan_bm(Relation rel, Snapshot snapshot,
 static inline TableScanDesc
 table_beginscan_sampling(Relation rel, Snapshot snapshot,
 						 int nkeys, struct ScanKeyData *key,
-						 bool allow_strat, bool allow_sync, bool allow_pagemode)
+						 bool allow_strat, bool allow_sync,
+						 bool allow_pagemode)
 {
 	return rel->rd_tableam->scan_begin(rel, snapshot, nkeys, key, NULL,
 									   allow_strat, allow_sync, allow_pagemode,
@@ -686,7 +801,9 @@ extern Size table_parallelscan_estimate(Relation rel, Snapshot snapshot);
  * for the same relation.  Call this just once in the leader process; then,
  * individual workers attach via table_beginscan_parallel.
  */
-extern void table_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan, Snapshot snapshot);
+extern void table_parallelscan_initialize(Relation rel,
+							  ParallelTableScanDesc pscan,
+							  Snapshot snapshot);
 
 /*
  * Begin a parallel scan. `pscan` needs to have been initialized with
@@ -695,7 +812,8 @@ extern void table_parallelscan_initialize(Relation rel, ParallelTableScanDesc ps
  *
  * Caller must hold a suitable lock on the correct relation.
  */
-extern TableScanDesc table_beginscan_parallel(Relation rel, ParallelTableScanDesc pscan);
+extern TableScanDesc table_beginscan_parallel(Relation rel,
+						 ParallelTableScanDesc pscan);
 
 /*
  * Restart a parallel scan.  Call this in the leader process.  Caller is
@@ -836,7 +954,8 @@ table_get_latest_tid(Relation rel, Snapshot snapshot, ItemPointer tid)
  * they ought to mark the relevant buffer dirty.
  */
 static inline bool
-table_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapshot snapshot)
+table_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
+							   Snapshot snapshot)
 {
 	return rel->rd_tableam->tuple_satisfies_snapshot(rel, slot, snapshot);
 }
@@ -919,7 +1038,8 @@ table_insert(Relation rel, TupleTableSlot *slot, CommandId cid,
  */
 static inline void
 table_insert_speculative(Relation rel, TupleTableSlot *slot, CommandId cid,
-						 int options, struct BulkInsertStateData *bistate, uint32 specToken)
+						 int options, struct BulkInsertStateData *bistate,
+						 uint32 specToken)
 {
 	rel->rd_tableam->tuple_insert_speculative(rel, slot, cid, options,
 											  bistate, specToken);
@@ -930,8 +1050,8 @@ table_insert_speculative(Relation rel, TupleTableSlot *slot, CommandId cid,
  * succeeded is true, the tuple is fully inserted, if false, it's removed.
  */
 static inline void
-table_complete_speculative(Relation rel, TupleTableSlot *slot, uint32 specToken,
-						   bool succeeded)
+table_complete_speculative(Relation rel, TupleTableSlot *slot,
+						   uint32 specToken, bool succeeded)
 {
 	rel->rd_tableam->tuple_complete_speculative(rel, slot, specToken,
 												succeeded);
@@ -1322,6 +1442,80 @@ table_relation_estimate_size(Relation rel, int32 *attr_widths,
 
 
 /* ----------------------------------------------------------------------------
+ * Executor related functionality
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Prepare to fetch / check / return tuples from `tbmres->blockno` as part of
+ * a bitmap table scan. `scan` needs to have been started via
+ * table_beginscan_bm(). Returns false if there's no tuples to be found on the
+ * page, true otherwise.
+ *
+ * Note, this is an optionally implemented function, therefore should only be
+ * used after verifying the presence (at plan time or such).
+ */
+static inline bool
+table_scan_bitmap_next_block(TableScanDesc scan,
+							 struct TBMIterateResult *tbmres)
+{
+	return scan->rs_rd->rd_tableam->scan_bitmap_next_block(scan,
+														   tbmres);
+}
+
+/*
+ * Fetch the next tuple of a bitmap table scan into `slot` and return true if
+ * a visible tuple was found, false otherwise.
+ * table_scan_bitmap_next_block() needs to previously have selected a
+ * block (i.e. returned true), and no previous
+ * table_scan_bitmap_next_tuple() for the same block may have
+ * returned false.
+ */
+static inline bool
+table_scan_bitmap_next_tuple(TableScanDesc scan,
+							 struct TBMIterateResult *tbmres,
+							 TupleTableSlot *slot)
+{
+	return scan->rs_rd->rd_tableam->scan_bitmap_next_tuple(scan,
+														   tbmres,
+														   slot);
+}
+
+/*
+ * Prepare to fetch tuples from the next block in a sample scan. Returns false
+ * if the sample scan is finished, true otherwise. `scan` needs to have been
+ * started via table_beginscan_sampling().
+ *
+ * This will call the TsmRoutine's NextSampleBlock() callback if necessary
+ * (i.e. NextSampleBlock is not NULL), or perform a sequential scan over the
+ * underlying relation.
+ */
+static inline bool
+table_scan_sample_next_block(TableScanDesc scan,
+							 struct SampleScanState *scanstate)
+{
+	return scan->rs_rd->rd_tableam->scan_sample_next_block(scan, scanstate);
+}
+
+/*
+ * Fetch the next sample tuple into `slot` and return true if a visible tuple
+ * was found, false otherwise. table_scan_sample_next_block() needs to
+ * previously have selected a block (i.e. returned true), and no previous
+ * table_scan_sample_next_tuple() for the same block may have returned false.
+ *
+ * This will call the TsmRoutine's NextSampleTuple() callback.
+ */
+static inline bool
+table_scan_sample_next_tuple(TableScanDesc scan,
+							 struct SampleScanState *scanstate,
+							 TupleTableSlot *slot)
+{
+	return scan->rs_rd->rd_tableam->scan_sample_next_tuple(scan, scanstate,
+														   slot);
+}
+
+
+/* ----------------------------------------------------------------------------
  * Functions to make modifications a bit simpler.
  * ----------------------------------------------------------------------------
  */
@@ -1342,9 +1536,12 @@ extern void simple_table_update(Relation rel, ItemPointer otid,
 extern Size table_block_parallelscan_estimate(Relation rel);
 extern Size table_block_parallelscan_initialize(Relation rel,
 									ParallelTableScanDesc pscan);
-extern void table_block_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan);
-extern BlockNumber table_block_parallelscan_nextpage(Relation rel, ParallelBlockTableScanDesc pbscan);
-extern void table_block_parallelscan_startblock_init(Relation rel, ParallelBlockTableScanDesc pbscan);
+extern void table_block_parallelscan_reinitialize(Relation rel,
+									  ParallelTableScanDesc pscan);
+extern BlockNumber table_block_parallelscan_nextpage(Relation rel,
+								  ParallelBlockTableScanDesc pbscan);
+extern void table_block_parallelscan_startblock_init(Relation rel,
+										 ParallelBlockTableScanDesc pbscan);
 
 
 /* ----------------------------------------------------------------------------
