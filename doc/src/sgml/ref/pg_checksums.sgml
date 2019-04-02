@@ -136,6 +136,17 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
+      <term><option>-P</option></term>
+      <term><option>--progress</option></term>
+      <listitem>
+       <para>
+        Enable progress reporting. Turning this on will deliver a progress
+        report while checking or enabling checksums.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
        <term><option>-V</option></term>
        <term><option>--version</option></term>
        <listitem>
@@ -170,6 +181,17 @@ PostgreSQL documentation
      <para>
       Specifies the directory where the database cluster is
       stored; can be overridden using the <option>-D</option> option.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><envar>PG_COLOR</envar></term>
+    <listitem>
+     <para>
+      Specifies whether to use color in diagnostics messages.  Possible values
+      are <literal>always</literal>, <literal>auto</literal>,
+      <literal>never</literal>.
      </para>
     </listitem>
    </varlistentry>

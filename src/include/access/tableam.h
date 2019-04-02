@@ -380,6 +380,21 @@ typedef struct TableAmRoutine
 							   uint8 flags,
 							   TM_FailureData *tmfd);
 
+	/*
+	 * Perform operations necessary to complete insertions made via
+	 * tuple_insert and multi_insert with a BulkInsertState specified. This
+	 * e.g. may e.g. used to flush the relation when inserting with
+	 * TABLE_INSERT_SKIP_WAL specified.
+	 *
+	 * Typically callers of tuple_insert and multi_insert will just pass all
+	 * the flags the apply to them, and each AM has to decide which of them
+	 * make sense for it, and then only take actions in finish_bulk_insert
+	 * that make sense for a specific AM.
+	 *
+	 * Optional callback.
+	 */
+	void		(*finish_bulk_insert) (Relation rel, int options);
+
 
 	/* ------------------------------------------------------------------------
 	 * DDL related functionality.
@@ -492,6 +507,7 @@ typedef struct TableAmRoutine
 										   struct IndexInfo *index_nfo,
 										   bool allow_sync,
 										   bool anyvisible,
+										   bool progress,
 										   BlockNumber start_blockno,
 										   BlockNumber end_blockno,
 										   IndexBuildCallback callback,
@@ -1011,7 +1027,8 @@ table_compute_xid_horizon_for_tuples(Relation rel,
  *
  *
  * The BulkInsertState object (if any; bistate can be NULL for default
- * behavior) is also just passed through to RelationGetBufferForTuple.
+ * behavior) is also just passed through to RelationGetBufferForTuple. If
+ * `bistate` is provided, table_finish_bulk_insert() needs to be called.
  *
  * On return the slot's tts_tid and tts_tableOid are updated to reflect the
  * insertion. But note that any toasting of fields within the slot is NOT
@@ -1185,6 +1202,20 @@ table_lock_tuple(Relation rel, ItemPointer tid, Snapshot snapshot,
 									   flags, tmfd);
 }
 
+/*
+ * Perform operations necessary to complete insertions made via
+ * tuple_insert and multi_insert with a BulkInsertState specified. This
+ * e.g. may e.g. used to flush the relation when inserting with
+ * TABLE_INSERT_SKIP_WAL specified.
+ */
+static inline void
+table_finish_bulk_insert(Relation rel, int options)
+{
+	/* optional callback */
+	if (rel->rd_tableam && rel->rd_tableam->finish_bulk_insert)
+		rel->rd_tableam->finish_bulk_insert(rel, options);
+}
+
 
 /* ------------------------------------------------------------------------
  * DDL related functionality.
@@ -1339,6 +1370,8 @@ table_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin,
  * so here because the AM might reject some of the tuples for its own reasons,
  * such as being unable to store NULLs.
  *
+ * If 'progress', the PROGRESS_SCAN_BLOCKS_TOTAL counter is updated when
+ * starting the scan, and PROGRESS_SCAN_BLOCKS_DONE is updated as we go along.
  *
  * A side effect is to set indexInfo->ii_BrokenHotChain to true if we detect
  * any potentially broken HOT chains.  Currently, we set this if there are any
@@ -1352,6 +1385,7 @@ table_index_build_scan(Relation heap_rel,
 					   Relation index_rel,
 					   struct IndexInfo *index_nfo,
 					   bool allow_sync,
+					   bool progress,
 					   IndexBuildCallback callback,
 					   void *callback_state,
 					   TableScanDesc scan)
@@ -1361,6 +1395,7 @@ table_index_build_scan(Relation heap_rel,
 														index_nfo,
 														allow_sync,
 														false,
+														progress,
 														0,
 														InvalidBlockNumber,
 														callback,
@@ -1384,6 +1419,7 @@ table_index_build_range_scan(Relation heap_rel,
 							 struct IndexInfo *index_nfo,
 							 bool allow_sync,
 							 bool anyvisible,
+							 bool progress,
 							 BlockNumber start_blockno,
 							 BlockNumber numblocks,
 							 IndexBuildCallback callback,
@@ -1395,6 +1431,7 @@ table_index_build_range_scan(Relation heap_rel,
 														index_nfo,
 														allow_sync,
 														anyvisible,
+														progress,
 														start_blockno,
 														numblocks,
 														callback,
