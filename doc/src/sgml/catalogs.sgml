@@ -38,6 +38,12 @@
    these are noted in the descriptions of the individual catalogs.
   </para>
 
+  <para>
+   All the system catalogs are created with <literal>heap</literal>
+   table access method. Currently there is no provison to specify
+   different access method for catalog tables.
+  </para>
+
   <table id="catalog-table">
    <title>System Catalogs</title>
 
