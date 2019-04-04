@@ -56,15 +56,28 @@ sub CreateSolution
 		return new VS2015Solution(@_);
 	}
 
-	# visual 2017 hasn't changed the nmake version to 15, so adjust the check to support it.
-	elsif (($visualStudioVersion ge '14.10')
+	# visual studio 2017 nmake version is greather than 14.10 and less than 14.20.
+	# but the version number is 15.00
+	# so adjust the check to support it.
+	elsif ((($visualStudioVersion ge '14.10')
+		and ($visualStudioVersion lt '14.20'))
 		or ($visualStudioVersion eq '15.00'))
 	{
 		return new VS2017Solution(@_);
 	}
+
+	# visual studio 2019 nmake version is greather than 14.20 and less than 14.30 (expected).
+	# but the version number is 16.00
+	# so adjust the check to support it.
+	elsif ((($visualStudioVersion ge '14.20')
+		and ($visualStudioVersion lt '14.30'))
+		or ($visualStudioVersion eq '16.00'))
+	{
+		return new VS2019Solution(@_);
+	}
 	else
 	{
-		croak $visualStudioVersion;
+		carp $visualStudioVersion;
 		croak "The requested Visual Studio version is not supported.";
 	}
 }
@@ -103,15 +116,28 @@ sub CreateProject
 		return new VC2015Project(@_);
 	}
 
-	# visual 2017 hasn't changed the nmake version to 15, so adjust the check to support it.
-	elsif (($visualStudioVersion ge '14.10')
+	# visual studio 2017 nmake version is greather than 14.10 and less than 14.20.
+	# but the version number is 15.00
+	# so adjust the check to support it.
+	elsif ((($visualStudioVersion ge '14.10')
+		and ($visualStudioVersion lt '14.20'))
 		or ($visualStudioVersion eq '15.00'))
 	{
 		return new VC2017Project(@_);
 	}
+
+	# visual studio 2019 nmake version is greather than 14.20 and less than 14.30 (expected).
+	# but the version number is 16.00
+	# so adjust the check to support it.
+	elsif ((($visualStudioVersion ge '14.20')
+		and ($visualStudioVersion lt '14.30'))
+		or ($visualStudioVersion eq '16.00'))
+	{
+		return new VC2019Project(@_);
+	}
 	else
 	{
-		croak $visualStudioVersion;
+		carp $visualStudioVersion;
 		croak "The requested Visual Studio version is not supported.";
 	}
 }
@@ -139,12 +165,12 @@ sub _GetVisualStudioVersion
 {
 	my ($major, $minor) = @_;
 
-	# visual 2017 hasn't changed the nmake version to 15, so still using the older version for comparison.
+	# The major visual stuido that is suppored has nmake version >= 14.20 and < 15.
 	if ($major > 14)
 	{
 		carp
 		  "The determined version of Visual Studio is newer than the latest supported version. Returning the latest supported version instead.";
-		return '14.00';
+		return '14.20';
 	}
 	elsif ($major < 6)
 	{
