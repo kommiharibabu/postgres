@@ -270,6 +270,10 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		"TCP-Keepalives-Count", "", 10, /* strlen(INT32_MAX) == 10 */
 	offsetof(struct pg_conn, keepalives_count)},
 
+	{"tcp_user_timeout", NULL, NULL, NULL,
+		"TCP-User-Timeout", "", 10, /* strlen(INT32_MAX) == 10 */
+	offsetof(struct pg_conn, pgtcp_user_timeout)},
+
 	/*
 	 * ssl options are allowed even without client SSL support because the
 	 * client can still handle SSL modes "disable" and "allow". Other
@@ -308,7 +312,7 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 	 * Expose gssencmode similarly to sslmode - we can still handle "disable"
 	 * and "prefer".
 	 */
-	{"gssencmode", "PGGSSMODE", DefaultGSSMode, NULL,
+	{"gssencmode", "PGGSSENCMODE", DefaultGSSMode, NULL,
 		"GSS-Mode", "", 7,		/* sizeof("disable") == 7 */
 	offsetof(struct pg_conn, gssencmode)},
 
@@ -1833,6 +1837,41 @@ setKeepalivesWin32(PGconn *conn)
 #endif							/* SIO_KEEPALIVE_VALS */
 #endif							/* WIN32 */
 
+/*
+ * Set the TCP user timeout.
+ */
+static int
+setTCPUserTimeout(PGconn *conn)
+{
+	int			timeout;
+
+	if (conn->pgtcp_user_timeout == NULL)
+		return 1;
+
+	if (!parse_int_param(conn->pgtcp_user_timeout, &timeout, conn,
+						 "tcp_user_timeout"))
+		return 0;
+
+	if (timeout < 0)
+		timeout = 0;
+
+#ifdef TCP_USER_TIMEOUT
+	if (setsockopt(conn->sock, IPPROTO_TCP, TCP_USER_TIMEOUT,
+				   (char *) &timeout, sizeof(timeout)) < 0)
+	{
+		char		sebuf[256];
+
+		appendPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("setsockopt(%s) failed: %s\n"),
+						  "TCP_USER_TIMEOUT",
+						  SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
+		return 0;
+	}
+#endif
+
+	return 1;
+}
+
 /* ----------
  * connectDBStart -
  *		Begin the process of making a connection to the backend.
@@ -1875,7 +1914,7 @@ connectDBStart(PGconn *conn)
 	resetPQExpBuffer(&conn->errorMessage);
 
 #ifdef ENABLE_GSS
-	if (conn->gssencmode[0] == 'd')	/* "disable" */
+	if (conn->gssencmode[0] == 'd') /* "disable" */
 		conn->try_gss = false;
 #endif
 
@@ -2480,6 +2519,8 @@ keep_going:						/* We will come back to here until there is
 							err = 1;
 #endif							/* SIO_KEEPALIVE_VALS */
 #endif							/* WIN32 */
+						else if (!setTCPUserTimeout(conn))
+							err = 1;
 
 						if (err)
 						{
@@ -3863,6 +3904,8 @@ freePGconn(PGconn *conn)
 		free(conn->pgtty);
 	if (conn->connect_timeout)
 		free(conn->connect_timeout);
+	if (conn->pgtcp_user_timeout)
+		free(conn->pgtcp_user_timeout);
 	if (conn->pgoptions)
 		free(conn->pgoptions);
 	if (conn->appname)

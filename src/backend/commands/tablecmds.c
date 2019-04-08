@@ -832,22 +832,9 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 			 relkind == RELKIND_MATVIEW)
 		accessMethod = default_table_access_method;
 
-	/*
-	 * look up the access method, verify it can handle the requested features
-	 */
+	/* look up the access method, verify it is for a table */
 	if (accessMethod != NULL)
-	{
-		HeapTuple	tuple;
-
-		tuple = SearchSysCache1(AMNAME, PointerGetDatum(accessMethod));
-		if (!HeapTupleIsValid(tuple))
-				ereport(ERROR,
-						(errcode(ERRCODE_UNDEFINED_OBJECT),
-						 errmsg("table access method \"%s\" does not exist",
-								 accessMethod)));
-		accessMethodId = ((Form_pg_am) GETSTRUCT(tuple))->oid;
-		ReleaseSysCache(tuple);
-	}
+		accessMethodId = get_table_am_oid(accessMethod, false);
 
 	/*
 	 * Create the relation.  Inherited defaults and constraints are passed in
@@ -4472,13 +4459,8 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode)
 	{
 		AlteredTableInfo *tab = (AlteredTableInfo *) lfirst(ltab);
 
-		/*
-		 * Foreign tables have no storage, nor do partitioned tables and
-		 * indexes.
-		 */
-		if (tab->relkind == RELKIND_FOREIGN_TABLE ||
-			tab->relkind == RELKIND_PARTITIONED_TABLE ||
-			tab->relkind == RELKIND_PARTITIONED_INDEX)
+		/* Relations without storage may be ignored here */
+		if (!RELKIND_HAS_STORAGE(tab->relkind))
 			continue;
 
 		/*
@@ -4657,6 +4639,10 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode)
 		AlteredTableInfo *tab = (AlteredTableInfo *) lfirst(ltab);
 		Relation	rel = NULL;
 		ListCell   *lcon;
+
+		/* Relations without storage may be ignored here too */
+		if (!RELKIND_HAS_STORAGE(tab->relkind))
+			continue;
 
 		foreach(lcon, tab->constraints)
 		{
@@ -9660,7 +9646,7 @@ validateForeignKeyConstraint(char *conname,
 		trigdata.type = T_TriggerData;
 		trigdata.tg_event = TRIGGER_EVENT_INSERT | TRIGGER_EVENT_ROW;
 		trigdata.tg_relation = rel;
-		trigdata.tg_trigtuple = ExecFetchSlotHeapTuple(slot, true, NULL);
+		trigdata.tg_trigtuple = ExecFetchSlotHeapTuple(slot, false, NULL);
 		trigdata.tg_trigslot = slot;
 		trigdata.tg_newtuple = NULL;
 		trigdata.tg_trigger = &trig;
