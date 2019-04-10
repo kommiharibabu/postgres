@@ -1649,7 +1649,8 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
       <listitem>
        <para>
         The supported options for this parameter are, <literal>any</literal>,
-        <literal>read-write</literal>, <literal>prefer-read</literal> and <literal>read-only</literal>.
+        <literal>read-write</literal>, <literal>prefer-read</literal>, <literal>read-only</literal>,
+        <literal>primary</literal>, <literal>prefer-standby</literal> and <literal>standby</literal>.
         The default value of this parameter, <literal>any</literal>, regards
         all connections as acceptable. If multiple hosts were specified in the
         connection string, based on the specified value, any remaining servers
@@ -1682,6 +1683,29 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
         If this parameter is set to <literal>read-only</literal>, only a connection
         in which read-only transactions are accepted by default.
        </para>
+
+       <para>
+        If this parameter is set to <literal>primary</literal>, only a connection in which
+        where the server is not in recovery mode.
+       </para>
+
+       <para>
+        If this parameter is set to <literal>prefer-standby</literal>, only a connection in which
+        where the server is in recovery mode is preferred. If no such connections can be found,
+        then a connection in which server is not in recovery mode will be considered.
+       </para>
+
+       <para>
+        If this parameter is set to <literal>standby</literal>, only a connection in which
+        where the server is in recovery mode.
+       </para>
+
+       <para>
+        To find out whether the server is in recovery mode or not, query <literal>SELECT pg_is_in_recovery()</literal>
+        will be sent upon any successful connection; if it returns <literal>t</literal>, means server
+        is in recovery mode.
+       </para>
+
       </listitem>
      </varlistentry>
     </variablelist>
