@@ -366,7 +366,7 @@ struct pg_conn
 
 	/*
 	 * Type of connection to make.  Possible values: any, read-write,
-	 * prefer-read and read-only.
+	 * prefer-read, read-only, primary, prefer-standby and standby.
 	 */
 	char	   *target_session_attrs;
 	TargetSessionAttrsType requested_session_type;
@@ -410,7 +410,7 @@ struct pg_conn
 	 * Initial value is -1, then the index of the first read-write host, -2
 	 * during the second attempt of connection to avoid recursion.
 	 */
-	int			read_write_host_index;
+	int			read_write_or_primary_host_index;
 
 	/* Connection data */
 	pgsocket	sock;			/* FD for socket, PGINVALID_SOCKET if
