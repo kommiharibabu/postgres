@@ -1,0 +1,5 @@
+# global_temp extension
+comment = 'global temporary table support'
+default_version = '1.0'
+module_pathname = '$libdir/global_temp'
+relocatable = true
