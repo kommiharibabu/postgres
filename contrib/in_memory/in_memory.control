@@ -1,0 +1,5 @@
+# in_memory extension
+comment = 'in memory table support'
+default_version = '1.0'
+module_pathname = '$libdir/in_memory'
+relocatable = true
