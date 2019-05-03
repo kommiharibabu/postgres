@@ -2024,7 +2024,7 @@ dumpTableData_insert(Archive *fout, void *dcontext)
 				archputs(insertStmt->data, fout);
 
 			/*
-			 * If it is zero-column table then we've aleady written the
+			 * If it is zero-column table then we've already written the
 			 * complete statement, which will mean we've disobeyed
 			 * --rows-per-insert when it's set greater than 1.  We do support
 			 * a way to make this multi-row with: SELECT UNION ALL SELECT
@@ -2244,8 +2244,6 @@ dumpTableData(Archive *fout, TableDataInfo *tdinfo)
 									   .owner = tbinfo->rolname,
 									   .description = "TABLE DATA",
 									   .section = SECTION_DATA,
-									   .createStmt = "",
-									   .dropStmt = "",
 									   .copyStmt = copyStmt,
 									   .deps = &(tbinfo->dobj.dumpId),
 									   .nDeps = 1,
@@ -2300,7 +2298,6 @@ refreshMatViewData(Archive *fout, TableDataInfo *tdinfo)
 								  .description = "MATERIALIZED VIEW DATA",
 								  .section = SECTION_POST_DATA,
 								  .createStmt = q->data,
-								  .dropStmt = "",
 								  .deps = tdinfo->dobj.dependencies,
 								  .nDeps = tdinfo->dobj.nDeps));
 
@@ -2865,7 +2862,6 @@ dumpDatabase(Archive *fout)
 									  .description = "COMMENT",
 									  .section = SECTION_NONE,
 									  .createStmt = dbQry->data,
-									  .dropStmt = "",
 									  .deps = &dbDumpId,
 									  .nDeps = 1));
 		}
@@ -2895,7 +2891,6 @@ dumpDatabase(Archive *fout)
 									  .description = "SECURITY LABEL",
 									  .section = SECTION_NONE,
 									  .createStmt = seclabelQry->data,
-									  .dropStmt = "",
 									  .deps = &dbDumpId,
 									  .nDeps = 1));
 		destroyPQExpBuffer(seclabelQry);
@@ -3012,10 +3007,8 @@ dumpDatabase(Archive *fout)
 		ArchiveEntry(fout, nilCatalogId, createDumpId(),
 					 ARCHIVE_OPTS(.tag = "pg_largeobject",
 								  .description = "pg_largeobject",
-								  .owner = "",
 								  .section = SECTION_PRE_DATA,
-								  .createStmt = loOutQry->data,
-								  .dropStmt = ""));
+								  .createStmt = loOutQry->data));
 
 		PQclear(lo_res);
 
@@ -3122,10 +3115,8 @@ dumpEncoding(Archive *AH)
 	ArchiveEntry(AH, nilCatalogId, createDumpId(),
 				 ARCHIVE_OPTS(.tag = "ENCODING",
 							  .description = "ENCODING",
-							  .owner = "",
 							  .section = SECTION_PRE_DATA,
-							  .createStmt = qry->data,
-							  .dropStmt = ""));
+							  .createStmt = qry->data));
 
 	destroyPQExpBuffer(qry);
 }
@@ -3149,10 +3140,8 @@ dumpStdStrings(Archive *AH)
 	ArchiveEntry(AH, nilCatalogId, createDumpId(),
 				 ARCHIVE_OPTS(.tag = "STDSTRINGS",
 							  .description = "STDSTRINGS",
-							  .owner = "",
 							  .section = SECTION_PRE_DATA,
-							  .createStmt = qry->data,
-							  .dropStmt = ""));
+							  .createStmt = qry->data));
 
 	destroyPQExpBuffer(qry);
 }
@@ -3205,10 +3194,8 @@ dumpSearchPath(Archive *AH)
 	ArchiveEntry(AH, nilCatalogId, createDumpId(),
 				 ARCHIVE_OPTS(.tag = "SEARCHPATH",
 							  .description = "SEARCHPATH",
-							  .owner = "",
 							  .section = SECTION_PRE_DATA,
-							  .createStmt = qry->data,
-							  .dropStmt = ""));
+							  .createStmt = qry->data));
 
 	/* Also save it in AH->searchpath, in case we're doing plain text dump */
 	AH->searchpath = pg_strdup(qry->data);
@@ -3684,7 +3671,6 @@ dumpPolicy(Archive *fout, PolicyInfo *polinfo)
 									  .description = "ROW SECURITY",
 									  .section = SECTION_POST_DATA,
 									  .createStmt = query->data,
-									  .dropStmt = "",
 									  .deps = &(tbinfo->dobj.dumpId),
 									  .nDeps = 1));
 
@@ -4051,10 +4037,8 @@ dumpPublicationTable(Archive *fout, PublicationRelInfo *pubrinfo)
 				 ARCHIVE_OPTS(.tag = tag,
 							  .namespace = tbinfo->dobj.namespace->dobj.name,
 							  .description = "PUBLICATION TABLE",
-							  .owner = "",
 							  .section = SECTION_POST_DATA,
-							  .createStmt = query->data,
-							  .dropStmt = ""));
+							  .createStmt = query->data));
 
 	free(tag);
 	destroyPQExpBuffer(query);
@@ -8618,9 +8602,12 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
  * Normally this is always true, but it's false for dropped columns, as well
  * as those that were inherited without any local definition.  (If we print
  * such a column it will mistakenly get pg_attribute.attislocal set to true.)
- * However, in binary_upgrade mode, we must print all such columns anyway and
- * fix the attislocal/attisdropped state later, so as to keep control of the
- * physical column order.
+ * For partitions, it's always true, because we want the partitions to be
+ * created independently and ATTACH PARTITION used afterwards.
+ *
+ * In binary_upgrade mode, we must print all columns and fix the attislocal/
+ * attisdropped state later, so as to keep control of the physical column
+ * order.
  *
  * This function exists because there are scattered nonobvious places that
  * must be kept in sync with this decision.
@@ -8630,7 +8617,9 @@ shouldPrintColumn(DumpOptions *dopt, TableInfo *tbinfo, int colno)
 {
 	if (dopt->binary_upgrade)
 		return true;
-	return (tbinfo->attislocal[colno] && !tbinfo->attisdropped[colno]);
+	if (tbinfo->attisdropped[colno])
+		return false;
+	return (tbinfo->attislocal[colno] || tbinfo->ispartition);
 }
 
 
@@ -9497,7 +9486,6 @@ dumpComment(Archive *fout, const char *type, const char *name,
 								  .description = "COMMENT",
 								  .section = SECTION_NONE,
 								  .createStmt = query->data,
-								  .dropStmt = "",
 								  .deps = &dumpId,
 								  .nDeps = 1));
 
@@ -9567,7 +9555,6 @@ dumpTableComment(Archive *fout, TableInfo *tbinfo,
 									  .description = "COMMENT",
 									  .section = SECTION_NONE,
 									  .createStmt = query->data,
-									  .dropStmt = "",
 									  .deps = &(tbinfo->dobj.dumpId),
 									  .nDeps = 1));
 		}
@@ -9593,7 +9580,6 @@ dumpTableComment(Archive *fout, TableInfo *tbinfo,
 									  .description = "COMMENT",
 									  .section = SECTION_NONE,
 									  .createStmt = query->data,
-									  .dropStmt = "",
 									  .deps = &(tbinfo->dobj.dumpId),
 									  .nDeps = 1));
 		}
@@ -9874,11 +9860,8 @@ dumpDumpableObject(Archive *fout, DumpableObject *dobj)
 				te = ArchiveEntry(fout, dobj->catId, dobj->dumpId,
 								  ARCHIVE_OPTS(.tag = dobj->name,
 											   .description = "BLOBS",
-											   .owner = "",
 											   .section = SECTION_DATA,
-											   .dumpFn = dumpBlobs,
-											   .createStmt = "",
-											   .dropStmt = ""));
+											   .dumpFn = dumpBlobs));
 
 				/*
 				 * Set the TocEntry's dataLength in case we are doing a
@@ -10083,7 +10066,6 @@ dumpExtension(Archive *fout, ExtensionInfo *extinfo)
 		ArchiveEntry(fout, extinfo->dobj.catId, extinfo->dobj.dumpId,
 					 ARCHIVE_OPTS(.tag = extinfo->dobj.name,
 								  .description = "EXTENSION",
-								  .owner = "",
 								  .section = SECTION_PRE_DATA,
 								  .createStmt = q->data,
 								  .dropStmt = delq->data));
@@ -11227,7 +11209,6 @@ dumpCompositeTypeColComments(Archive *fout, TypeInfo *tyinfo)
 									  .description = "COMMENT",
 									  .section = SECTION_NONE,
 									  .createStmt = query->data,
-									  .dropStmt = "",
 									  .deps = &(tyinfo->dobj.dumpId),
 									  .nDeps = 1));
 		}
@@ -11283,8 +11264,7 @@ dumpShellType(Archive *fout, ShellTypeInfo *stinfo)
 								  .owner = stinfo->baseType->rolname,
 								  .description = "SHELL TYPE",
 								  .section = SECTION_PRE_DATA,
-								  .createStmt = q->data,
-								  .dropStmt = ""));
+								  .createStmt = q->data));
 
 	destroyPQExpBuffer(q);
 }
@@ -12229,7 +12209,6 @@ dumpCast(Archive *fout, CastInfo *cast)
 		ArchiveEntry(fout, cast->dobj.catId, cast->dobj.dumpId,
 					 ARCHIVE_OPTS(.tag = labelq->data,
 								  .description = "CAST",
-								  .owner = "",
 								  .section = SECTION_PRE_DATA,
 								  .createStmt = defqry->data,
 								  .dropStmt = delqry->data));
@@ -12357,7 +12336,6 @@ dumpTransform(Archive *fout, TransformInfo *transform)
 		ArchiveEntry(fout, transform->dobj.catId, transform->dobj.dumpId,
 					 ARCHIVE_OPTS(.tag = labelq->data,
 								  .description = "TRANSFORM",
-								  .owner = "",
 								  .section = SECTION_PRE_DATA,
 								  .createStmt = defqry->data,
 								  .dropStmt = delqry->data,
@@ -12744,7 +12722,6 @@ dumpAccessMethod(Archive *fout, AccessMethodInfo *aminfo)
 		ArchiveEntry(fout, aminfo->dobj.catId, aminfo->dobj.dumpId,
 					 ARCHIVE_OPTS(.tag = aminfo->dobj.name,
 								  .description = "ACCESS METHOD",
-								  .owner = "",
 								  .section = SECTION_PRE_DATA,
 								  .createStmt = q->data,
 								  .dropStmt = delq->data));
@@ -14206,7 +14183,6 @@ dumpTSParser(Archive *fout, TSParserInfo *prsinfo)
 					 ARCHIVE_OPTS(.tag = prsinfo->dobj.name,
 								  .namespace = prsinfo->dobj.namespace->dobj.name,
 								  .description = "TEXT SEARCH PARSER",
-								  .owner = "",
 								  .section = SECTION_PRE_DATA,
 								  .createStmt = q->data,
 								  .dropStmt = delq->data));
@@ -14345,7 +14321,6 @@ dumpTSTemplate(Archive *fout, TSTemplateInfo *tmplinfo)
 					 ARCHIVE_OPTS(.tag = tmplinfo->dobj.name,
 								  .namespace = tmplinfo->dobj.namespace->dobj.name,
 								  .description = "TEXT SEARCH TEMPLATE",
-								  .owner = "",
 								  .section = SECTION_PRE_DATA,
 								  .createStmt = q->data,
 								  .dropStmt = delq->data));
@@ -14814,8 +14789,7 @@ dumpDefaultACL(Archive *fout, DefaultACLInfo *daclinfo)
 								  .owner = daclinfo->defaclrole,
 								  .description = "DEFAULT ACL",
 								  .section = SECTION_POST_DATA,
-								  .createStmt = q->data,
-								  .dropStmt = ""));
+								  .createStmt = q->data));
 
 	destroyPQExpBuffer(tag);
 	destroyPQExpBuffer(q);
@@ -14911,7 +14885,6 @@ dumpACL(Archive *fout, CatalogId objCatId, DumpId objDumpId,
 								  .description = "ACL",
 								  .section = SECTION_NONE,
 								  .createStmt = sql->data,
-								  .dropStmt = "",
 								  .deps = &objDumpId,
 								  .nDeps = 1));
 		destroyPQExpBuffer(tag);
@@ -15001,7 +14974,6 @@ dumpSecLabel(Archive *fout, const char *type, const char *name,
 								  .description = "SECURITY LABEL",
 								  .section = SECTION_NONE,
 								  .createStmt = query->data,
-								  .dropStmt = "",
 								  .deps = &dumpId,
 								  .nDeps = 1));
 		destroyPQExpBuffer(tag);
@@ -15085,7 +15057,6 @@ dumpTableSecLabel(Archive *fout, TableInfo *tbinfo, const char *reltypename)
 								  .description = "SECURITY LABEL",
 								  .section = SECTION_NONE,
 								  .createStmt = query->data,
-								  .dropStmt = "",
 								  .deps = &(tbinfo->dobj.dumpId),
 								  .nDeps = 1));
 	}
@@ -15599,27 +15570,6 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 		if (tbinfo->reloftype && !dopt->binary_upgrade)
 			appendPQExpBuffer(q, " OF %s", tbinfo->reloftype);
 
-		/*
-		 * If the table is a partition, dump it as such; except in the case of
-		 * a binary upgrade, we dump the table normally and attach it to the
-		 * parent afterward.
-		 */
-		if (tbinfo->ispartition && !dopt->binary_upgrade)
-		{
-			TableInfo  *parentRel = tbinfo->parents[0];
-
-			/*
-			 * With partitions, unlike inheritance, there can only be one
-			 * parent.
-			 */
-			if (tbinfo->numParents != 1)
-				fatal("invalid number of parents %d for table \"%s\"",
-							  tbinfo->numParents, tbinfo->dobj.name);
-
-			appendPQExpBuffer(q, " PARTITION OF %s",
-							  fmtQualifiedDumpable(parentRel));
-		}
-
 		if (tbinfo->relkind != RELKIND_MATVIEW)
 		{
 			/* Dump the attributes */
@@ -15648,12 +15598,9 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 											   (!tbinfo->inhNotNull[j] ||
 												dopt->binary_upgrade));
 
-					/*
-					 * Skip column if fully defined by reloftype or the
-					 * partition parent.
-					 */
-					if ((tbinfo->reloftype || tbinfo->ispartition) &&
-						!has_default && !has_notnull && !dopt->binary_upgrade)
+					/* Skip column if fully defined by reloftype */
+					if (tbinfo->reloftype && !has_default && !has_notnull &&
+						!dopt->binary_upgrade)
 						continue;
 
 					/* Format properly if not first attr */
@@ -15676,20 +15623,16 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 						 * clean things up later.
 						 */
 						appendPQExpBufferStr(q, " INTEGER /* dummy */");
-						/* Skip all the rest, too */
+						/* and skip to the next column */
 						continue;
 					}
 
 					/*
-					 * Attribute type
-					 *
-					 * In binary-upgrade mode, we always include the type. If
-					 * we aren't in binary-upgrade mode, then we skip the type
-					 * when creating a typed table ('OF type_name') or a
-					 * partition ('PARTITION OF'), since the type comes from
-					 * the parent/partitioned table.
+					 * Attribute type; print it except when creating a typed
+					 * table ('OF type_name'), but in binary-upgrade mode,
+					 * print it in that case too.
 					 */
-					if (dopt->binary_upgrade || (!tbinfo->reloftype && !tbinfo->ispartition))
+					if (dopt->binary_upgrade || !tbinfo->reloftype)
 					{
 						appendPQExpBuffer(q, " %s",
 										  tbinfo->atttypnames[j]);
@@ -15746,25 +15689,20 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 
 			if (actual_atts)
 				appendPQExpBufferStr(q, "\n)");
-			else if (!((tbinfo->reloftype || tbinfo->ispartition) &&
-					   !dopt->binary_upgrade))
+			else if (!(tbinfo->reloftype && !dopt->binary_upgrade))
 			{
 				/*
-				 * We must have a parenthesized attribute list, even though
-				 * empty, when not using the OF TYPE or PARTITION OF syntax.
+				 * No attributes? we must have a parenthesized attribute list,
+				 * even though empty, when not using the OF TYPE syntax.
 				 */
 				appendPQExpBufferStr(q, " (\n)");
 			}
 
-			if (tbinfo->ispartition && !dopt->binary_upgrade)
-			{
-				appendPQExpBufferChar(q, '\n');
-				appendPQExpBufferStr(q, tbinfo->partbound);
-			}
-
-			/* Emit the INHERITS clause, except if this is a partition. */
-			if (numParents > 0 &&
-				!tbinfo->ispartition &&
+			/*
+			 * Emit the INHERITS clause (not for partitions), except in
+			 * binary-upgrade mode.
+			 */
+			if (numParents > 0 && !tbinfo->ispartition &&
 				!dopt->binary_upgrade)
 			{
 				appendPQExpBufferStr(q, "\nINHERITS (");
@@ -15937,30 +15875,16 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 				appendPQExpBufferStr(q, "::pg_catalog.regclass;\n");
 			}
 
-			if (numParents > 0)
+			if (numParents > 0 && !tbinfo->ispartition)
 			{
-				appendPQExpBufferStr(q, "\n-- For binary upgrade, set up inheritance and partitioning this way.\n");
+				appendPQExpBufferStr(q, "\n-- For binary upgrade, set up inheritance this way.\n");
 				for (k = 0; k < numParents; k++)
 				{
 					TableInfo  *parentRel = parents[k];
 
-					/* In the partitioning case, we alter the parent */
-					if (tbinfo->ispartition)
-						appendPQExpBuffer(q,
-										  "ALTER TABLE ONLY %s ATTACH PARTITION ",
-										  fmtQualifiedDumpable(parentRel));
-					else
-						appendPQExpBuffer(q, "ALTER TABLE ONLY %s INHERIT ",
-										  qualrelname);
-
-					/* Partition needs specifying the bounds */
-					if (tbinfo->ispartition)
-						appendPQExpBuffer(q, "%s %s;\n",
-										  qualrelname,
-										  tbinfo->partbound);
-					else
-						appendPQExpBuffer(q, "%s;\n",
-										  fmtQualifiedDumpable(parentRel));
+					appendPQExpBuffer(q, "ALTER TABLE ONLY %s INHERIT %s;\n",
+									  qualrelname,
+									  fmtQualifiedDumpable(parentRel));
 				}
 			}
 
@@ -15971,6 +15895,27 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 								  qualrelname,
 								  tbinfo->reloftype);
 			}
+		}
+
+		/*
+		 * For partitioned tables, emit the ATTACH PARTITION clause.  Note
+		 * that we always want to create partitions this way instead of using
+		 * CREATE TABLE .. PARTITION OF, mainly to preserve a possible column
+		 * layout discrepancy with the parent, but also to ensure it gets the
+		 * correct tablespace setting if it differs from the parent's.
+		 */
+		if (tbinfo->ispartition)
+		{
+			/* With partitions there can only be one parent */
+			if (tbinfo->numParents != 1)
+				fatal("invalid number of parents %d for table \"%s\"",
+					  tbinfo->numParents, tbinfo->dobj.name);
+
+			/* Perform ALTER TABLE on the parent */
+			appendPQExpBuffer(q,
+							  "ALTER TABLE ONLY %s ATTACH PARTITION %s %s;\n",
+							  fmtQualifiedDumpable(parents[0]),
+							  qualrelname, tbinfo->partbound);
 		}
 
 		/*
@@ -16459,10 +16404,8 @@ dumpIndexAttach(Archive *fout, IndexAttachInfo *attachinfo)
 					 ARCHIVE_OPTS(.tag = attachinfo->dobj.name,
 								  .namespace = attachinfo->dobj.namespace->dobj.name,
 								  .description = "INDEX ATTACH",
-								  .owner = "",
 								  .section = SECTION_POST_DATA,
-								  .createStmt = q->data,
-								  .dropStmt = ""));
+								  .createStmt = q->data));
 
 		destroyPQExpBuffer(q);
 	}
@@ -17092,7 +17035,6 @@ dumpSequence(Archive *fout, TableInfo *tbinfo)
 										  .description = "SEQUENCE OWNED BY",
 										  .section = SECTION_PRE_DATA,
 										  .createStmt = query->data,
-										  .dropStmt = "",
 										  .deps = &(tbinfo->dobj.dumpId),
 										  .nDeps = 1));
 		}
@@ -17161,7 +17103,6 @@ dumpSequenceData(Archive *fout, TableDataInfo *tdinfo)
 								  .description = "SEQUENCE SET",
 								  .section = SECTION_DATA,
 								  .createStmt = query->data,
-								  .dropStmt = "",
 								  .deps = &(tbinfo->dobj.dumpId),
 								  .nDeps = 1));
 

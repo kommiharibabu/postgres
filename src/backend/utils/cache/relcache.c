@@ -3421,7 +3421,8 @@ RelationBuildLocalRelation(const char *relname,
 /*
  * RelationSetNewRelfilenode
  *
- * Assign a new relfilenode (physical file name) to the relation.
+ * Assign a new relfilenode (physical file name), and possibly a new
+ * persistence setting, to the relation.
  *
  * This allows a full rewrite of the relation to be done with transactional
  * safety (since the filenode assignment can be rolled back).  Note however
@@ -3440,6 +3441,7 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
 	Form_pg_class classform;
 	MultiXactId minmulti = InvalidMultiXactId;
 	TransactionId freezeXid = InvalidTransactionId;
+	RelFileNode newrnode;
 
 	/* Allocate a new relfilenode */
 	newrelfilenode = GetNewRelFileNode(relation->rd_rel->reltablespace, NULL,
@@ -3463,80 +3465,106 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
 	RelationDropStorage(relation);
 
 	/*
-	 * Now update the pg_class row.  However, if we're dealing with a mapped
-	 * index, pg_class.relfilenode doesn't change; instead we have to send the
-	 * update to the relation mapper.
-	 */
-	if (RelationIsMapped(relation))
-		RelationMapUpdateMap(RelationGetRelid(relation),
-							 newrelfilenode,
-							 relation->rd_rel->relisshared,
-							 true);
-	else
-	{
-		relation->rd_rel->relfilenode = newrelfilenode;
-		classform->relfilenode = newrelfilenode;
-	}
-
-	RelationInitPhysicalAddr(relation);
-
-	/*
-	 * Create storage for the main fork of the new relfilenode. If it's
-	 * table-like object, call into table AM to do so, which'll also create
-	 * the table's init fork.
+	 * Create storage for the main fork of the new relfilenode.  If it's a
+	 * table-like object, call into the table AM to do so, which'll also
+	 * create the table's init fork if needed.
 	 *
-	 * NOTE: any conflict in relfilenode value will be caught here, if
-	 * GetNewRelFileNode messes up for any reason.
+	 * NOTE: If relevant for the AM, any conflict in relfilenode value will be
+	 * caught here, if GetNewRelFileNode messes up for any reason.
 	 */
+	newrnode = relation->rd_node;
+	newrnode.relNode = newrelfilenode;
 
-	/*
-	 * Create storage for relation.
-	 */
 	switch (relation->rd_rel->relkind)
 	{
-		/* shouldn't be called for these */
-		case RELKIND_VIEW:
-		case RELKIND_COMPOSITE_TYPE:
-		case RELKIND_FOREIGN_TABLE:
-		case RELKIND_PARTITIONED_TABLE:
-		case RELKIND_PARTITIONED_INDEX:
-			elog(ERROR, "should not have storage");
-			break;
-
 		case RELKIND_INDEX:
 		case RELKIND_SEQUENCE:
-			RelationCreateStorage(relation->rd_node, persistence);
-			RelationOpenSmgr(relation);
+			{
+				/* handle these directly, at least for now */
+				SMgrRelation srel;
+
+				srel = RelationCreateStorage(newrnode, persistence);
+				smgrclose(srel);
+			}
 			break;
 
 		case RELKIND_RELATION:
 		case RELKIND_TOASTVALUE:
 		case RELKIND_MATVIEW:
-			table_relation_set_new_filenode(relation, persistence,
+			table_relation_set_new_filenode(relation, &newrnode,
+											persistence,
 											&freezeXid, &minmulti);
+			break;
+
+		default:
+			/* we shouldn't be called for anything else */
+			elog(ERROR, "relation \"%s\" does not have storage",
+				 RelationGetRelationName(relation));
 			break;
 	}
 
-	/* These changes are safe even for a mapped relation */
-	if (relation->rd_rel->relkind != RELKIND_SEQUENCE)
+	/*
+	 * If we're dealing with a mapped index, pg_class.relfilenode doesn't
+	 * change; instead we have to send the update to the relation mapper.
+	 *
+	 * For mapped indexes, we don't actually change the pg_class entry at all;
+	 * this is essential when reindexing pg_class itself.  That leaves us with
+	 * possibly-inaccurate values of relpages etc, but those will be fixed up
+	 * later.
+	 */
+	if (RelationIsMapped(relation))
 	{
-		classform->relpages = 0;	/* it's empty until further notice */
-		classform->reltuples = 0;
-		classform->relallvisible = 0;
-	}
-	classform->relfrozenxid = freezeXid;
-	classform->relminmxid = minmulti;
-	classform->relpersistence = persistence;
+		/* This case is only supported for indexes */
+		Assert(relation->rd_rel->relkind == RELKIND_INDEX);
 
-	CatalogTupleUpdate(pg_class, &tuple->t_self, tuple);
+		/* Since we're not updating pg_class, these had better not change */
+		Assert(classform->relfrozenxid == freezeXid);
+		Assert(classform->relminmxid == minmulti);
+		Assert(classform->relpersistence == persistence);
+
+		/*
+		 * In some code paths it's possible that the tuple update we'd
+		 * otherwise do here is the only thing that would assign an XID for
+		 * the current transaction.  However, we must have an XID to delete
+		 * files, so make sure one is assigned.
+		 */
+		(void) GetCurrentTransactionId();
+
+		/* Do the deed */
+		RelationMapUpdateMap(RelationGetRelid(relation),
+							 newrelfilenode,
+							 relation->rd_rel->relisshared,
+							 false);
+
+		/* Since we're not updating pg_class, must trigger inval manually */
+		CacheInvalidateRelcache(relation);
+	}
+	else
+	{
+		/* Normal case, update the pg_class entry */
+		classform->relfilenode = newrelfilenode;
+
+		/* relpages etc. never change for sequences */
+		if (relation->rd_rel->relkind != RELKIND_SEQUENCE)
+		{
+			classform->relpages = 0;	/* it's empty until further notice */
+			classform->reltuples = 0;
+			classform->relallvisible = 0;
+		}
+		classform->relfrozenxid = freezeXid;
+		classform->relminmxid = minmulti;
+		classform->relpersistence = persistence;
+
+		CatalogTupleUpdate(pg_class, &tuple->t_self, tuple);
+	}
 
 	heap_freetuple(tuple);
 
 	table_close(pg_class, RowExclusiveLock);
 
 	/*
-	 * Make the pg_class row change visible, as well as the relation map
-	 * change if any.  This will cause the relcache entry to get updated, too.
+	 * Make the pg_class row change or relation map change visible.  This will
+	 * cause the relcache entry to get updated, too.
 	 */
 	CommandCounterIncrement();
 

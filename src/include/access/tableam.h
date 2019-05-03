@@ -416,7 +416,12 @@ typedef struct TableAmRoutine
 	 * This callback needs to create a new relation filenode for `rel`, with
 	 * appropriate durability behaviour for `persistence`.
 	 *
-	 * On output *freezeXid, *minmulti must be set to the values appropriate
+	 * Note that only the subset of the relcache filled by
+	 * RelationBuildLocalRelation() can be relied upon and that the relation's
+	 * catalog entries either will either not yet exist (new relation), or
+	 * will still reference the old relfilenode.
+	 *
+	 * As output *freezeXid, *minmulti must be set to the values appropriate
 	 * for pg_class.{relfrozenxid, relminmxid}. For AMs that don't need those
 	 * fields to be filled they can be set to InvalidTransactionId and
 	 * InvalidMultiXactId, respectively.
@@ -424,6 +429,7 @@ typedef struct TableAmRoutine
 	 * See also table_relation_set_new_filenode().
 	 */
 	void		(*relation_set_new_filenode) (Relation rel,
+											  const RelFileNode *newrnode,
 											  char persistence,
 											  TransactionId *freezeXid,
 											  MultiXactId *minmulti);
@@ -444,7 +450,8 @@ typedef struct TableAmRoutine
 	 * This can typically be implemented by directly copying the underlying
 	 * storage, unless it contains references to the tablespace internally.
 	 */
-	void		(*relation_copy_data) (Relation rel, RelFileNode newrnode);
+	void		(*relation_copy_data) (Relation rel,
+									   const RelFileNode *newrnode);
 
 	/* See table_relation_copy_for_cluster() */
 	void		(*relation_copy_for_cluster) (Relation NewHeap,
@@ -452,8 +459,8 @@ typedef struct TableAmRoutine
 											  Relation OldIndex,
 											  bool use_sort,
 											  TransactionId OldestXmin,
-											  TransactionId FreezeXid,
-											  MultiXactId MultiXactCutoff,
+											  TransactionId *xid_cutoff,
+											  MultiXactId *multi_cutoff,
 											  double *num_tuples,
 											  double *tups_vacuumed,
 											  double *tups_recently_dead);
@@ -1251,21 +1258,25 @@ table_finish_bulk_insert(Relation rel, int options)
  */
 
 /*
- * Create a new relation filenode for `rel`, with persistence set to
+ * Create storage for `rel` in `newrode`, with persistence set to
  * `persistence`.
  *
  * This is used both during relation creation and various DDL operations to
- * create a new relfilenode that can be filled from scratch.
+ * create a new relfilenode that can be filled from scratch.  When creating
+ * new storage for an existing relfilenode, this should be called before the
+ * relcache entry has been updated.
  *
  * *freezeXid, *minmulti are set to the xid / multixact horizon for the table
  * that pg_class.{relfrozenxid, relminmxid} have to be set to.
  */
 static inline void
-table_relation_set_new_filenode(Relation rel, char persistence,
+table_relation_set_new_filenode(Relation rel,
+								const RelFileNode *newrnode,
+								char persistence,
 								TransactionId *freezeXid,
 								MultiXactId *minmulti)
 {
-	rel->rd_tableam->relation_set_new_filenode(rel, persistence,
+	rel->rd_tableam->relation_set_new_filenode(rel, newrnode, persistence,
 											   freezeXid, minmulti);
 }
 
@@ -1288,7 +1299,7 @@ table_relation_nontransactional_truncate(Relation rel)
  * changing a relation's tablespace.
  */
 static inline void
-table_relation_copy_data(Relation rel, RelFileNode newrnode)
+table_relation_copy_data(Relation rel, const RelFileNode *newrnode)
 {
 	rel->rd_tableam->relation_copy_data(rel, newrnode);
 }
@@ -1297,32 +1308,37 @@ table_relation_copy_data(Relation rel, RelFileNode newrnode)
  * Copy data from `OldHeap` into `NewHeap`, as part of a CLUSTER or VACUUM
  * FULL.
  *
- * If `use_sort` is true, the table contents are sorted appropriate for
- * `OldIndex`; if use_sort is false and OldIndex is not InvalidOid, the data
- * is copied in that index's order; if use_sort is false and OidIndex is
- * InvalidOid, no sorting is performed.
+ * Additional Input parameters:
+ * - use_sort - if true, the table contents are sorted appropriate for
+ *   `OldIndex`; if false and OldIndex is not InvalidOid, the data is copied
+ *   in that index's order; if false and OidIndex is InvalidOid, no sorting is
+ *   performed
+ * - OidIndex - see use_sort
+ * - OldestXmin - computed by vacuum_set_xid_limits(), even when
+ *   not needed for the relation's AM
+ * - *xid_cutoff - dito
+ * - *multi_cutoff - dito
  *
- * OldestXmin, FreezeXid, MultiXactCutoff must be currently valid values for
- * the table.
- *
- * *num_tuples, *tups_vacuumed, *tups_recently_dead will contain statistics
- * computed while copying for the relation. Not all might make sense for every
- * AM.
+ * Output parameters:
+ * - *xid_cutoff - rel's new relfrozenxid value, may be invalid
+ * - *multi_cutoff - rel's new relminmxid value, may be invalid
+ * - *tups_vacuumed - stats, for logging, if appropriate for AM
+ * - *tups_recently_dead - stats, for logging, if appropriate for AM
  */
 static inline void
 table_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 								Relation OldIndex,
 								bool use_sort,
 								TransactionId OldestXmin,
-								TransactionId FreezeXid,
-								MultiXactId MultiXactCutoff,
+								TransactionId *xid_cutoff,
+								MultiXactId *multi_cutoff,
 								double *num_tuples,
 								double *tups_vacuumed,
 								double *tups_recently_dead)
 {
 	OldHeap->rd_tableam->relation_copy_for_cluster(OldHeap, NewHeap, OldIndex,
 												   use_sort, OldestXmin,
-												   FreezeXid, MultiXactCutoff,
+												   xid_cutoff, multi_cutoff,
 												   num_tuples, tups_vacuumed,
 												   tups_recently_dead);
 }

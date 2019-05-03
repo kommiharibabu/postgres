@@ -185,13 +185,14 @@ relationHasPrimaryKey(Relation rel)
  *
  * We check for a pre-existing primary key, and that all columns of the index
  * are simple column references (not expressions), and that all those
- * columns are marked NOT NULL.  If they aren't (which can only happen during
- * ALTER TABLE ADD CONSTRAINT, since the parser forces such columns to be
- * created NOT NULL during CREATE TABLE), do an ALTER SET NOT NULL to mark
- * them so --- or fail if they are not in fact nonnull.
+ * columns are marked NOT NULL.  If not, fail.
  *
- * As of PG v10, the SET NOT NULL is applied to child tables as well, so
- * that the behavior is like a manual SET NOT NULL.
+ * We used to automatically change unmarked columns to NOT NULL here by doing
+ * our own local ALTER TABLE command.  But that doesn't work well if we're
+ * executing one subcommand of an ALTER TABLE: the operations may not get
+ * performed in the right order overall.  Now we expect that the parser
+ * inserted any required ALTER TABLE SET NOT NULL operations before trying
+ * to create a primary-key index.
  *
  * Caller had better have at least ShareLock on the table, else the not-null
  * checking isn't trustworthy.
@@ -202,12 +203,11 @@ index_check_primary_key(Relation heapRel,
 						bool is_alter_table,
 						IndexStmt *stmt)
 {
-	List	   *cmds;
 	int			i;
 
 	/*
-	 * If ALTER TABLE and CREATE TABLE .. PARTITION OF, check that there isn't
-	 * already a PRIMARY KEY.  In CREATE TABLE for an ordinary relations, we
+	 * If ALTER TABLE or CREATE TABLE .. PARTITION OF, check that there isn't
+	 * already a PRIMARY KEY.  In CREATE TABLE for an ordinary relation, we
 	 * have faith that the parser rejected multiple pkey clauses; and CREATE
 	 * INDEX doesn't have a way to say PRIMARY KEY, so it's no problem either.
 	 */
@@ -222,9 +222,9 @@ index_check_primary_key(Relation heapRel,
 
 	/*
 	 * Check that all of the attributes in a primary key are marked as not
-	 * null, otherwise attempt to ALTER TABLE .. SET NOT NULL
+	 * null.  (We don't really expect to see that; it'd mean the parser messed
+	 * up.  But it seems wise to check anyway.)
 	 */
-	cmds = NIL;
 	for (i = 0; i < indexInfo->ii_NumIndexKeyAttrs; i++)
 	{
 		AttrNumber	attnum = indexInfo->ii_IndexAttrNumbers[i];
@@ -249,29 +249,12 @@ index_check_primary_key(Relation heapRel,
 		attform = (Form_pg_attribute) GETSTRUCT(atttuple);
 
 		if (!attform->attnotnull)
-		{
-			/* Add a subcommand to make this one NOT NULL */
-			AlterTableCmd *cmd = makeNode(AlterTableCmd);
-
-			cmd->subtype = AT_SetNotNull;
-			cmd->name = pstrdup(NameStr(attform->attname));
-			cmds = lappend(cmds, cmd);
-		}
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+					 errmsg("primary key column \"%s\" is not marked NOT NULL",
+							NameStr(attform->attname))));
 
 		ReleaseSysCache(atttuple);
-	}
-
-	/*
-	 * XXX: possible future improvement: when being called from ALTER TABLE,
-	 * it would be more efficient to merge this with the outer ALTER TABLE, so
-	 * as to avoid two scans.  But that seems to complicate DefineIndex's API
-	 * unduly.
-	 */
-	if (cmds)
-	{
-		EventTriggerAlterTableStart((Node *) stmt);
-		AlterTableInternal(RelationGetRelid(heapRel), cmds, true);
-		EventTriggerAlterTableEnd();
 	}
 }
 
@@ -3333,26 +3316,27 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
 	 */
 	TransferPredicateLocksToHeapRelation(iRel);
 
+	/* Fetch info needed for index_build */
+	indexInfo = BuildIndexInfo(iRel);
+
+	/* If requested, skip checking uniqueness/exclusion constraints */
+	if (skip_constraint_checks)
+	{
+		if (indexInfo->ii_Unique || indexInfo->ii_ExclusionOps != NULL)
+			skipped_constraint = true;
+		indexInfo->ii_Unique = false;
+		indexInfo->ii_ExclusionOps = NULL;
+		indexInfo->ii_ExclusionProcs = NULL;
+		indexInfo->ii_ExclusionStrats = NULL;
+	}
+
+	/* ensure SetReindexProcessing state isn't leaked */
 	PG_TRY();
 	{
 		/* Suppress use of the target index while rebuilding it */
 		SetReindexProcessing(heapId, indexId);
 
-		/* Fetch info needed for index_build */
-		indexInfo = BuildIndexInfo(iRel);
-
-		/* If requested, skip checking uniqueness/exclusion constraints */
-		if (skip_constraint_checks)
-		{
-			if (indexInfo->ii_Unique || indexInfo->ii_ExclusionOps != NULL)
-				skipped_constraint = true;
-			indexInfo->ii_Unique = false;
-			indexInfo->ii_ExclusionOps = NULL;
-			indexInfo->ii_ExclusionProcs = NULL;
-			indexInfo->ii_ExclusionStrats = NULL;
-		}
-
-		/* We'll build a new physical relation for the index */
+		/* Create a new physical relation for the index */
 		RelationSetNewRelfilenode(iRel, persistence);
 
 		/* Initialize the index and rebuild */
@@ -3502,7 +3486,6 @@ reindex_relation(Oid relid, int flags, int options)
 	Relation	rel;
 	Oid			toast_relid;
 	List	   *indexIds;
-	bool		is_pg_class;
 	bool		result;
 	int			i;
 
@@ -3538,32 +3521,8 @@ reindex_relation(Oid relid, int flags, int options)
 	 */
 	indexIds = RelationGetIndexList(rel);
 
-	/*
-	 * reindex_index will attempt to update the pg_class rows for the relation
-	 * and index.  If we are processing pg_class itself, we want to make sure
-	 * that the updates do not try to insert index entries into indexes we
-	 * have not processed yet.  (When we are trying to recover from corrupted
-	 * indexes, that could easily cause a crash.) We can accomplish this
-	 * because CatalogTupleInsert/CatalogTupleUpdate will use the relcache's
-	 * index list to know which indexes to update. We just force the index
-	 * list to be only the stuff we've processed.
-	 *
-	 * It is okay to not insert entries into the indexes we have not processed
-	 * yet because all of this is transaction-safe.  If we fail partway
-	 * through, the updated rows are dead and it doesn't matter whether they
-	 * have index entries.  Also, a new pg_class index will be created with a
-	 * correct entry for its own pg_class row because we do
-	 * RelationSetNewRelfilenode() before we do index_build().
-	 */
-	is_pg_class = (RelationGetRelid(rel) == RelationRelationId);
-
-	/* Ensure rd_indexattr is valid; see comments for RelationSetIndexList */
-	if (is_pg_class)
-		(void) RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_ALL);
-
 	PG_TRY();
 	{
-		List	   *doneIndexes;
 		ListCell   *indexId;
 		char		persistence;
 
@@ -3591,14 +3550,10 @@ reindex_relation(Oid relid, int flags, int options)
 			persistence = rel->rd_rel->relpersistence;
 
 		/* Reindex all the indexes. */
-		doneIndexes = NIL;
 		i = 1;
 		foreach(indexId, indexIds)
 		{
 			Oid			indexOid = lfirst_oid(indexId);
-
-			if (is_pg_class)
-				RelationSetIndexList(rel, doneIndexes);
 
 			reindex_index(indexOid, !(flags & REINDEX_REL_CHECK_CONSTRAINTS),
 						  persistence, options);
@@ -3607,9 +3562,6 @@ reindex_relation(Oid relid, int flags, int options)
 
 			/* Index should no longer be in the pending list */
 			Assert(!ReindexIsProcessingIndex(indexOid));
-
-			if (is_pg_class)
-				doneIndexes = lappend_oid(doneIndexes, indexOid);
 
 			/* Set index rebuild count */
 			pgstat_progress_update_param(PROGRESS_CLUSTER_INDEX_REBUILD_COUNT,
@@ -3625,9 +3577,6 @@ reindex_relation(Oid relid, int flags, int options)
 	}
 	PG_END_TRY();
 	ResetReindexPending();
-
-	if (is_pg_class)
-		RelationSetIndexList(rel, indexIds);
 
 	/*
 	 * Close rel, but continue to hold the lock.
