@@ -2,6 +2,13 @@
 
 MODULE_big = in_memory
 
+EXTRA_SRCS = heapam.c heapam_visibility.c hio.c pruneheap.c rewriteheap.c \
+	     syncscan.c tuptoaster.c vacuumlazy.c visibilitymap.c bufmgr.c buf_table.c \
+	     localbuf.c
+EXTRA_OBJS := $(patsubst %.c,%.o,$(EXTRA_SRCS)) 
+
+OBJS = in_memoryam_handler.o $(EXTRA_OBJS)
+
 EXTENSION = in_memory
 DATA = in_memory--1.0.sql
 PGFILEDESC = "in_memory - provides in_memory table support"
@@ -25,20 +32,7 @@ include $(top_builddir)/src/Makefile.global
 include $(top_srcdir)/contrib/contrib-global.mk
 endif
 
-#HEAP_OBJS = heapam.c heapam_visibility.c hio.c pruneheap.c rewriteheap.c syncscan.c tuptoaster.c vacuumlazy.c visibilitymap.c
-
-HEAP_OBJS = $(top_builddir)/src/backend/access/heap/*.c
-SRCS = in_memoryam_handler.c $(HEAP_OBJS)
 	
-#HEAP_TARGS := $(patsubst $(top_builddir)/src/backend/access/heap/%.c,$(top_builddir)/src/backend/access/heap/%.o,$(HEAP_OBJS))
-
-#HEAP_OBJS := $(top_builddir)/rc/backend/access/heap/%.o : $(top_builddir)/rc/backend/access/heap/%.c
-#BUF_OBJS := $(top_builddir)/src/backend/storage/buffer/%.o : $(top_builddir)/src/backend/storage/buffer/bufmgr.c
-
-#OBJS += $(HEAP_TARGS) $(BUF_OBJS)
-	
-OBJS = $(SRCS:.c=.o)
-
 maintainer-clean:
-	rm -f $(HEAP_OBJS)
-	rm -f $(BUF_OBJS)
+	rm -f $(EXTRA_OBJS)
+	rm -f $(EXTRA_SRCS)

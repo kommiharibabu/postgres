@@ -61,15 +61,23 @@ static BlockNumber heapam_scan_get_blocks_done(HeapScanDesc hscan);
 
 static const TableAmRoutine in_memoryam_methods;
 
+
+BufferDescPadded *BufferDescriptors;
+char	   *BufferBlocks;
+LWLockMinimallyPadded *BufferIOLWLockArray = NULL;
+WritebackContext BackendWritebackContext;
+CkptSortItem *CkptBufferIds;
+int in_memory_buffers;
+
 PG_MODULE_MAGIC;
 
 extern void		_PG_init(void);
 
 /*
- * global_temp handler function: return TableAmRoutine with access method parameters
+ * in_memory table handler function: return TableAmRoutine with access method parameters
  * and callbacks.
  */
-PG_FUNCTION_INFO_V1(global_temp_tableam_handler);
+PG_FUNCTION_INFO_V1(in_memory_tableam_handler);
 
 /*
  * _PG_init: Entry point of this module.
@@ -82,9 +90,134 @@ _PG_init(void)
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("\"%s\" must be registered in shared_preload_libraries", "global_temp")));
+				 errmsg("\"%s\" must be registered in shared_preload_libraries", "in_memory")));
 		return; /* LCOV_EXCL_LINE */
 	}
+
+	/*
+	 * Define (or redefine) custom GUC variables.
+	 */
+	DefineCustomIntVariable("in_memory.buffers",
+							"Sets the number of shared memory buffers used by in memory tables.",
+							NULL,
+							&in_memory_buffers,
+							1024,
+							16,
+							INT_MAX/2,
+							PGC_POSTMASTER,
+							GUC_UNIT_BLOCKS,
+							NULL,
+							NULL,
+							NULL);
+
+	RequestAddinShmemSpace(in_memory_shm_memsize());
+}
+
+
+/*
+ * Initialize shared buffer pool
+ *
+ * This is called once during shared-memory initialization (either in the
+ * postmaster, or in a standalone backend).
+ */
+void
+InitBufferPool(void)
+{
+	bool		foundBufs,
+				foundDescs,
+				foundIOLocks,
+				foundBufCkpt;
+
+	/* Align descriptors to a cacheline boundary. */
+	BufferDescriptors = (BufferDescPadded *)
+		ShmemInitStruct("In memory Buffer Descriptors",
+						in_memory_buffers * sizeof(BufferDescPadded),
+						&foundDescs);
+
+	BufferBlocks = (char *)
+		ShmemInitStruct("Buffer Blocks",
+						in_memory_buffers * (Size) BLCKSZ, &foundBufs);
+
+	/* Align lwlocks to cacheline boundary */
+	BufferIOLWLockArray = (LWLockMinimallyPadded *)
+		ShmemInitStruct("Buffer IO Locks",
+						in_memory_buffers * (Size) sizeof(LWLockMinimallyPadded),
+						&foundIOLocks);
+
+	/*
+	 * The array used to sort to-be-checkpointed buffer ids is located in
+	 * shared memory, to avoid having to allocate significant amounts of
+	 * memory at runtime. As that'd be in the middle of a checkpoint, or when
+	 * the checkpointer is restarted, memory allocation failures would be
+	 * painful.
+	 */
+	CkptBufferIds = (CkptSortItem *)
+		ShmemInitStruct("Checkpoint BufferIds",
+						in_memory_buffers * sizeof(CkptSortItem), &foundBufCkpt);
+
+	if (foundDescs || foundBufs || foundIOLocks || foundBufCkpt)
+	{
+		/* should find all of these, or none of them */
+		Assert(foundDescs && foundBufs && foundIOLocks && foundBufCkpt);
+		/* note: this path is only taken in EXEC_BACKEND case */
+	}
+	else
+	{
+		int			i;
+
+		/*
+		 * Initialize all the buffer headers.
+		 */
+		for (i = 0; i < in_memory_buffers; i++)
+		{
+			BufferDesc *buf = GetBufferDescriptor(i);
+
+			CLEAR_BUFFERTAG(buf->tag);
+
+			pg_atomic_init_u32(&buf->state, 0);
+			buf->wait_backend_pid = 0;
+
+			buf->buf_id = i;
+
+			/*
+			 * Initially link all the buffers together as unused. Subsequent
+			 * management of this list is done by freelist.c.
+			 */
+			buf->freeNext = i + 1;
+
+		}
+
+		/* Correct last entry of linked list */
+		GetBufferDescriptor(in_memory_buffers - 1)->freeNext = FREENEXT_END_OF_LIST;
+	}
+
+	/*
+	 * Initialize the shared buffer lookup hashtable.
+ 	 */
+	InitBufTable(in_memory_buffers);
+}
+
+
+/*
+ * BufferShmemSize
+ *
+ * compute the size of shared memory for the buffer pool including
+ * data pages, buffer descriptors, hash tables, etc.
+ */
+Static Size
+in_memory_shm_memsize(void)
+{
+	Size		size = 0;
+
+	/* size of buffer descriptors */
+	size = add_size(size, mul_size(in_memory_buffers, sizeof(BufferDescPadded)));
+	/* to allow aligning buffer descriptors */
+	size = add_size(size, PG_CACHE_LINE_SIZE);
+
+	/* size of data pages */
+	size = add_size(size, mul_size(in_memory_buffers, BLCKSZ));
+
+	return size;
 }
 
 /* ------------------------------------------------------------------------
@@ -591,10 +724,14 @@ heapam_finish_bulk_insert(Relation relation, int options)
  */
 
 static void
-heapam_relation_set_new_filenode(Relation rel, char persistence,
+heapam_relation_set_new_filenode(Relation rel,
+								 const RelFileNode *newrnode,
+								 char persistence,
 								 TransactionId *freezeXid,
 								 MultiXactId *minmulti)
 {
+	SMgrRelation srel;
+
 	/*
 	 * Initialize to the minimum XID that could put tuples in the table. We
 	 * know that no xacts older than RecentXmin are still running, so that
@@ -612,7 +749,7 @@ heapam_relation_set_new_filenode(Relation rel, char persistence,
 	 */
 	*minmulti = GetOldestMultiXactId();
 
-	RelationCreateStorage(rel->rd_node, persistence);
+	srel = RelationCreateStorage(*newrnode, persistence);
 
 	/*
 	 * If required, set up an init fork for an unlogged table so that it can
@@ -623,16 +760,17 @@ heapam_relation_set_new_filenode(Relation rel, char persistence,
 	 * while replaying, for example, XLOG_DBASE_CREATE or XLOG_TBLSPC_CREATE
 	 * record. Therefore, logging is necessary even if wal_level=minimal.
 	 */
-	if (rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED)
+	if (persistence == RELPERSISTENCE_UNLOGGED)
 	{
 		Assert(rel->rd_rel->relkind == RELKIND_RELATION ||
 			   rel->rd_rel->relkind == RELKIND_MATVIEW ||
 			   rel->rd_rel->relkind == RELKIND_TOASTVALUE);
-		RelationOpenSmgr(rel);
-		smgrcreate(rel->rd_smgr, INIT_FORKNUM, false);
-		log_smgrcreate(&rel->rd_smgr->smgr_rnode.node, INIT_FORKNUM);
-		smgrimmedsync(rel->rd_smgr, INIT_FORKNUM);
+		smgrcreate(srel, INIT_FORKNUM, false);
+		log_smgrcreate(newrnode, INIT_FORKNUM);
+		smgrimmedsync(srel, INIT_FORKNUM);
 	}
+
+	smgrclose(srel);
 }
 
 static void
@@ -642,12 +780,20 @@ heapam_relation_nontransactional_truncate(Relation rel)
 }
 
 static void
-heapam_relation_copy_data(Relation rel, RelFileNode newrnode)
+heapam_relation_copy_data(Relation rel, const RelFileNode *newrnode)
 {
 	SMgrRelation dstrel;
 
-	dstrel = smgropen(newrnode, rel->rd_backend);
+	dstrel = smgropen(*newrnode, rel->rd_backend);
 	RelationOpenSmgr(rel);
+
+	/*
+	 * Since we copy the file directly without looking at the shared buffers,
+	 * we'd better first flush out any pages of the source relation that are
+	 * in shared buffers.  We assume no new changes will be made while we are
+	 * holding exclusive lock on the rel.
+	 */
+	FlushRelationBuffers(rel);
 
 	/*
 	 * Create and copy all forks of the relation, and schedule unlinking of
@@ -656,7 +802,7 @@ heapam_relation_copy_data(Relation rel, RelFileNode newrnode)
 	 * NOTE: any conflict in relfilenode value will be caught in
 	 * RelationCreateStorage().
 	 */
-	RelationCreateStorage(newrnode, rel->rd_rel->relpersistence);
+	RelationCreateStorage(*newrnode, rel->rd_rel->relpersistence);
 
 	/* copy main fork */
 	RelationCopyStorage(rel->rd_smgr, dstrel, MAIN_FORKNUM,
@@ -677,7 +823,7 @@ heapam_relation_copy_data(Relation rel, RelFileNode newrnode)
 			if (rel->rd_rel->relpersistence == RELPERSISTENCE_PERMANENT ||
 				(rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED &&
 				 forkNum == INIT_FORKNUM))
-				log_smgrcreate(&newrnode, forkNum);
+				log_smgrcreate(newrnode, forkNum);
 			RelationCopyStorage(rel->rd_smgr, dstrel, forkNum,
 								rel->rd_rel->relpersistence);
 		}
@@ -693,8 +839,8 @@ static void
 heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 								 Relation OldIndex, bool use_sort,
 								 TransactionId OldestXmin,
-								 TransactionId FreezeXid,
-								 MultiXactId MultiXactCutoff,
+								 TransactionId *xid_cutoff,
+								 MultiXactId *multi_cutoff,
 								 double *num_tuples,
 								 double *tups_vacuumed,
 								 double *tups_recently_dead)
@@ -732,8 +878,8 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	isnull = (bool *) palloc(natts * sizeof(bool));
 
 	/* Initialize the rewrite operation */
-	rwstate = begin_heap_rewrite(OldHeap, NewHeap, OldestXmin, FreezeXid,
-								 MultiXactCutoff, use_wal);
+	rwstate = begin_heap_rewrite(OldHeap, NewHeap, OldestXmin, *xid_cutoff,
+								 *multi_cutoff, use_wal);
 
 
 	/* Set up sorting if wanted */
