@@ -11721,7 +11721,7 @@ table2-mapping
     converting its elements into an SQL/JSON sequence before performing
     this operation. Besides, comparison operators automatically unwrap their
     operands in the lax mode, so you can compare SQL/JSON arrays
-    out-of-the-box. Arrays of size 1 are interchangeable with a singleton.
+    out-of-the-box. An array of size 1 is considered equal to its sole element.
     Automatic unwrapping is not performed only when:
     <itemizedlist>
      <listitem>
@@ -20337,8 +20337,10 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
     See <xref linkend="streaming-replication"/>,
     <xref linkend="streaming-replication-slots"/>, and
     <xref linkend="replication-origins"/>
-    for information about the underlying features.  Use of these
-    functions is restricted to superusers.
+    for information about the underlying features.
+    Use of functions for replication origin is restricted to superusers.
+    Use of functions for replication slot is restricted to superusers
+    and users having <literal>REPLICATION</literal> privilege.
    </para>
 
    <para>

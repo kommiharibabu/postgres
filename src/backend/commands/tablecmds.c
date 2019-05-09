@@ -8184,7 +8184,7 @@ addFkRecurseReferencing(List **wqueue, Constraint *fkconstraint, Relation rel,
 	if (rel->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("foreign keys constraints are not supported on foreign tables")));
+				 errmsg("foreign key constraints are not supported on foreign tables")));
 
 	/*
 	 * If the referencing relation is a plain table, add the check triggers to
@@ -8572,7 +8572,7 @@ CloneFkReferencing(List **wqueue, Relation parentRel, Relation partRel)
 	if (partRel->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("foreign keys constraints are not supported on foreign tables")));
+				 errmsg("foreign key constraints are not supported on foreign tables")));
 
 	/*
 	 * The constraint key may differ, if the columns in the partition are
@@ -8606,7 +8606,7 @@ CloneFkReferencing(List **wqueue, Relation parentRel, Relation partRel)
 		ListCell   *cell;
 
 		tuple = SearchSysCache1(CONSTROID, parentConstrOid);
-		if (!tuple)
+		if (!HeapTupleIsValid(tuple))
 			elog(ERROR, "cache lookup failed for constraint %u",
 				 parentConstrOid);
 		constrForm = (Form_pg_constraint) GETSTRUCT(tuple);
@@ -8785,7 +8785,7 @@ tryAttachPartitionForeignKey(ForeignKeyCacheInfo *fk,
 
 	parentConstrTup = SearchSysCache1(CONSTROID,
 									  ObjectIdGetDatum(parentConstrOid));
-	if (!parentConstrTup)
+	if (!HeapTupleIsValid(parentConstrTup))
 		elog(ERROR, "cache lookup failed for constraint %u", parentConstrOid);
 	parentConstr = (Form_pg_constraint) GETSTRUCT(parentConstrTup);
 
@@ -8816,9 +8816,8 @@ tryAttachPartitionForeignKey(ForeignKeyCacheInfo *fk,
 	 */
 	partcontup = SearchSysCache1(CONSTROID,
 								 ObjectIdGetDatum(fk->conoid));
-	if (!partcontup)
-		elog(ERROR, "cache lookup failed for constraint %u",
-			 fk->conoid);
+	if (!HeapTupleIsValid(partcontup))
+		elog(ERROR, "cache lookup failed for constraint %u", fk->conoid);
 	partConstr = (Form_pg_constraint) GETSTRUCT(partcontup);
 	if (OidIsValid(partConstr->conparentid) ||
 		!partConstr->convalidated ||
@@ -12454,9 +12453,10 @@ AlterTableMoveAll(AlterTableMoveAllStmt *stmt)
 		 * Also, explicitly avoid any shared tables, temp tables, or TOAST
 		 * (TOAST will be moved with the main table).
 		 */
-		if (IsSystemNamespace(relForm->relnamespace) || relForm->relisshared ||
+		if (IsCatalogNamespace(relForm->relnamespace) ||
+			relForm->relisshared ||
 			isAnyTempNamespace(relForm->relnamespace) ||
-			relForm->relnamespace == PG_TOAST_NAMESPACE)
+			IsToastNamespace(relForm->relnamespace))
 			continue;
 
 		/* Only move the object type requested */
@@ -16001,7 +16001,7 @@ ATExecDetachPartition(Relation rel, RangeVar *name)
 		Constraint *fkconstraint;
 
 		contup = SearchSysCache1(CONSTROID, ObjectIdGetDatum(fk->conoid));
-		if (!contup)
+		if (!HeapTupleIsValid(contup))
 			elog(ERROR, "cache lookup failed for constraint %u", fk->conoid);
 		conform = (Form_pg_constraint) GETSTRUCT(contup);
 
@@ -16346,9 +16346,8 @@ validatePartitionedIndex(Relation partedIdx, Relation partedTbl)
 
 		indTup = SearchSysCache1(INDEXRELID,
 								 ObjectIdGetDatum(inhForm->inhrelid));
-		if (!indTup)
-			elog(ERROR, "cache lookup failed for index %u",
-				 inhForm->inhrelid);
+		if (!HeapTupleIsValid(indTup))
+			elog(ERROR, "cache lookup failed for index %u", inhForm->inhrelid);
 		indexForm = (Form_pg_index) GETSTRUCT(indTup);
 		if (indexForm->indisvalid)
 			tuples += 1;

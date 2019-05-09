@@ -93,14 +93,16 @@ check_publication_add_relation(Relation targetrel)
  *
  * Note this also excludes all tables with relid < FirstNormalObjectId,
  * ie all tables created during initdb.  This mainly affects the preinstalled
- * information_schema.  (IsCatalogClass() only checks for these inside
- * pg_catalog and toast schemas.)
+ * information_schema.  (IsCatalogRelationOid() only excludes tables with
+ * relid < FirstBootstrapObjectId, making that test rather redundant, but
+ * really we should get rid of the FirstNormalObjectId test not
+ * IsCatalogRelationOid.)
  */
 static bool
 is_publishable_class(Oid relid, Form_pg_class reltuple)
 {
 	return reltuple->relkind == RELKIND_RELATION &&
-		!IsCatalogClass(relid, reltuple) &&
+		!IsCatalogRelationOid(relid) &&
 		reltuple->relpersistence == RELPERSISTENCE_PERMANENT &&
 		relid >= FirstNormalObjectId;
 }
@@ -130,7 +132,7 @@ pg_relation_is_publishable(PG_FUNCTION_ARGS)
 	bool		result;
 
 	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
-	if (!tuple)
+	if (!HeapTupleIsValid(tuple))
 		PG_RETURN_NULL();
 	result = is_publishable_class(relid, (Form_pg_class) GETSTRUCT(tuple));
 	ReleaseSysCache(tuple);
