@@ -354,13 +354,13 @@ static const char BinarySignature[11] = "PGCOPY\n\377\r\n\0";
 
 /* non-export function prototypes */
 static CopyState BeginCopy(ParseState *pstate, bool is_from, Relation rel,
-		  RawStmt *raw_query, Oid queryRelId, List *attnamelist,
-		  List *options);
+						   RawStmt *raw_query, Oid queryRelId, List *attnamelist,
+						   List *options);
 static void EndCopy(CopyState cstate);
 static void ClosePipeToProgram(CopyState cstate);
 static CopyState BeginCopyTo(ParseState *pstate, Relation rel, RawStmt *query,
-			Oid queryRelId, const char *filename, bool is_program,
-			List *attnamelist, List *options);
+							 Oid queryRelId, const char *filename, bool is_program,
+							 List *attnamelist, List *options);
 static void EndCopyTo(CopyState cstate);
 static uint64 DoCopyTo(CopyState cstate);
 static uint64 CopyTo(CopyState cstate);
@@ -370,14 +370,14 @@ static bool CopyReadLineText(CopyState cstate);
 static int	CopyReadAttributesText(CopyState cstate);
 static int	CopyReadAttributesCSV(CopyState cstate);
 static Datum CopyReadBinaryAttribute(CopyState cstate,
-						int column_no, FmgrInfo *flinfo,
-						Oid typioparam, int32 typmod,
-						bool *isnull);
+									 int column_no, FmgrInfo *flinfo,
+									 Oid typioparam, int32 typmod,
+									 bool *isnull);
 static void CopyAttributeOutText(CopyState cstate, char *string);
 static void CopyAttributeOutCSV(CopyState cstate, char *string,
-					bool use_quote, bool single_attr);
+								bool use_quote, bool single_attr);
 static List *CopyGetAttnums(TupleDesc tupDesc, Relation rel,
-			   List *attnamelist);
+							List *attnamelist);
 static char *limit_printout_length(const char *str);
 
 /* Low-level communications functions */
@@ -388,8 +388,8 @@ static void CopySendData(CopyState cstate, const void *databuf, int datasize);
 static void CopySendString(CopyState cstate, const char *str);
 static void CopySendChar(CopyState cstate, char c);
 static void CopySendEndOfRow(CopyState cstate);
-static int CopyGetData(CopyState cstate, void *databuf,
-			int minread, int maxread);
+static int	CopyGetData(CopyState cstate, void *databuf,
+						int minread, int maxread);
 static void CopySendInt32(CopyState cstate, int32 val);
 static bool CopyGetInt32(CopyState cstate, int32 *val);
 static void CopySendInt16(CopyState cstate, int16 val);
@@ -2793,7 +2793,7 @@ CopyFrom(CopyState cstate)
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("cannot perform FREEZE on a partitioned table")));
+					 errmsg("cannot perform COPY FREEZE on a partitioned table")));
 		}
 
 		/*
@@ -2808,13 +2808,13 @@ CopyFrom(CopyState cstate)
 		if (!ThereAreNoPriorRegisteredSnapshots() || !ThereAreNoReadyPortals())
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
-					 errmsg("cannot perform FREEZE because of prior transaction activity")));
+					 errmsg("cannot perform COPY FREEZE because of prior transaction activity")));
 
 		if (cstate->rel->rd_createSubid != GetCurrentSubTransactionId() &&
 			cstate->rel->rd_newRelfilenodeSubid != GetCurrentSubTransactionId())
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg("cannot perform FREEZE because the table was not created or truncated in the current subtransaction")));
+					 errmsg("cannot perform COPY FREEZE because the table was not created or truncated in the current subtransaction")));
 
 		ti_options |= TABLE_INSERT_FROZEN;
 	}
@@ -3216,12 +3216,7 @@ CopyFrom(CopyState cstate)
 			}
 			else
 			{
-				/*
-				 * Compute stored generated columns
-				 *
-				 * Switch memory context so that the new tuple is in the same
-				 * context as the old one.
-				 */
+				/* Compute stored generated columns */
 				if (resultRelInfo->ri_RelationDesc->rd_att->constr &&
 					resultRelInfo->ri_RelationDesc->rd_att->constr->has_generated_stored)
 					ExecComputeStoredGenerated(estate, myslot);

@@ -70,23 +70,23 @@
 /* non-export function prototypes */
 static void CheckPredicate(Expr *predicate);
 static void ComputeIndexAttrs(IndexInfo *indexInfo,
-				  Oid *typeOidP,
-				  Oid *collationOidP,
-				  Oid *classOidP,
-				  int16 *colOptionP,
-				  List *attList,
-				  List *exclusionOpNames,
-				  Oid relId,
-				  const char *accessMethodName, Oid accessMethodId,
-				  bool amcanorder,
-				  bool isconstraint);
+							  Oid *typeOidP,
+							  Oid *collationOidP,
+							  Oid *classOidP,
+							  int16 *colOptionP,
+							  List *attList,
+							  List *exclusionOpNames,
+							  Oid relId,
+							  const char *accessMethodName, Oid accessMethodId,
+							  bool amcanorder,
+							  bool isconstraint);
 static char *ChooseIndexName(const char *tabname, Oid namespaceId,
-				List *colnames, List *exclusionOpNames,
-				bool primary, bool isconstraint);
+							 List *colnames, List *exclusionOpNames,
+							 bool primary, bool isconstraint);
 static char *ChooseIndexNameAddition(List *colnames);
 static List *ChooseIndexColumnNames(List *indexElems);
 static void RangeVarCallbackForReindexIndex(const RangeVar *relation,
-								Oid relId, Oid oldRelId, void *arg);
+											Oid relId, Oid oldRelId, void *arg);
 static bool ReindexRelationConcurrently(Oid relationOid, int options);
 static void ReindexPartitionedIndex(Relation parentIdx);
 static void update_relispartition(Oid relationId, bool newval);
@@ -96,8 +96,8 @@ static void update_relispartition(Oid relationId, bool newval);
  */
 struct ReindexIndexCallbackState
 {
-	bool        concurrent;			/* flag from statement */
-	Oid         locked_table_oid;	/* tracks previously locked table */
+	bool		concurrent;		/* flag from statement */
+	Oid			locked_table_oid;	/* tracks previously locked table */
 };
 
 /*
@@ -396,7 +396,7 @@ WaitForOlderSnapshots(TransactionId limitXmin, bool progress)
 		{
 			if (progress)
 			{
-				PGPROC *holder = BackendIdGetProc(old_snapshots[i].backendId);
+				PGPROC	   *holder = BackendIdGetProc(old_snapshots[i].backendId);
 
 				pgstat_progress_update_param(PROGRESS_WAITFOR_CURRENT_PID,
 											 holder->pid);
@@ -984,7 +984,7 @@ DefineIndex(Oid relationId,
 	 */
 	if (partitioned && stmt->relation && !stmt->relation->inh)
 	{
-		PartitionDesc	pd = RelationGetPartitionDesc(rel);
+		PartitionDesc pd = RelationGetPartitionDesc(rel);
 
 		if (pd->nparts != 0)
 			flags |= INDEX_CREATE_INVALID;
@@ -2743,6 +2743,12 @@ ReindexRelationConcurrently(Oid relationOid, int options)
 
 				MemoryContextSwitchTo(oldcontext);
 
+				/* A system catalog cannot be reindexed concurrently */
+				if (IsCatalogRelationOid(relationOid))
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("cannot reindex a system catalog concurrently")));
+
 				/* Open relation to get its indexes */
 				heapRelation = table_open(relationOid, ShareUpdateExclusiveLock);
 
@@ -2756,13 +2762,13 @@ ReindexRelationConcurrently(Oid relationOid, int options)
 					if (!indexRelation->rd_index->indisvalid)
 						ereport(WARNING,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-								 errmsg("cannot reindex concurrently invalid index \"%s.%s\", skipping",
+								 errmsg("cannot reindex invalid index \"%s.%s\" concurrently, skipping",
 										get_namespace_name(get_rel_namespace(cellOid)),
 										get_rel_name(cellOid))));
 					else if (indexRelation->rd_index->indisexclusion)
 						ereport(WARNING,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-								 errmsg("cannot reindex concurrently exclusion constraint index \"%s.%s\", skipping",
+								 errmsg("cannot reindex exclusion constraint index \"%s.%s\" concurrently, skipping",
 										get_namespace_name(get_rel_namespace(cellOid)),
 										get_rel_name(cellOid))));
 					else
@@ -2802,7 +2808,7 @@ ReindexRelationConcurrently(Oid relationOid, int options)
 						if (!indexRelation->rd_index->indisvalid)
 							ereport(WARNING,
 									(errcode(ERRCODE_INDEX_CORRUPTED),
-									 errmsg("cannot reindex concurrently invalid index \"%s.%s\", skipping",
+									 errmsg("cannot reindex invalid index \"%s.%s\" concurrently, skipping",
 											get_namespace_name(get_rel_namespace(cellOid)),
 											get_rel_name(cellOid))));
 						else
@@ -2831,17 +2837,11 @@ ReindexRelationConcurrently(Oid relationOid, int options)
 			{
 				Oid			heapId = IndexGetRelation(relationOid, false);
 
-				/* A shared relation cannot be reindexed concurrently */
-				if (IsSharedRelation(heapId))
-					ereport(ERROR,
-							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("concurrent reindex is not supported for shared relations")));
-
 				/* A system catalog cannot be reindexed concurrently */
 				if (IsCatalogRelationOid(heapId))
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("concurrent reindex is not supported for catalog relations")));
+							 errmsg("cannot reindex a system catalog concurrently")));
 
 				/* Save the list of relation OIDs in private context */
 				oldcontext = MemoryContextSwitchTo(private_context);
@@ -2869,7 +2869,7 @@ ReindexRelationConcurrently(Oid relationOid, int options)
 			/* Return error if type of relation is not supported */
 			ereport(ERROR,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-					 errmsg("cannot reindex concurrently this type of relation")));
+					 errmsg("cannot reindex this type of relation concurrently")));
 			break;
 	}
 
@@ -3003,7 +3003,7 @@ ReindexRelationConcurrently(Oid relationOid, int options)
 	/* Get a session-level lock on each table. */
 	foreach(lc, relationLocks)
 	{
-		LockRelId   *lockrelid = (LockRelId *) lfirst(lc);
+		LockRelId  *lockrelid = (LockRelId *) lfirst(lc);
 
 		LockRelationIdForSession(lockrelid, ShareUpdateExclusiveLock);
 	}
@@ -3112,8 +3112,8 @@ ReindexRelationConcurrently(Oid relationOid, int options)
 
 		/*
 		 * The index is now valid in the sense that it contains all currently
-		 * interesting tuples.  But since it might not contain tuples deleted just
-		 * before the reference snap was taken, we have to wait out any
+		 * interesting tuples.  But since it might not contain tuples deleted
+		 * just before the reference snap was taken, we have to wait out any
 		 * transactions that might have older snapshots.
 		 */
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_PHASE,
@@ -3250,7 +3250,7 @@ ReindexRelationConcurrently(Oid relationOid, int options)
 	 */
 	foreach(lc, relationLocks)
 	{
-		LockRelId   *lockrelid = (LockRelId *) lfirst(lc);
+		LockRelId  *lockrelid = (LockRelId *) lfirst(lc);
 
 		UnlockRelationIdForSession(lockrelid, ShareUpdateExclusiveLock);
 	}
