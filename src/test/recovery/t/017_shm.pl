@@ -7,8 +7,16 @@ use IPC::Run 'run';
 use PostgresNode;
 use Test::More;
 use TestLib;
+use Time::HiRes qw(usleep);
 
-plan tests => 6;
+if ($^O eq 'msys')
+{
+	plan skip_all => 'missing SIGKILL implementation';
+}
+else
+{
+	plan tests => 5;
+}
 
 my $tempdir = TestLib::tempdir;
 my $port;
@@ -23,31 +31,40 @@ sub log_ipcs
 	return;
 }
 
-# With Unix sockets, choose a port number such that the port number's first
-# IpcMemoryKey candidate is available.  If multiple copies of this test run
-# concurrently, they will pick different ports.  In the absence of collisions
-# from other shmget() activity, gnat starts with key 0x7d001 (512001), and
-# flea starts with key 0x7d002 (512002).  With TCP, the first get_new_node
-# picks a port number.
+# These tests need a $port such that nothing creates or removes a segment in
+# $port's IpcMemoryKey range while this test script runs.  While there's no
+# way to ensure that in general, we do ensure that if PostgreSQL tests are the
+# only actors.  With TCP, the first get_new_node picks a port number.  With
+# Unix sockets, use a postmaster, $port_holder, to represent a key space
+# reservation.  $port_holder holds a reservation on the key space of port
+# 1+$port_holder->port if it created the first IpcMemoryKey of its own port's
+# key space.  If multiple copies of this test script run concurrently, they
+# will pick different ports.  $port_holder postmasters use odd-numbered ports,
+# and tests use even-numbered ports.  In the absence of collisions from other
+# shmget() activity, gnat starts with key 0x7d001 (512001), and flea starts
+# with key 0x7d002 (512002).
 my $port_holder;
 if (!$PostgresNode::use_tcp)
 {
-	for ($port = 512; $port < 612; ++$port)
+	my $lock_port;
+	for ($lock_port = 511; $lock_port < 711; $lock_port += 2)
 	{
 		$port_holder = PostgresNode->get_new_node(
-			"port${port}_holder",
-			port     => $port,
+			"port${lock_port}_holder",
+			port     => $lock_port,
 			own_host => 1);
 		$port_holder->init(hba_permit_replication => 0);
+		$port_holder->append_conf('postgresql.conf', 'max_connections = 5');
 		$port_holder->start;
 		# Match the AddToDataDirLockFile() call in sysv_shmem.c.  Assume all
 		# systems not using sysv_shmem.c do use TCP.
-		my $shmem_key_line_prefix = sprintf("%9lu ", 1 + $port * 1000);
+		my $shmem_key_line_prefix = sprintf("%9lu ", 1 + $lock_port * 1000);
 		last
 		  if slurp_file($port_holder->data_dir . '/postmaster.pid') =~
 		  /^$shmem_key_line_prefix/m;
 		$port_holder->stop;
 	}
+	$port = $lock_port + 1;
 }
 
 # Node setup.
@@ -57,6 +74,8 @@ sub init_start
 	my $ret = PostgresNode->get_new_node($name, port => $port, own_host => 1);
 	defined($port) or $port = $ret->port;    # same port for all nodes
 	$ret->init(hba_permit_replication => 0);
+	# Limit semaphore consumption, since we run several nodes concurrently.
+	$ret->append_conf('postgresql.conf', 'max_connections = 5');
 	$ret->start;
 	log_ipcs();
 	return $ret;
@@ -112,22 +131,30 @@ $gnat->kill9;
 unlink($gnat->data_dir . '/postmaster.pid');
 $gnat->rotate_logfile;    # on Windows, can't open old log for writing
 log_ipcs();
-# Reject ordinary startup.
-ok(!$gnat->start(fail_ok => 1), 'live query blocks restart');
-like(
-	slurp_file($gnat->logfile),
-	qr/pre-existing shared memory block/,
-	'detected live backend via shared memory');
+# Reject ordinary startup.  Retry for the same reasons poll_start() does.
+my $pre_existing_msg = qr/pre-existing shared memory block/;
+{
+	my $max_attempts = 180 * 10;    # Retry every 0.1s for at least 180s.
+	my $attempts     = 0;
+	while ($attempts < $max_attempts)
+	{
+		last
+		  if $gnat->start(fail_ok => 1)
+		  || slurp_file($gnat->logfile) =~ $pre_existing_msg;
+		usleep(100_000);
+		$attempts++;
+	}
+}
+like(slurp_file($gnat->logfile),
+	$pre_existing_msg, 'detected live backend via shared memory');
 # Reject single-user startup.
 my $single_stderr;
 ok( !run_log(
 		[ 'postgres', '--single', '-D', $gnat->data_dir, 'template1' ],
-		'<', \('SELECT 1 + 1'), '2>', \$single_stderr),
+		'<', \undef, '2>', \$single_stderr),
 	'live query blocks --single');
 print STDERR $single_stderr;
-like(
-	$single_stderr,
-	qr/pre-existing shared memory block/,
+like($single_stderr, $pre_existing_msg,
 	'single-user mode detected live backend via shared memory');
 log_ipcs();
 # Fail to reject startup if shm key N has become available and we crash while
@@ -151,8 +178,11 @@ $port_holder->stop if $port_holder;
 log_ipcs();
 
 
-# When postmaster children are slow to exit after postmaster death, we may
-# need retries to start a new postmaster.
+# We may need retries to start a new postmaster.  Causes:
+# - kernel is slow to deliver SIGKILL
+# - postmaster parent is slow to waitpid()
+# - postmaster child is slow to exit in response to SIGQUIT
+# - postmaster child is slow to exit after postmaster death
 sub poll_start
 {
 	my ($node) = @_;

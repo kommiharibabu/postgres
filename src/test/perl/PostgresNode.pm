@@ -419,7 +419,17 @@ sub init
 	print $conf "restart_after_crash = off\n";
 	print $conf "log_statement = all\n";
 	print $conf "wal_retrieve_retry_interval = '500ms'\n";
-	print $conf "port = $port\n";
+
+	# If a setting tends to affect whether tests pass or fail, print it after
+	# TEMP_CONFIG.  Otherwise, print it before TEMP_CONFIG, thereby permitting
+	# overrides.  Settings that merely improve performance or ease debugging
+	# belong before TEMP_CONFIG.
+	print $conf TestLib::slurp_file($ENV{TEMP_CONFIG})
+	  if defined $ENV{TEMP_CONFIG};
+
+	# XXX Neutralize any stats_temp_directory in TEMP_CONFIG.  Nodes running
+	# concurrently must not share a stats_temp_directory.
+	print $conf "stats_temp_directory = 'pg_stat_tmp'\n";
 
 	if ($params{allows_streaming})
 	{
@@ -433,6 +443,7 @@ sub init
 		print $conf "max_connections = 10\n";
 	}
 
+	print $conf "port = $port\n";
 	if ($use_tcp)
 	{
 		print $conf "unix_socket_directories = ''\n";
@@ -967,27 +978,31 @@ sub get_new_node
 			$found = 0 if ($node->port == $port);
 		}
 
-		# Check to see if anything else is listening on this TCP port.  Accept
-		# only ports available for all possible listen_addresses values, so
-		# the caller can harness this port for the widest range of purposes.
-		# This is *necessary* on Windows, and seems like a good idea on Unixen
-		# as well, even though we don't ask the postmaster to open a TCP port
-		# on Unix.
+		# Check to see if anything else is listening on this TCP port.  This
+		# is *necessary* on $use_tcp (Windows) configurations.  Seek a port
+		# available for all possible listen_addresses values, for own_host
+		# nodes and so the caller can harness this port for the widest range
+		# of purposes.  The 0.0.0.0 test achieves that for post-2006 Cygwin,
+		# which automatically sets SO_EXCLUSIVEADDRUSE.  The same holds for
+		# MSYS (a Cygwin fork).  Testing 0.0.0.0 is insufficient for Windows
+		# native Perl (https://stackoverflow.com/a/14388707), so we also test
+		# individual addresses.
+		#
+		# This seems like a good idea on Unixen as well, even though we don't
+		# ask the postmaster to open a TCP port on Unix.  On Non-Linux,
+		# non-Windows kernels, binding to 127.0.0.1/24 addresses other than
+		# 127.0.0.1 might fail with EADDRNOTAVAIL.  Binding to 0.0.0.0 is
+		# unnecessary on non-Windows systems.
+		#
+		# XXX A port available now may become unavailable by the time we start
+		# the postmaster.
 		if ($found == 1)
 		{
-			my $iaddr = inet_aton('0.0.0.0');
-			my $paddr = sockaddr_in($port, $iaddr);
-			my $proto = getprotobyname("tcp");
-
-			socket(SOCK, PF_INET, SOCK_STREAM, $proto)
-			  or die "socket failed: $!";
-
-			# As in postmaster, don't use SO_REUSEADDR on Windows
-			setsockopt(SOCK, SOL_SOCKET, SO_REUSEADDR, pack("l", 1))
-			  unless $TestLib::windows_os;
-			(bind(SOCK, $paddr) && listen(SOCK, SOMAXCONN))
-			  or $found = 0;
-			close(SOCK);
+			foreach my $addr (qw(127.0.0.1),
+				$use_tcp ? qw(127.0.0.2 127.0.0.3 0.0.0.0) : ())
+			{
+				can_bind($addr, $port) or $found = 0;
+			}
 		}
 	}
 
@@ -999,8 +1014,6 @@ sub get_new_node
 	{
 		if ($use_tcp)
 		{
-			# This assumes $use_tcp platforms treat every address in
-			# 127.0.0.1/24, not just 127.0.0.1, as a usable loopback.
 			$last_host_assigned++;
 			$last_host_assigned > 254 and BAIL_OUT("too many own_host nodes");
 			$host = '127.0.0.' . $last_host_assigned;
@@ -1022,6 +1035,25 @@ sub get_new_node
 	$port_is_forced or $last_port_assigned = $port;
 
 	return $node;
+}
+
+# Internal routine to check whether a host:port is available to bind
+sub can_bind
+{
+	my ($host, $port) = @_;
+	my $iaddr = inet_aton($host);
+	my $paddr = sockaddr_in($port, $iaddr);
+	my $proto = getprotobyname("tcp");
+
+	socket(SOCK, PF_INET, SOCK_STREAM, $proto)
+	  or die "socket failed: $!";
+
+	# As in postmaster, don't use SO_REUSEADDR on Windows
+	setsockopt(SOCK, SOL_SOCKET, SO_REUSEADDR, pack("l", 1))
+	  unless $TestLib::windows_os;
+	my $ret = bind(SOCK, $paddr) && listen(SOCK, SOMAXCONN);
+	close(SOCK);
+	return $ret;
 }
 
 # Automatically shut down any still-running nodes when the test script exits.
