@@ -177,7 +177,6 @@ typedef struct CopyStateData
 	 */
 	AttrNumber	num_defaults;
 	FmgrInfo	oid_in_function;
-	Oid			oid_typioparam;
 	FmgrInfo   *in_functions;	/* array of input functions for each attrs */
 	Oid		   *typioparams;	/* array of element types for in_functions */
 	int		   *defmap;			/* array of default att numbers */
@@ -2446,6 +2445,9 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 	ResultRelInfo *resultRelInfo = buffer->resultRelInfo;
 	TupleTableSlot **slots = buffer->slots;
 
+	/* Set es_result_relation_info to the ResultRelInfo we're flushing. */
+	estate->es_result_relation_info = resultRelInfo;
+
 	/*
 	 * Print error context information correctly, if one of the operations
 	 * below fail.
@@ -2624,7 +2626,7 @@ CopyMultiInsertInfoNextFreeSlot(CopyMultiInsertInfo *miinfo,
 
 /*
  * Record the previously reserved TupleTableSlot that was reserved by
- * MultiInsertInfoNextFreeSlot as being consumed.
+ * CopyMultiInsertInfoNextFreeSlot as being consumed.
  */
 static inline void
 CopyMultiInsertInfoStore(CopyMultiInsertInfo *miinfo, ResultRelInfo *rri,

@@ -146,7 +146,7 @@ progress_report(bool force)
 	snprintf(current_size_str, sizeof(current_size_str), INT64_FORMAT,
 			 current_size / (1024 * 1024));
 
-	fprintf(stderr, "%*s/%s MB (%d%%) computed",
+	fprintf(stderr, _("%*s/%s MB (%d%%) computed"),
 			(int) strlen(current_size_str), current_size_str, total_size_str,
 			percent);
 
@@ -475,7 +475,7 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 
-	/* Check if cluster is running */
+	/* Read the control file and check compatibility */
 	ControlFile = get_controlfile(DataDir, &crc_ok);
 	if (!crc_ok)
 	{
@@ -497,6 +497,11 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 
+	/*
+	 * Check if cluster is running.  A clean shutdown is required to avoid
+	 * random checksum failures caused by torn pages.  Note that this doesn't
+	 * guard against someone starting the cluster concurrently.
+	 */
 	if (ControlFile->state != DB_SHUTDOWNED &&
 		ControlFile->state != DB_SHUTDOWNED_IN_RECOVERY)
 	{
